@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.0
+// @version      1.0.1
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -29,6 +29,15 @@
  *      Lumi's — if you are working on this and think a change earns it, ask.
  *      Default to leaving it alone.
  *   y  everything else: features, fixes, extra gradients, copy tweaks.
+ *
+ * 1.0.1 makes the separate game stats FOLLOW mope's own block instead of
+ * sitting on constants. In an arena the sky rearranges the HUD corner and
+ * the bundled block travels with it; the three separate figures used to
+ * stay behind, under a minimap that is no longer being drawn. The home is
+ * now measured off #gameStats every half second, so they go wherever it
+ * goes — moved by us, by mope, or by nobody. The minimap constants survive
+ * as the fallback for before the first reading. __lumiStatsDebug() reports
+ * which of the two is in use.
  *
  * 1.0.0 IS A DELIBERATE RESET, not a rewrite. The code is 1.36.0's; only the
  * number went back. Note the consequence, because it is silent: Tampermonkey
@@ -2569,7 +2578,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.0';
+    return '1.0.1';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -3405,6 +3414,10 @@
     // with no figures at all rather than with mope's.
     document.documentElement.classList.add('qolc-stats-on');
 
+    // Where mope has its own block right now, which is where ours goes. Read
+    // before the placement loop so all three figures agree within a frame.
+    statsMeasureHome();
+
     for (const def of STAT_DEFS) {
       const part = statsPart(def.id);
       if (!part) continue;
@@ -3429,39 +3442,75 @@
   //
   // 1.0.0 moves the home position out of the top-left corner. Stacked there it
   // sat straight on top of mope's own leaderboard, which is unreadable and was
-  // the first thing anybody saw on turning the feature on. It now lands where
-  // mope draws these three itself: under the minimap, laid out the way mope
-  // lays them out — FPS and Ping side by side on one line, Players beneath.
+  // the first thing anybody saw on turning the feature on.
   //
-  // ANCHORED FROM THE RIGHT EDGE, and that is the part that matters. Stored
-  // positions are dvmin — hundredths of the SHORTER viewport axis — applied
-  // from the left, which is fine vertically and wrong horizontally the moment
-  // the window is not square. On 2560x1440 one dvmin is 14.4px, so the old
-  // "Under the minimap" preset's x of 76 resolved to 1094px: the middle of the
-  // screen, nowhere near the map. This returns PIXELS (layoutPlace uses an
-  // anchor verbatim), so it can measure back from innerWidth and be right on
-  // any aspect ratio.
+  // 1.0.1 stops describing that position and MEASURES it instead. The home is
+  // now wherever mope's own #gameStats block currently is, so the three
+  // figures sit where the player already expects to find them and, crucially,
+  // FOLLOW that block when it moves. The arena is the case that forced this:
+  // the sky rearranges mope's HUD corner and the bundled block travels with
+  // it, while three figures pinned to constants stayed behind under a minimap
+  // that is not being drawn any more.
   //
-  // The map's own box, read off mope: 23 by 21dvmin, about 1dvmin in from the
-  // top-right corner. The block hangs its right edge on the map's right edge.
+  // Measuring rather than mirroring the arena rule is deliberate. The rule is
+  // ours and the block is mope's, and only one of those is guaranteed to still
+  // be true next release — whereas "wherever that element actually is" cannot
+  // go out of date, and is right whether the corner was moved by us, by mope,
+  // or by nobody.
   //
-  // Ping's offset from FPS is a FIXED 8dvmin rather than measured: the widest
-  // reading ("FPS: 240") is 6.5dvmin in this font, so 8 clears it at every
-  // value, and a gap that moved with the number would jitter every time the
-  // frame rate changed.
+  // The block stays MEASURABLE while it is replaced: statsSync hides it with
+  // `visibility: hidden`, which keeps it laid out. `display: none` would have
+  // made this impossible, which is worth knowing before anyone "tidies" that
+  // rule up. Anchored on its RIGHT edge, because mope right-aligns these rows
+  // and the readings change width as the numbers do.
   //
-  // These are ordinary positions: dragging any of the three still overrides
-  // them, and what you drag is stored in dvmin exactly as before.
+  // Throttled to STATS_HOME_MS: getBoundingClientRect forces a layout flush,
+  // and this runs inside the per-frame stats pass. Half a second is far below
+  // anything a person notices a HUD taking to settle, and the arena transition
+  // is not a thing that happens twice in a second.
+  //
+  // The constants below are the FALLBACK, used before the first successful
+  // measurement and any time the block cannot be found: mope's minimap is 23
+  // by 21dvmin about 1dvmin in from the top-right, so this hangs the figures
+  // just under it. Positions are returned in PIXELS — layoutPlace uses an
+  // anchor verbatim — which is what lets both paths measure back from the
+  // right edge. A stored position still wins over all of it.
   const STATS_MAP_RIGHT  = 1;      // minimap's inset from the right, dvmin
   const STATS_MAP_BOTTOM = 22.1;   // its top (1.1) plus its height (21)
   const STATS_BLOCK_W    = 17.8;   // widest of the two lines, dvmin
   const STATS_PING_DX    = 8;      // FPS -> Ping on line one, dvmin
   const STATS_LINE_DY    = 3.2;    // line one -> line two, dvmin
+  const STATS_HOME_MS    = 500;    // how often mope's block is re-measured
+
+  const statsHome = {at: 0, right: -1, top: -1};
+
+  function statsMeasureHome() {
+    const now = performance.now();
+    if (statsHome.at && now - statsHome.at < STATS_HOME_MS) return;
+    statsHome.at = now;
+    const el = document.getElementById('gameStats');
+    if (!el) { statsHome.right = -1; return; }
+    try {
+      const r = el.getBoundingClientRect();
+      // A zero box is mope mid-render, or the block genuinely gone. Either way
+      // it is not an answer, and the previous one is not kept: a stale corner
+      // is worse than the fallback, which is at least where the map is.
+      if (r.width > 0 && r.height > 0) { statsHome.right = r.right; statsHome.top = r.top; }
+      else statsHome.right = -1;
+    } catch (e) { statsHome.right = -1; }
+  }
 
   function statsAnchor(id) {
     const vmin = layoutVmin();
-    const left = innerWidth - (STATS_MAP_RIGHT + STATS_BLOCK_W) * vmin;
-    const top  = (STATS_MAP_BOTTOM + 2.4) * vmin;
+    let right, top;
+    if (statsHome.right >= 0) {
+      right = statsHome.right;
+      top = statsHome.top;
+    } else {
+      right = innerWidth - STATS_MAP_RIGHT * vmin;
+      top = (STATS_MAP_BOTTOM + 2.4) * vmin;
+    }
+    const left = right - STATS_BLOCK_W * vmin;
     if (id === 'ping')    return {left: Math.round(left + STATS_PING_DX * vmin), top: Math.round(top)};
     if (id === 'players') return {left: Math.round(left), top: Math.round(top + STATS_LINE_DY * vmin)};
     return {left: Math.round(left), top: Math.round(top)};
@@ -3471,6 +3520,12 @@
     const report = {
       enabled: statsOn(),
       mopeBlockHidden: document.documentElement.classList.contains('qolc-stats-on'),
+      // Where mope's own block was last measured, and so where ours is
+      // anchored. "fallback" means the block could not be found or had a
+      // zero box, and the figures are hanging off the minimap constants.
+      home: statsHome.right >= 0
+        ? {right: Math.round(statsHome.right), top: Math.round(statsHome.top)}
+        : "fallback (mope block not measurable)",
     };
     for (const def of STAT_DEFS) {
       report[def.id] = (stats.seen[def.id] ? 'read: "' + stats.read[def.id] + '"' : 'NOT RECOGNISED') +
