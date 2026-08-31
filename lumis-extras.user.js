@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.1
+// @version      1.0.2
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -29,6 +29,32 @@
  *      Lumi's — if you are working on this and think a change earns it, ask.
  *      Default to leaving it alone.
  *   y  everything else: features, fixes, extra gradients, copy tweaks.
+ *
+ * 1.0.2 is three party changes.
+ *
+ * PARTY LEADER AND KICK. The earliest member to join is the leader and can
+ * remove anybody from the roster in the panel. There is no server here, so
+ * leadership is not granted by anyone — everybody publishes the moment they
+ * joined and everybody computes the same lowest one, which means the answer
+ * needs no announcing and heals on its own when a leader leaves. A kick is
+ * cooperative by nature: it asks that client to leave and it does. See the
+ * note above partyLeaderId(), including the clock-skew caveat.
+ *
+ * CHAT AND THE MAP ARE NO LONGER THE SAME SWITCH. They never were in the
+ * code — partyChatTick has run ahead of the minimap lookup for several
+ * versions precisely so a frame that cannot find the map does not swallow
+ * what somebody said. The problem was the NAME: the master switch was called
+ * "Party map" and turning it off took chat and the list with it, because it
+ * is the switch that joins the party. It is now "Party", and the dots have
+ * taken the name "Party map" for themselves.
+ *
+ * THE FOCUS-MODE NOTICE. Focus mode blanks the party during a 1v1 — messages
+ * still arrive and still expire, they are just not drawn over the duel — which
+ * from the other side is indistinguishable from being ignored. Entering one
+ * now sends "NOTIFICATION: <name> is in a 1v1 and cannot see party chat until
+ * it ends." once per duel, with a 30s floor so arena hopping cannot spam it.
+ * It bypasses partyChatSend deliberately: that refuses to send while chat is
+ * hidden, which is the exact moment this has to work.
  *
  * 1.0.1 makes the separate game stats FOLLOW mope's own block instead of
  * sitting on constants. In an arena the sky rearranges the HUD corner and
@@ -2578,7 +2604,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.1';
+    return '1.0.2';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -5767,6 +5793,10 @@
                Math.max(0, Number(store.get(PARTY_KEYS.color, 0)) || 0)),
     // runtime only
     id:        'p' + Math.random().toString(36).slice(2, 10),
+    // When this client joined the party, epoch ms, set on every connect and
+    // published with the position. The EARLIEST join in the room is the party
+    // leader — see partyLeaderId().
+    joinedAt:  0,
     peers:     new Map(),   // id -> {id, name, u, v, at, color, node, tag,
                             //        handle, hp, art}
     key:       null,
@@ -6098,6 +6128,101 @@
     return settings.masterEnabled && party.enabled;
   }
 
+  /* ----- who is in charge -----
+   *
+   * 1.0.2. There is no server here. Every member is a peer publishing to a
+   * public broker, so "leader" cannot be granted by anyone — it has to be a
+   * fact all of us compute the same way from what we can all see.
+   *
+   * The rule is the EARLIEST JOIN WINS, tie-broken by id. Everybody publishes
+   * the epoch millisecond they joined; the lowest one in the room is the
+   * leader, and since everybody applies that to the same roster, everybody
+   * arrives at the same answer without anyone announcing anything.
+   *
+   * Two things follow from it that are worth stating, because both are
+   * features rather than accidents:
+   *   - Leadership HEALS. If the leader closes the game they age out of the
+   *     roster, the next-earliest join becomes the lowest, and the party has a
+   *     new leader within PARTY_DROP_MS. No election, no handover message.
+   *   - Reconnecting does not cost you it. joinedAt is stamped once and kept
+   *     across dropped sockets, so a member whose wifi blinks comes back as
+   *     the same age they were.
+   *
+   * THE WEAKNESS IS CLOCK SKEW, and it is worth being honest about. These are
+   * wall clocks on different machines, so two people joining within a few
+   * seconds of each other can be ordered by whose clock is fast rather than by
+   * who was actually first. For a party of friends deciding who can remove
+   * somebody, that is an acceptable trade against the complexity of a real
+   * election. It is stable once decided, which matters more than being right
+   * to the second: everybody agrees, and it does not flap.
+   *
+   * A member on an older build publishes no join time at all. They are skipped
+   * rather than defaulted, so they simply cannot be leader — defaulting them
+   * to 0 would make every old client leader instead, which is the wrong way
+   * round to fail.
+   */
+  function partyLeaderId() {
+    let bestId = '';
+    let bestAt = Infinity;
+    if (party.joinedAt > 0) { bestId = party.id; bestAt = party.joinedAt; }
+    for (const peer of party.peers.values()) {
+      if (!(peer.joinedAt > 0)) continue;
+      if (peer.joinedAt < bestAt ||
+          (peer.joinedAt === bestAt && peer.id < bestId)) {
+        bestAt = peer.joinedAt;
+        bestId = peer.id;
+      }
+    }
+    return bestId;
+  }
+
+  function partyIsLeader() {
+    return partyActive() && party.joinedAt > 0 && partyLeaderId() === party.id;
+  }
+
+  // Remove somebody from the party. Cooperative by nature: the packet asks
+  // their client to leave and their client does, which is enough among people
+  // who chose to be in a party together and is not a security control. A
+  // modified client can ignore it, exactly as a modified client can do
+  // anything else — there is no server to enforce against.
+  //
+  // Dropped locally as well as asked to leave, so the leader's own roster
+  // reflects the decision immediately rather than waiting PARTY_DROP_MS for
+  // the kicked member to age out.
+  function partyKick(targetId) {
+    if (!partyIsLeader()) return false;
+    if (!targetId || targetId === party.id) return false;
+    const peer = party.peers.get(targetId);
+    if (!peer) return false;
+    const name = peer.name || '(unnamed)';
+    if (party.transport && party.transport.isReady()) {
+      partySeal({i: party.id, k: targetId})
+        .then((bytes) => { if (party.transport) party.transport.publish(bytes); })
+        .catch(() => {});
+    }
+    partyDestroyPeer(peer);
+    party.peers.delete(targetId);
+    partyChatToast('Removed ' + name + ' from the party', false);
+    dbg('party kick', targetId, name);
+    return true;
+  }
+
+  // Being on the receiving end. The party is switched OFF rather than merely
+  // disconnected: a reconnect loop that keeps rejoining a party you were just
+  // removed from is worse for everybody than a switch you can turn back on.
+  function partyKicked() {
+    party.enabled = false;
+    store.set(PARTY_KEYS.enabled, false);
+    partyDisconnect('kicked');
+    partySetStatus('off', 'removed from the party');
+    party.joinedAt = 0;
+    partyChatClear();
+    partyListHide();
+    qolcToast('You were removed from the party', 'bad');
+    syncPartyUI();
+    dbg('party kicked');
+  }
+
   /* ----- crypto ----- */
 
   const PARTY_ENC = new TextEncoder();
@@ -6380,6 +6505,10 @@
     }
     party.key = derived.key;
     party.topic = derived.topic;
+    // Stamped once per connect, not once per session. Reconnecting after a
+    // dropped socket must not hand leadership to somebody who joined later:
+    // the party is the same party, and you were in it first.
+    if (!party.joinedAt) party.joinedAt = Date.now();
     party.pacer = partyMakePacer();
     party.transport = partyCreateTransport(PARTY_BROKERS[party.broker][1], derived.topic, session);
   }
@@ -6405,11 +6534,28 @@
       }
       return;
     }
+    // A kick, which like a chat message carries no position and so has to be
+    // taken before the plausibility check throws it away.
+    //
+    // Honoured ONLY from whoever we independently reckon the leader to be. It
+    // is not a permission check — there is no server and nothing is signed —
+    // but it does mean a member cannot kick anybody just by sending the
+    // packet, and that everyone in the room applies the same answer, because
+    // everyone computes the leader from the same roster.
+    if (typeof data.k === 'string' && data.k) {
+      if (data.i !== partyLeaderId()) return;
+      if (data.k === party.id) partyKicked();
+      else {
+        const gone = party.peers.get(data.k);
+        if (gone) { partyDestroyPeer(gone); party.peers.delete(data.k); }
+      }
+      return;
+    }
     if (!partyPlausible(data.u, data.v)) return;
     let peer = party.peers.get(data.i);
     if (!peer) {
       peer = {id: data.i, name: '', u: 0, v: 0, at: 0, color: 0, node: null,
-              tag: null, handle: '', hp: -1, art: '', xp: ''};
+              tag: null, handle: '', hp: -1, art: '', xp: '', joinedAt: 0};
       party.peers.set(data.i, peer);
     }
     peer.name = typeof data.n === 'string' ? data.n.slice(0, 20) : '';
@@ -6439,6 +6585,12 @@
     // truthiness test, because a field arriving as a string or a number from
     // some future build should read as "no" rather than as "yes".
     peer.duel = data.d === true;
+    // 1.0.2. When they joined, which is what decides the leader. Validated as
+    // a positive finite number and otherwise left at 0, which reads as "not
+    // eligible" rather than "joined at the dawn of time" — a member on an
+    // older build sends nothing, and defaulting them to 0 the other way would
+    // make every old client the leader.
+    peer.joinedAt = Number.isFinite(data.j) && data.j > 0 ? data.j : 0;
     peer.at = performance.now();
   }
 
@@ -6819,6 +6971,9 @@
     input:  null,
     field:  null,
     open:   false,
+    // 1.0.2. Whether the party has already been told this duel that we cannot
+    // see them. Latched rather than counted, and cleared when the duel ends.
+    focusTold: false,
   };
 
   const PARTY_CHAT_MAX = 120;          // characters per message
@@ -7137,6 +7292,9 @@
   }
 
   function partyChatTick(now) {
+    // Before anything that can return early: the party has to be told we have
+    // gone quiet whether or not there is a stack to draw into.
+    partyFocusNoticeTick();
     // Leaving the game closes the input rather than leaving it floating over
     // the menu with focus.
     if (partyChat.open && prevMenuVisible !== false) partyChatCloseInput();
@@ -7235,6 +7393,64 @@
     // the browser scrolls the page trying to bring it into view.
     try { partyChat.field.focus({preventScroll: true}); }
     catch (e) { try { partyChat.field.focus(); } catch (e2) {} }
+  }
+
+  // ----- the focus-mode notice -----
+  //
+  // 1.0.2. Focus mode blanks the party while you are in a 1v1: messages still
+  // arrive and still expire, they are simply not drawn over the duel. From the
+  // other side of the party that is indistinguishable from being ignored, so
+  // this says it out loud, once, when the duel starts.
+  //
+  // It deliberately does NOT go through partyChatSend(). That one refuses to
+  // send while partyChatOn() is false, and partyChatOn() is false during a
+  // duel for exactly the reason we are announcing — the one moment this has to
+  // work is the one moment that gate is shut. It also skips partyChatShow():
+  // the sender cannot see their own chat right now, and a line sitting in the
+  // buffer to surface when the duel ends would be a stale announcement about a
+  // state that had already passed.
+  //
+  // The NOTIFICATION: prefix is plain text in an ordinary chat message rather
+  // than a new wire field, so members on older builds read it as written
+  // instead of dropping a message kind they do not know about.
+  const PARTY_FOCUS_NOTICE_MS = 30000;   // floor between two notices
+  let partyFocusNoticeAt = 0;
+
+  function partyChatNotify(text) {
+    if (!partyActive() || !party.chat) return false;
+    if (!party.transport || !party.transport.isReady()) return false;
+    const now = performance.now();
+    // A second floor under the once-per-duel latch. Arena hopping is a normal
+    // way to play, and somebody who takes six duels in a minute should not
+    // spend that minute announcing it to everyone.
+    if (partyFocusNoticeAt && now - partyFocusNoticeAt < PARTY_FOCUS_NOTICE_MS) {
+      return false;
+    }
+    partyFocusNoticeAt = now;
+    const message = {i: party.id, c: party.color, n: partySelfName(),
+                     m: String(text).slice(0, PARTY_CHAT_MAX)};
+    const handle = partySelfHandle();
+    if (handle) message.g = handle;
+    partySeal(message)
+      .then((bytes) => { if (party.transport) party.transport.publish(bytes); })
+      .catch(() => {});
+    return true;
+  }
+
+  // Called every frame from partyChatTick. The latch is what makes this once
+  // per duel rather than once per frame; clearing it on the way out is what
+  // makes the NEXT duel announce again.
+  function partyFocusNoticeTick() {
+    const hiding = arenaFocusHiding();
+    if (!hiding) { partyChat.focusTold = false; return; }
+    if (partyChat.focusTold) return;
+    // Latched whether or not the send succeeds. A duel that started while the
+    // relay was down is not worth announcing thirty seconds late, by which
+    // time it may well be over.
+    partyChat.focusTold = true;
+    const who = partySelfName() || 'A party member';
+    partyChatNotify('NOTIFICATION: ' + who +
+      ' is in a 1v1 and cannot see party chat until it ends.');
   }
 
   function partyChatSend(raw) {
@@ -7783,6 +7999,12 @@
         const message = {i: party.id, n: partySelfName(),
                          u: self.u, v: self.v, c: party.color};
         if (duelling) message.d = true;
+        // Sent on every position rather than announced once: the broker holds
+        // nothing for us, so a member who joins later has no way to learn an
+        // announcement they were not there for. Riding on a message everyone
+        // already sends costs one small number and means the roster is always
+        // enough on its own to work out who is leading.
+        if (party.joinedAt > 0) message.j = party.joinedAt;
         // Left out entirely rather than sent as a placeholder, so a member on
         // an older build and a member whose health is not readable yet look
         // the same on the wire — which is what they are.
@@ -7855,6 +8077,18 @@
       version: VERSION,
       masterEnabled: settings.masterEnabled,
       featureEnabled: party.enabled,
+      // 1.0.2. Leadership, said as a whole rather than as a boolean: "am I the
+      // leader" and "who is" are different questions and a party that disagrees
+      // about the answer needs both to diagnose it.
+      leader: (() => {
+        const id = partyLeaderId();
+        if (!id) return "nobody eligible (no join times seen yet)";
+        if (id === party.id) return "you (joined " + new Date(party.joinedAt).toISOString() + ")";
+        const p = party.peers.get(id);
+        return (p && p.name ? p.name : id) + " (joined " +
+          (p && p.joinedAt ? new Date(p.joinedAt).toISOString() : "?") + ")";
+      })(),
+      focusNoticeSent: partyChat.focusTold,
       codeSet: !!partyNormalizeCode(party.code),
       // Named "relay" and stated with its mode, because comparing this
       // between two players is the first check when a party will not form.
@@ -16715,6 +16949,18 @@
         background: #cba6ff; box-shadow: 0 0 0 1.5px rgba(0,0,0,0.55);
       }
       .qolc-party-member-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      /* 1.0.2. The leader star and the kick button. Both are BUILT on every
+         row and shown by class, never added and removed as leadership moves:
+         a button that materialises under the pointer between two passes of the
+         750ms roster timer is a button somebody clicks by accident. */
+      .qolc-party-crown { display: none; flex-shrink: 0; color: #ffd166; font-size: 11px; }
+      .qolc-party-member.is-leader .qolc-party-crown { display: inline; }
+      .qolc-party-kick { display: none; flex-shrink: 0; }
+      /* can-kick is written only when YOU are the leader, and the roster holds
+         nobody but other people, so there is no row this could offer against
+         yourself. */
+      .qolc-party-member.can-kick .qolc-party-kick { display: inline-block; }
+      .qolc-party-kick:hover { background: rgba(255,90,90,0.25); border-color: rgba(255,120,120,0.5); }
       .qolc-party-empty { font-size: 10.5px; opacity: 0.62; margin-top: 9px; }
       .qolc-party-note {
         margin-top: 10px; font-size: 9.5px; line-height: 1.45;
@@ -16907,11 +17153,11 @@
     share: 'Share with script users — sends your colour as a name tag, and to the registry if that is on.',
     registry: 'Online color registry — carries your colour beside the name, so name length stops mattering.',
     dom: 'Leaderboard and menus — also colours matching HTML name labels outside the game world.',
-    party: 'Party map — shows party members as coloured dots on your minimap.',
+    party: 'Party — joins the party and connects to the relay. The map, chat and the party list are separate switches under it, and any of them works on its own.',
     code: 'Party code — everyone in the party holds the same one, and everything sent is encrypted with a key derived from it, so the relay cannot read any of it. Anyone with the code can, so treat it like a password and use a generated one.',
     relay: 'Relay — everyone in the party must be on the same one. Auto moves between them on its own.',
-    roster: 'Who is on your code right now, and how much health each of them has left. Stale members fade.',
-    dots: 'Show dots — party members on the minimap.',
+    roster: 'Who is on your code right now, and how much health each of them has left. Stale members fade. The star marks the party leader — the earliest to join — who can remove members.',
+    dots: 'Party map — party members as coloured dots on your minimap.',
     tags: 'Show names — their in-game name above each dot.',
     chat: 'Party chat — press P in game to switch between public and party chat.',
     list: "Party list — each member's animal, health and XP, under the leaderboard.",
@@ -17238,11 +17484,15 @@
     if (!party.enabled) return 'Off';
     if (party.status === 'ok') {
       const n = party.peers.size;
+      // Said here because YOU are not in the roster below — every row in it is
+      // somebody else, so there is nowhere else the panel could tell you that
+      // the kick buttons are yours.
+      const lead = partyIsLeader() ? " — you are the party leader" : "";
       const who = n
         ? n + ' member' + (n === 1 ? '' : 's') + ' on the map'
         : 'waiting for members';
-      if (!party.minimapSeen) return 'Connected via ' + party.statusInfo + ' — join a game to see the map';
-      return 'Connected via ' + party.statusInfo + ' — ' + who;
+      if (!party.minimapSeen) return "Connected via " + party.statusInfo + " — join a game to see the map" + lead;
+      return "Connected via " + party.statusInfo + " — " + who + lead;
     }
     if (party.status === 'wait') return party.statusInfo || 'Connecting…';
     if (party.status === 'bad') return party.statusInfo || 'Disconnected';
@@ -17271,6 +17521,10 @@
   }
 
   // Safe to call before the panel exists — the settle/status paths do.
+  // id -> {root, swatch, name, crown, kick} for the panel roster. Rows outlive
+  // a sync pass; see the note in syncPartyUI for why that matters.
+  const partyRosterRows = new Map();
+
   function syncPartyUI() {
     if (!extras || !extras.partyUi) return;
     const refs = extras.partyUi;
@@ -17313,24 +17567,77 @@
     const now = performance.now();
     const members = [...party.peers.values()]
       .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
-    refs.roster.textContent = '';
+    const leaderId = partyLeaderId();
+    const iLead = partyIsLeader();
+
+    // 1.0.2 PATCHES ROWS BY ID RATHER THAN REBUILDING THEM, and the kick
+    // button is the whole reason. This runs on a 750ms timer while the party
+    // tab is open; with `textContent = ''` and a fresh set of elements every
+    // pass, a button lives at most three quarters of a second and a click that
+    // lands just as the roster is rebuilt hits an element already detached
+    // from the document. Nothing appears to happen and nothing says why.
+    //
+    // So the row is created once per member and only its mutable parts are
+    // written afterwards. That also keeps hover and focus, which a rebuild
+    // drops on every pass.
+    for (const [id, row] of partyRosterRows) {
+      if (party.peers.has(id)) continue;
+      try { row.root.remove(); } catch (e) {}
+      partyRosterRows.delete(id);
+    }
     for (const peer of members) {
-      const row = document.createElement('div');
-      row.className = 'qolc-party-member' +
-        (now - peer.at > PARTY_STALE_MS ? ' is-stale' : '');
-      // The roster swatch shows the member's own colour AND its outline, so a
-      // name can be matched to a dot on the map without guessing.
+      let row = partyRosterRows.get(peer.id);
+      if (!row) {
+        const root = document.createElement('div');
+        root.className = 'qolc-party-member';
+        // The roster swatch shows the member's own colour AND its outline, so
+        // a name can be matched to a dot on the map without guessing.
+        const swatch = document.createElement('div');
+        swatch.className = 'qolc-party-swatch';
+        const name = document.createElement('div');
+        name.className = 'qolc-party-member-name';
+        // Always built and hidden by CSS rather than added and removed as
+        // leadership changes: a button that appears under the pointer between
+        // two frames is a button you click by accident.
+        const crown = document.createElement('span');
+        crown.className = 'qolc-party-crown';
+        crown.textContent = '★';
+        crown.title = 'Party leader';
+        const kick = document.createElement('button');
+        kick.type = 'button';
+        kick.className = 'qolc-obtn qolc-obtn-sm qolc-party-kick';
+        kick.textContent = 'Kick';
+        // Captured per row rather than read off a dataset at click time: the
+        // id is fixed for the life of the row, and this cannot be confused by
+        // a row that has been reused for somebody else.
+        const targetId = peer.id;
+        kick.addEventListener('click', (e) => {
+          e.stopPropagation();
+          partyKick(targetId);
+          syncPartyUI();
+        });
+        root.appendChild(swatch);
+        root.appendChild(name);
+        root.appendChild(crown);
+        root.appendChild(kick);
+        row = {root, swatch, name, crown, kick};
+        partyRosterRows.set(peer.id, row);
+      }
       const preset = partyDotPreset(peer.color);
-      const swatch = document.createElement('div');
-      swatch.className = 'qolc-party-swatch';
-      swatch.style.background = preset.fill;
-      swatch.style.boxShadow = '0 0 0 1.5px ' + preset.line;
-      const name = document.createElement('div');
-      name.className = 'qolc-party-member-name';
-      name.textContent = peer.name || '(unnamed)';
-      row.appendChild(swatch);
-      row.appendChild(name);
-      refs.roster.appendChild(row);
+      const stale = now - peer.at > PARTY_STALE_MS;
+      const cls = 'qolc-party-member' + (stale ? ' is-stale' : '') +
+        (peer.id === leaderId ? ' is-leader' : '') + (iLead ? ' can-kick' : '');
+      if (row.root.className !== cls) row.root.className = cls;
+      const label = peer.name || '(unnamed)';
+      if (row.name.textContent !== label) row.name.textContent = label;
+      if (row.swatch.style.background !== preset.fill) {
+        row.swatch.style.background = preset.fill;
+        row.swatch.style.boxShadow = '0 0 0 1.5px ' + preset.line;
+      }
+      // Appended in roster order every pass. Moving a node that is already in
+      // the right place is a no-op in every engine, and it is what keeps the
+      // alphabetical sort correct as names arrive.
+      refs.roster.appendChild(row.root);
     }
     refs.empty.style.display = members.length ? 'none' : 'block';
     // Collapsed when there is nobody in it, so the inset does not sit there as
@@ -18628,7 +18935,7 @@
 
 
     const partyEnabledRow = makeRow(
-      'Party map',
+      'Party',
       'party',
       party.enabled,
       (on) => {
@@ -18642,7 +18949,10 @@
           store.set(PARTY_KEYS.code, party.code);
         }
         if (on) partyConnect();
-        else { partyDisconnect('disabled'); partySetStatus('off', ''); }
+        // Leaving for real, so the join stamp goes with it: rejoining later, or
+        // joining a DIFFERENT party, must not carry an old seniority into a
+        // room where it was never earned.
+        else { partyDisconnect('disabled'); partySetStatus('off', ''); party.joinedAt = 0; }
         syncPartyUI();
       }
     );
@@ -18661,6 +18971,10 @@
       if (e.target.value !== cleaned) e.target.value = cleaned;
       party.code = cleaned;
       store.set(PARTY_KEYS.code, cleaned);
+      // A new code is a different party. Seniority does not travel between
+      // rooms, and the peers are cleared with it so the old roster cannot
+      // decide the new party's leader.
+      party.joinedAt = 0;
       // Debounced: reconnecting on every keystroke would run PBKDF2 (200k
       // iterations) once per character typed.
       clearTimeout(partyCodeTimer);
@@ -18674,6 +18988,7 @@
       e.stopPropagation();
       party.code = partyRandomCode();
       store.set(PARTY_KEYS.code, party.code);
+      party.joinedAt = 0;
       syncPartyUI();
       if (partyActive()) partyConnect();
     });
@@ -18743,7 +19058,7 @@
       'Nobody else yet. Send the code to a friend and have them paste it here.';
 
     const partyDotsRow = makeRow(
-      'Show party members on minimap',
+      'Party map',
       'dots',
       party.dots,
       (on) => {
