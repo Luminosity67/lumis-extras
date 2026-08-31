@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.36.0
+// @version      1.0.0
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -25,8 +25,28 @@
  * main menu, or press N while in game, to open it.
  *
  * Versioning — 1.x.y, and the leading 1 does not move:
- *   x  feature work and other notable changes
- *   y  small things: bug fixes, extra gradients, copy tweaks
+ *   x  MASSIVE changes only. It is NEVER bumped on anyone's initiative but
+ *      Lumi's — if you are working on this and think a change earns it, ask.
+ *      Default to leaving it alone.
+ *   y  everything else: features, fixes, extra gradients, copy tweaks.
+ *
+ * 1.0.0 IS A DELIBERATE RESET, not a rewrite. The code is 1.36.0's; only the
+ * number went back. Note the consequence, because it is silent: Tampermonkey
+ * only ever updates UPWARD, so an install sitting on 1.36.0 will never see
+ * this or anything after it. Everyone reinstalls once from the repo link, and
+ * then auto-update carries them forward normally.
+ *
+ * What changed with it:
+ *   - The separate game stats now default to UNDER THE MINIMAP, in mope's own
+ *     two-line arrangement, instead of stacking over the leaderboard. The
+ *     Arrange row is gone with its presets — those coordinates were dvmin from
+ *     the LEFT and so never landed under the map on a non-square window.
+ *   - The archived gradients are deleted outright, all forty-four of them, and
+ *     gradients are no longer numbered anywhere. 103 entries became 59.
+ *   - The gradient bar no longer shows a sliver of its own opposite end down
+ *     each vertical edge.
+ *   - The HP bar's whole-hit-point marks are exclusive to hit points mode.
+ *   - Customization and the damage indicator are both labelled (WIP).
  *
  * 1.36.0 MAKES CANVAS2D WORK. Nothing new to switch on: if you were one of
  * the players for whom half this script silently did nothing, it now does.
@@ -2549,7 +2569,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.36.0';
+    return '1.0.0';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -3405,51 +3425,46 @@
     }
   }
 
-  // Where a stat sits before anybody moves it: stacked in the top-left corner,
-  // in the order mope prints them, which is where mope's own block is.
-  const STATS_HOME_DVMIN = {x: 1.5, y: 1.5, step: 3.2};
+  // Where a stat sits before anybody moves it.
+  //
+  // 1.0.0 moves the home position out of the top-left corner. Stacked there it
+  // sat straight on top of mope's own leaderboard, which is unreadable and was
+  // the first thing anybody saw on turning the feature on. It now lands where
+  // mope draws these three itself: under the minimap, laid out the way mope
+  // lays them out — FPS and Ping side by side on one line, Players beneath.
+  //
+  // ANCHORED FROM THE RIGHT EDGE, and that is the part that matters. Stored
+  // positions are dvmin — hundredths of the SHORTER viewport axis — applied
+  // from the left, which is fine vertically and wrong horizontally the moment
+  // the window is not square. On 2560x1440 one dvmin is 14.4px, so the old
+  // "Under the minimap" preset's x of 76 resolved to 1094px: the middle of the
+  // screen, nowhere near the map. This returns PIXELS (layoutPlace uses an
+  // anchor verbatim), so it can measure back from innerWidth and be right on
+  // any aspect ratio.
+  //
+  // The map's own box, read off mope: 23 by 21dvmin, about 1dvmin in from the
+  // top-right corner. The block hangs its right edge on the map's right edge.
+  //
+  // Ping's offset from FPS is a FIXED 8dvmin rather than measured: the widest
+  // reading ("FPS: 240") is 6.5dvmin in this font, so 8 clears it at every
+  // value, and a gap that moved with the number would jitter every time the
+  // frame rate changed.
+  //
+  // These are ordinary positions: dragging any of the three still overrides
+  // them, and what you drag is stored in dvmin exactly as before.
+  const STATS_MAP_RIGHT  = 1;      // minimap's inset from the right, dvmin
+  const STATS_MAP_BOTTOM = 22.1;   // its top (1.1) plus its height (21)
+  const STATS_BLOCK_W    = 17.8;   // widest of the two lines, dvmin
+  const STATS_PING_DX    = 8;      // FPS -> Ping on line one, dvmin
+  const STATS_LINE_DY    = 3.2;    // line one -> line two, dvmin
 
   function statsAnchor(id) {
     const vmin = layoutVmin();
-    const index = STAT_IDS.indexOf(id);
-    return {
-      left: Math.round(STATS_HOME_DVMIN.x * vmin),
-      top: Math.round((STATS_HOME_DVMIN.y + STATS_HOME_DVMIN.step * Math.max(0, index)) * vmin),
-    };
-  }
-
-  // Pre-made arrangements.
-  //
-  // A preset is just three positions written through layoutSetPos(), so it is
-  // indistinguishable afterwards from having dragged the three chips there —
-  // there is no preset MODE to be in, and dragging one figure afterwards does
-  // not "break" anything. Coordinates are dvmin, like every stored position.
-  //
-  // "Under the minimap" is the one that was asked for. Its numbers are taken
-  // from where mope actually puts the map — 23 by 21dvmin in the top-right,
-  // per #minimap's own size — so the column starts just below it and lines up
-  // with its left edge.
-  const STAT_PRESETS = [
-    ['Default', 'Back to the top-left corner, stacked.', null],
-    ['Under the minimap', 'A column under the minimap, in the top-right.', {
-      fps:     {x: 76, y: 24.5},
-      ping:    {x: 76, y: 27.7},
-      players: {x: 76, y: 30.9},
-    }],
-    ['Bottom-left', 'Out of the way, above the ability row.', {
-      fps:     {x: 1.5, y: 78},
-      ping:    {x: 1.5, y: 81.2},
-      players: {x: 1.5, y: 84.4},
-    }],
-  ];
-
-  function statsApplyPreset(spec) {
-    for (const def of STAT_DEFS) {
-      const id = 'stat' + def.id;
-      if (!spec) layoutClearPos(id);
-      else if (spec[def.id]) layoutSetPos(id, spec[def.id].x, spec[def.id].y);
-    }
-    layoutRefreshPreview();
+    const left = innerWidth - (STATS_MAP_RIGHT + STATS_BLOCK_W) * vmin;
+    const top  = (STATS_MAP_BOTTOM + 2.4) * vmin;
+    if (id === 'ping')    return {left: Math.round(left + STATS_PING_DX * vmin), top: Math.round(top)};
+    if (id === 'players') return {left: Math.round(left), top: Math.round(top + STATS_LINE_DY * vmin)};
+    return {left: Math.round(left), top: Math.round(top)};
   }
 
   function statsDebug() {
@@ -3897,10 +3912,9 @@
   // Two hidden series, each behind its own code. Gating applies to the PICKER
   // ONLY — decoding stays open, so a shared hidden gradient still renders for
   // everyone. Ranges must stay put: the share encoding transmits the index.
-  //   Fate  array 64-78, shown as 65-79
-  //   Ego   array 79-94, shown as 80-95   (Blue Lock)
-  // Empty since 1.30.0: both series are retired (see GRAD_RETIRED), which
-  // makes their unlock codes inert. Left in place for the next series.
+  // Empty since 1.0.0: the Fate and Ego series were DELETED outright along
+  // with the rest of the archived gradients, which makes their unlock codes
+  // inert. Left in place so a future series can use the machinery again.
   const GRAD_SERIES = [];
   const nameColorState = {
     color:   localStorage.getItem(LS.color)   || '#ff3b30',
@@ -3967,37 +3981,7 @@
     return end - series.from;
   }
 
-  // 1.30.0. Gradients taken OUT OF THE PICKER without being taken out of the
-  // ARRAY, and the distinction is the whole point.
-  //
-  // The share encoding transmits a gradient's INDEX. Deleting entries would
-  // renumber every gradient after the first hole, so a name shared by somebody
-  // on 1.29.0 would decode to a different gradient on 1.30.0 and vice versa —
-  // silently, and only for the people either side of the change. Retiring
-  // instead keeps every index exactly where it was: a retired gradient still
-  // DECODES for anyone who receives it, it simply cannot be chosen any more.
-  //
-  // The Fate and Ego series are retired the same way, which also makes their
-  // unlock codes inert. GRAD_SERIES is left empty rather than deleted so the
-  // machinery around it still compiles and a future series can use it again.
-  // Retired BY NAME, resolved to indexes once the array exists.
-  //
-  // The first version of this listed the indexes by hand and got three of the
-  // thirteen wrong — it retired Lime, Tropic and Rainbow, which nobody asked
-  // about, and left Forest, Sunrise and Prism in the picker. Hand-counting a
-  // position in a ninety-entry literal is exactly the kind of thing that looks
-  // right and is not, and the index is the one thing here that must not be
-  // guessed at, because it is also the thing that goes over the wire.
-  const GRAD_RETIRED_NAMES = new Set([
-    'Sunset', 'Peach', 'Amber', 'Honey', 'Flamingo', 'Bubblegum', 'Violet',
-    'Teal', 'Northern', 'Emerald', 'Forest', 'Sunrise', 'Prism',
-  ]);
-  // Filled in below NAME_GRADIENTS, which is declared after this. gradientLocked()
-  // only ever reads it at call time, so the order is fine.
-  const GRAD_RETIRED = new Set();
-
   function gradientLocked(i) {
-    if (GRAD_RETIRED.has(i)) return true;
     for (let s = GRAD_SERIES.length - 1; s >= 0; s--) {
       if (i >= GRAD_SERIES[s].from) return !nameColorState[GRAD_SERIES[s].key];
     }
@@ -4033,7 +4017,6 @@
   // encoding transmits the index, so reordering would change colors for
   // other script users on older versions.
   const NAME_GRADIENTS = [
-    ['Sunset',    ['#ff512f', '#f09819']],
     ['Flame',     ['#f83600', '#fee140']],
     ['Rose',      ['#ff5f6d', '#ffc371']],
     ['Candy',     ['#ff6a9d', '#c56bff']],
@@ -4046,22 +4029,16 @@
     ['Ember',     ['#ed213a', '#93291e']],
     ['Cherry',    ['#eb3349', '#f45c43']],
     ['Coral',     ['#ff9966', '#ff5e62']],
-    ['Peach',     ['#ffecd2', '#fcb69f']],
     ['Mango',     ['#ffe259', '#ffa751']],
-    ['Amber',     ['#ffb347', '#ffcc33']],
-    ['Honey',     ['#fceabb', '#f8b500']],
     ['Rust',      ['#b21f1f', '#fdbb2d']],
     ['Blush',     ['#ffafbd', '#ffc3a0']],
-    ['Flamingo',  ['#f093fb', '#f5576c']],
     ['Fuchsia',   ['#ff0080', '#ff8c00']],
-    ['Bubblegum', ['#fc67fa', '#f4c4f3']],
     ['Sakura',    ['#fbd3e9', '#bb377d']],
     ['Berry',     ['#8e2de2', '#4a00e0']],
     ['Grape',     ['#6a3093', '#a044ff']],
     ['Wine',      ['#b24592', '#f15f79']],
     ['Orchid',    ['#da22ff', '#9733ee']],
     ['Amethyst',  ['#9d50bb', '#6e48aa']],
-    ['Violet',    ['#654ea3', '#eaafc8']],
     ['Indigo',    ['#4776e6', '#8e54e9']],
     ['Nebula',    ['#3a1c71', '#d76d77', '#ffaf7b']],
     ['Twilight',  ['#4b6cb7', '#182848']],
@@ -4071,17 +4048,11 @@
     ['Azure',     ['#007adf', '#00ecbc']],
     ['Ice',       ['#74ebd5', '#acb6e5']],
     ['Lagoon',    ['#43c6ac', '#191654']],
-    ['Teal',      ['#136a8a', '#267871']],
-    ['Northern',  ['#43cea2', '#185a9d']],
     ['Aurora',    ['#00c9ff', '#92fe9d']],
-    ['Emerald',   ['#348f50', '#56b4d3']],
     ['Jade',      ['#00b09b', '#96c93d']],
     ['Lime',      ['#a8e063', '#56ab2f']],
-    ['Forest',    ['#134e5e', '#71b280']],
     ['Tropic',    ['#00f260', '#0575e6']],
-    ['Sunrise',   ['#ff512f', '#dd2476']],
     ['Rainbow',   ['#ff5e62', '#ffd452', '#38ef7d']],
-    ['Prism',     ['#ff6fd8', '#3813c2']],
     ['Unicorn',   ['#fbc2eb', '#a6c1ee']],
     // edgy set (indexes 50-63)
     ['Venom',     ['#0f0f0f', '#39ff14']],
@@ -4098,43 +4069,7 @@
     ['Matrix',    ['#003b00', '#00ff41']],
     ['Onyx',      ['#232526', '#414345']],
     ['Demon',     ['#ff416c', '#590d22']],
-    // Fate series set (indexes 64-78). These use restrained two-color ramps so
-    // the renderer's per-letter tint sampling appears continuous on short names.
-    ['Saber',          ['#28569b', '#c8a64b']],
-    ['Archer',         ['#343840', '#a82734']],
-    ['Rin Tohsaka',    ['#641522', '#d13d54']],
-    ['Sakura Matou',   ['#56366d', '#cf80a9']],
-    ['Illyasviel',     ['#d7e5f2', '#bd6679']],
-    ['Gilgamesh',      ['#edc24c', '#a74035']],
-    ['Cu Chulainn',    ['#285ca3', '#a63249']],
-    ['Medusa',         ['#4a2b68', '#b35f99']],
-    ['Artoria Alter',  ['#211a29', '#802a51']],
-    ['Jeanne d Arc',   ['#365c88', '#c7a54f']],
-    ['Jeanne Alter',   ['#2c2b32', '#9d3346']],
-    ['Astolfo',        ['#df7faf', '#f3b7d2']],
-    ['Mash Kyrielight',['#674e7b', '#cf88a5']],
-    ['Scathach',       ['#552662', '#a53f69']],
-    ['Karna',          ['#ead8ad', '#b85a3f']],
-    // --- Ego series (indexes 79-94), gated behind its own code ---
-    ['Isagi Yoichi',   ['#0a2472', '#48cae4']],
-    ['Michael Kaiser', ['#eaf1fb', '#2f6be8']],
-    ['Shidou Ryusei',  ['#ff4d8d', '#f7ecf1']],
-    ['Rin Itoshi',     ['#0d1b2a', '#2ec4b6']],
-    ['Sae Itoshi',     ['#324a5f', '#69dbc4']],
-    ['Nagi Seishiro',  ['#7c8aa5', '#eef2f8']],
-    ['Bachira Meguru', ['#141414', '#ffd60a']],
-    ['Chigiri Hyoma',  ['#7d0633', '#ff8fab']],
-    ['Barou Shoei',    ['#8c3b00', '#ffb703']],
-    ['Kunigami',       ['#232323', '#ff6b35']],
-    ['Reo Mikage',     ['#3d0e61', '#b388ff']],
-    ['Ness Alexis',    ['#22366e', '#9fb8e8']],
-    ['Yukimiya Kenyu', ['#14532d', '#9be7a6']],
-    ['Karasu Tabito',  ['#0b1320', '#5578b0']],
-    ['Aryu Jyubei',    ['#5b4b8a', '#e4e4ef']],
-    ['Otoya Eita',     ['#2b0a2e', '#c026a1']],
-    // 1.30.0, added at the END rather than into the gaps the retired ones left.
-    // Every index before this point keeps its meaning, so a name shared by
-    // somebody on an older build still decodes to the gradient they picked.
+    // 1.30.0, added at the END of the array as it then stood.
     // Names are ours; the colour pairs were given.
     ['Pearl',     ['#f0f2f0', '#000c40']],   // near-white into deep navy
     ['Dusk',      ['#e8cbc0', '#636fa4']],   // warm sand into slate blue
@@ -4146,14 +4081,6 @@
     ['Shoreline', ['#70e1f5', '#ffd194']],   // shallow sea into sand
   ];
 
-  // Resolve the retirement list to indexes, now that there is an array to
-  // resolve it against. A name that no longer exists is skipped in silence:
-  // this is a list of things to HIDE, and one that has already gone needs no
-  // hiding. The Fate (64-78) and Ego (79-94) series go wholesale.
-  for (let i = 0; i < NAME_GRADIENTS.length; i++) {
-    if (GRAD_RETIRED_NAMES.has(NAME_GRADIENTS[i][0])) GRAD_RETIRED.add(i);
-  }
-  for (let i = 64; i <= 94; i++) GRAD_RETIRED.add(i);
 
   // Runs here rather than beside gradientLocked so the array it validates
   // against already exists. A gradient selected before a gate existed, on
@@ -11460,12 +11387,13 @@
     const vmin = Math.min(innerWidth, innerHeight);
     const width = Math.max(140, Math.round(vmin * 0.26));
     const gap = Math.max(11, Math.round(vmin * 0.02));
-    // The marks are kept in BOTH modes when the animal is known. They divide
-    // the bar into whole hit points, which is a fact about how many more bites
-    // it can take — the same useful reading whether the text above says "62%"
-    // or "7.4 / 12". `hpDrawTicks` draws none for a max of 0, which is how an
-    // animal percent mode can show but cannot name loses them and keeps the bar.
-    hpDrawTicks(ui, max || 0, width);
+    // 1.0.0: the marks belong to HIT POINTS mode only. They divide the bar
+    // into whole hit points, which is a reading you can only act on when the
+    // bar is counting them — in percent mode the bar says 62% and the marks
+    // divide it into units the text never names, which reads as clutter.
+    // Passing 0 is how hpDrawTicks is told to draw none; it also covers an
+    // animal whose maximum percent mode can show but cannot name.
+    hpDrawTicks(ui, settings.hpUnits === 'hp' ? (max || 0) : 0, width);
     layoutStyle(ui.root, 'width', width + 'px');
     // 1.27.0 shows the bar BEFORE placing it rather than after. Its own height
     // decides where its top edge goes, and a bar still at display:none has no
@@ -16148,7 +16076,6 @@
       .qolc-obtn.qolc-obtn-key { border-color: rgba(203,255,250,0.3); }
       /* Small enough that three fit on a subrow beside their label. */
       .qolc-obtn-sm { padding: 5px 10px; min-width: 0; font-size: 11px; border-radius: 7px; }
-      .qolc-stat-presets { align-items: center; }
       .qolc-obtn:hover { background: var(--qolc-card); }
       /* The zoom stepper reuses the row shell, and its buttons deliberately
          borrow the switch's colours so the panel reads as one control set. */
@@ -16795,7 +16722,7 @@
         width: 20px; height: 20px; border-radius: 50%;
         border: 1px solid rgba(255,255,255,0.42);
         box-shadow: 0 1px 3px rgba(0,35,40,0.36);
-        box-sizing: border-box;
+        box-sizing: border-box; background-origin: border-box;
       }
       .qolc-gradient-name { font-size: 13px; font-weight: bold; }
       .qolc-gradient-chevron {
@@ -16843,6 +16770,11 @@
       #qolc-gradient-strip {
         height: 24px; margin-top: 7px; border-radius: 8px;
         border: 1px solid rgba(255,255,255,0.35);
+        /* The gradient is sized to the BORDER box. At the default padding-box
+           origin it tiles under the 1px border, so the left edge showed the
+           end of the previous tile and the right edge the start of the next —
+           the gradient's own colours, inverted, as a sliver down each side. */
+        background-origin: border-box;
       }
       #qolc-name-input { margin-top: 10px; padding: 8px 9px; }
       .qolc-name-warn {
@@ -16882,7 +16814,6 @@
     layAbility: 'Ability button — moves out of the wheel on its own, which reflows the ones left in it. Red means this animal does not have it, or the server has it switched off.',
     layArenaBtn: '1v1 button — the arena request button, which mope only shows from tier 15.',
     layHide: 'Show on screen — hides this piece of the HUD without moving anything around it. Turn it back on here.',
-    statPresets: 'Arrange — writes the three figures into a ready-made layout. They are ordinary positions afterwards, so you can still drag any of them.',
     laySettings: "Settings button — mope's own gear, beside the minimap.",
     layExpand: 'Expand — makes the panel bigger while you are on this category, so the preview and its labels are readable. It goes back to normal when you leave.',
     gameStats: "Separate game stats — redraws mope's FPS, ping and player count as three figures you can move, colour and hide one at a time. Matched on their units, so it needs the English client.",
@@ -17170,14 +17101,14 @@
         solid && item.dataset.hex.toLowerCase() === nameColorState.color.toLowerCase());
     }
     refs.gradientName.textContent =
-      (nameColorState.grad + 1) + '. ' + NAME_GRADIENTS[nameColorState.grad][0];
-    refs.gradientSwatch.style.background = cssGrad(nameColorState.grad);
+      NAME_GRADIENTS[nameColorState.grad][0];
+    refs.gradientSwatch.style.backgroundImage = cssGrad(nameColorState.grad);
     for (const option of refs.gradientOptions) {
       const idx = Number(option.dataset.grad);
       option.style.display = gradientLocked(idx) ? 'none' : '';
       option.classList.toggle('active', idx === nameColorState.grad);
     }
-    refs.gradientStrip.style.background = cssGrad(nameColorState.grad);
+    refs.gradientStrip.style.backgroundImage = cssGrad(nameColorState.grad);
     refs.animate.classList.toggle('on', nameColorState.anim);
     refs.share.classList.toggle('on', nameColorState.share);
     refs.relay.classList.toggle('on', nameColorState.relay);
@@ -17826,7 +17757,7 @@
     // 1.27.0. Fifth, and last in the sidebar, because it is the only category
     // that is about where things are rather than whether they are on — and
     // because it is the one you go to after you have decided the rest.
-    const catLayout = makeCategory('layout', 'Customization', side, content);
+    const catLayout = makeCategory('layout', 'Customization (WIP)', side, content);
     const cats = {
       general: catGeneral, arena: catArena,
       cosmetics: catCosmetics, party: catParty, layout: catLayout,
@@ -17962,34 +17893,6 @@
       statKids.push(sub.row);
       statRowRefs.push(sub.row);
     }
-    // The presets, as a row of buttons inside the card. They write positions
-    // and nothing else, so there is no "preset mode" to be in and dragging a
-    // figure afterwards is not undoing anything.
-    const presetRow = document.createElement('div');
-    presetRow.className = 'qolc-subrow qolc-stat-presets';
-    const presetLabel = document.createElement('div');
-    presetLabel.className = 'qolc-row-name';
-    presetLabel.textContent = 'Arrange';
-    presetRow.appendChild(presetLabel);
-    hinted(presetRow, 'statPresets');
-    const presetBtns = document.createElement('div');
-    presetBtns.className = 'qolc-stat-colors';
-    for (const [name, why, spec] of STAT_PRESETS) {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.className = 'qolc-obtn qolc-obtn-sm';
-      b.textContent = name;
-      b.title = why;
-      b.addEventListener('click', (e) => {
-        e.stopPropagation();
-        statsApplyPreset(spec);
-        dbg('stats preset', name);
-      });
-      presetBtns.appendChild(b);
-    }
-    presetRow.appendChild(presetBtns);
-    statKids.push(presetRow);
-    statRowRefs.push(presetRow);
 
     const statsCard = makeCard(statsRow.row, statKids);
     syncStatRows = () => {
@@ -18285,7 +18188,7 @@
     arenaPane.appendChild(turnGroup);
 
     const hpNumbersRow = makeRow(
-      'Damage indicator',
+      'Damage indicator (WIP)',
       'hpNumbers',
       settings.hpNumbers,
       (on) => {
@@ -18539,9 +18442,9 @@
       option.dataset.grad = String(index);
       const swatch = document.createElement('span');
       swatch.className = 'qolc-gradient-option-swatch';
-      swatch.style.background = cssGrad(index);
+      swatch.style.backgroundImage = cssGrad(index);
       const optionName = document.createElement('span');
-      optionName.textContent = (index + 1) + '. ' + label;
+      optionName.textContent = label;
       option.appendChild(swatch);
       option.appendChild(optionName);
       option.addEventListener('click', (e) => {
