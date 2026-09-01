@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.4
+// @version      1.0.5
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -29,6 +29,42 @@
  *      Lumi's — if you are working on this and think a change earns it, ask.
  *      Default to leaving it alone.
  *   y  everything else: features, fixes, extra gradients, copy tweaks.
+ *
+ * 1.0.5 turns the starfield into ARENA THEMES, and adds two.
+ *
+ * The backdrop was one thing, so its palette lived in module constants and the
+ * painter read them directly. Those constants are now the Starfield theme's
+ * values and the painter reads whichever is selected. The geometry is
+ * untouched — same generators, same seeds, same three star sizes, same
+ * scattered-blob clouds — so a theme is a palette and four numbers. That is
+ * deliberate: a new theme can introduce a new set of colours and not a new
+ * class of rendering bug.
+ *
+ * ANTIMATTER is the starfield as a negative: a cool near-white ground with
+ * dark stars. Pure white was rejected — under mope's own bright HUD it reads
+ * as a blown highlight and the arena wall has nothing to contrast against. The
+ * halo on the brightest stars is pulled from 0.13 to 0.07, because a dark halo
+ * on a light ground is far more visible than a light one on dark and at full
+ * strength they read as smudges.
+ *
+ * DEEP WATER is pale motes on blue-green with a stronger caustic wash. It has
+ * NO STAR BAND: the milky way is the one part of the starfield that is
+ * unmistakably sky, and a diagonal seam of motes underwater reads as a
+ * rendering fault rather than as a feature.
+ *
+ * The colour rule from arenaSkyPaint() is what a new theme has to respect —
+ * cloud colours sit twelve to twenty-six levels from the ground, no further.
+ * It is what stops the wash banding, and it is a DISTANCE rather than a
+ * direction: Antimatter's clouds are that far below a light ground for exactly
+ * the reason Starfield's are that far above a dark one.
+ *
+ * Selecting a theme clears arenaSky.builtSpan. The sky is geometry, built once
+ * and kept until the view changes enough to be worth redrawing, and a recolour
+ * is not a change of view — so without that, nothing would rebuild it.
+ *
+ * Not animated. The sky is a single Graphics rebuilt on demand, and moving it
+ * would mean clearing and redrawing eight hundred to a thousand shapes every
+ * frame. Deep Water's caustics are a static wash, not a moving one.
  *
  * 1.0.4 REVERTS THE HARM 1.0.3 DID. The starfield flashing on and off inside
  * an arena, and the bite indicator not working at all, were both mine, both
@@ -2668,7 +2704,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.4';
+    return '1.0.5';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -2875,6 +2911,11 @@
     // writes one of mope's OWN game settings (Arena Culling), which is not
     // something to switch on for somebody who never asked for it.
     arenaSky: !!store.get('arenaSky', false),
+    // 1.0.5. Which backdrop the arena uses. Stored as the id rather than an
+    // index so reordering or removing a theme cannot silently reinterpret
+    // somebody's choice — arenaThemeOf() falls back to the first entry for an
+    // id it does not recognise, which is what an uninstalled theme should do.
+    arenaTheme: String(store.get('arenaTheme', 'starfield') || 'starfield'),
     // 1.28.0. Both are arena-only and both stand down completely outside a
     // duel of your own, so neither costs anything in an ordinary game.
     arenaFocus: !!store.get('arenaFocus', false),
@@ -9393,6 +9434,7 @@
   // mouse button while the panel has never been opened, so the setter has to
   // exist and do nothing until there is a switch to move.
   let syncArenaSkyRow = () => {};
+  let syncArenaThemeRow = () => {};
   // 1.29.0. The bite indicator's style sub-option dims with its parent.
   // 1.31.0. The units picker lights the chosen mode and dims while neither of
   // the two features it governs is switched on.
@@ -13125,6 +13167,96 @@
   const ARENA_SKY_CLOUD_SEED = 0x5eed;
   const ARENA_SKY_STAR_SEED = 0x5eed ^ 0x9e37;
 
+  /* ----- arena themes (1.0.5) -----
+   *
+   * The backdrop used to be one thing called "the starfield", so its palette
+   * lived in module constants and the painter read them directly. There are
+   * three of them now, so the constants above became the STARFIELD's values
+   * and the painter reads whichever theme is selected. Nothing about the
+   * geometry changed: the same generators, the same seeds, the same three star
+   * sizes and the same scattered-blob clouds. A theme is a palette and four
+   * numbers, which is deliberate — it means a new one cannot introduce a new
+   * class of rendering bug, only a new set of colours.
+   *
+   * The colour rule from arenaSkyPaint() carries over and is the thing to
+   * respect when adding more: cloud colours sit TWELVE TO TWENTY-SIX LEVELS
+   * from the ground, no further. It is what stops the wash banding, and it is
+   * a distance rather than a direction — Antimatter's clouds are that far
+   * BELOW a light ground, for exactly the same reason Starfield's are that far
+   * above a dark one.
+   */
+  const ARENA_THEMES = [
+    {
+      id: 'starfield',
+      label: 'Starfield',
+      note: 'Deep space. The original, and the default.',
+      ground: ARENA_SKY_GROUND,
+      cloudColors: ARENA_SKY_CLOUD_COLORS,
+      cloudAlpha: ARENA_SKY_CLOUD_ALPHA,
+      clouds: ARENA_SKY_CLOUDS,
+      cloudBlobs: ARENA_SKY_CLOUD_BLOBS,
+      starColors: ARENA_SKY_STAR_COLORS,
+      bandShare: ARENA_SKY_BAND_SHARE,
+      bandSpread: ARENA_SKY_BAND_SPREAD,
+      haloAlpha: 0.13,
+    },
+    {
+      id: 'antimatter',
+      label: 'Antimatter',
+      note: 'The starfield as a negative — pale ground, dark stars.',
+      // A cool near-white rather than pure white: #ffffff under mope's own
+      // bright HUD reads as a blown highlight, and the arena wall has nothing
+      // left to contrast against.
+      ground: 0xeef1f6,
+      // Twelve to twenty-six levels BELOW the ground, mirroring the rule.
+      cloudColors: [0xe2e5ee, 0xe4e0ea, 0xdee7ea, 0xe7e1e4, 0xdfe4ea],
+      cloudAlpha: ARENA_SKY_CLOUD_ALPHA,
+      clouds: ARENA_SKY_CLOUDS,
+      cloudBlobs: ARENA_SKY_CLOUD_BLOBS,
+      // Inverted from the star palette above: mostly neutral ink with a couple
+      // of cool and warm shades, so it is not a field of identical dots.
+      starColors: [
+        0x14171f, 0x14171f, 0x14171f, 0x171c2a, 0x1b2233,
+        0x232c42, 0x241c15, 0x2b2118,
+      ],
+      bandShare: ARENA_SKY_BAND_SHARE,
+      bandSpread: ARENA_SKY_BAND_SPREAD,
+      // A dark halo on a light ground is far more visible than a light one on
+      // dark, so it is pulled back or the bright stars read as smudges.
+      haloAlpha: 0.07,
+    },
+    {
+      id: 'water',
+      label: 'Deep Water',
+      note: 'Sunlit depths. Pale motes on blue-green, no star band.',
+      ground: 0x04222a,
+      // The caustic wash. Same twelve-to-twenty-six rule, biased green-blue.
+      cloudColors: [0x0a3138, 0x073540, 0x0d3a3a, 0x06303c, 0x0b3644],
+      // Slightly stronger than the starfield's, because a wash IS the theme
+      // here rather than a backing texture behind stars.
+      cloudAlpha: 0.045,
+      clouds: 5,
+      cloudBlobs: 130,
+      // Suspended particles catching the light, not stars.
+      starColors: [
+        0xbdf3ea, 0xa6ece2, 0x8fe3da, 0xd6f7f1, 0x9fe8f2,
+        0xb8f0e4, 0xcdf5ef, 0x86ddd6,
+      ],
+      // NO BAND. The milky way is the one piece of the starfield that is
+      // unmistakably sky, and a diagonal seam of motes underwater reads as a
+      // rendering fault rather than as a feature.
+      bandShare: 0,
+      bandSpread: 0,
+      haloAlpha: 0.10,
+    },
+  ];
+
+  function arenaThemeOf() {
+    const want = String(settings.arenaTheme || '');
+    for (const t of ARENA_THEMES) if (t.id === want) return t;
+    return ARENA_THEMES[0];
+  }
+
   const arenaScan = {
     active: false,
     found: [],        // every arena container the last sweep walked past
@@ -13599,13 +13731,14 @@
   // seen. On top of that the blobs are scattered rather than concentric, so
   // there is no ring geometry left to band in the first place.
   function arenaSkyPaint(g, span, unit, stars) {
+    const T = arenaThemeOf();
     g.clear();
 
     // The ground. Opaque, and square rather than circular: it has to cover the
     // corners of the screen, and the arena's own floor is the round part.
     g.beginPath();
     g.rect(-span, -span, span * 2, span * 2);
-    g.fill({color: ARENA_SKY_GROUND, alpha: 1});
+    g.fill({color: T.ground, alpha: 1});
     g.closePath();
 
     // Two generators rather than one, seeded exactly as the render that was
@@ -13613,13 +13746,13 @@
     // there, and neither can shift the other by consuming a different number
     // of rolls.
     const cloudRnd = arenaSkyRandom(ARENA_SKY_CLOUD_SEED);
-    for (let i = 0; i < ARENA_SKY_CLOUDS; i++) {
+    for (let i = 0; i < T.clouds; i++) {
       const cx = (cloudRnd() * 2 - 1) * span * 0.7;
       const cy = (cloudRnd() * 2 - 1) * span * 0.7;
       const r = span * (0.24 + cloudRnd() * 0.26);
-      const color = ARENA_SKY_CLOUD_COLORS[
-        (cloudRnd() * ARENA_SKY_CLOUD_COLORS.length) | 0];
-      for (let k = 0; k < ARENA_SKY_CLOUD_BLOBS; k++) {
+      const color = T.cloudColors[
+        (cloudRnd() * T.cloudColors.length) | 0];
+      for (let k = 0; k < T.cloudBlobs; k++) {
         // Raising the roll to a power pulls the scatter inward, so blobs pile
         // up in the middle and thin out at the rim. THAT is the gradient —
         // made out of how many of them happen to overlap rather than out of
@@ -13630,7 +13763,7 @@
         g.beginPath();
         g.circle(cx + Math.cos(ang) * d, cy + Math.sin(ang) * d,
           r * (0.14 + cloudRnd() * 0.2));
-        g.fill({color, alpha: ARENA_SKY_CLOUD_ALPHA});
+        g.fill({color, alpha: T.cloudAlpha});
         g.closePath();
       }
     }
@@ -13647,10 +13780,10 @@
       // pulled onto a diagonal, and the scatter either side is three rolls
       // added together rather than one — which gives the band a dense core and
       // soft edges instead of straight sides.
-      if (starRnd() < ARENA_SKY_BAND_SHARE) {
+      if (T.bandShare > 0 && starRnd() < T.bandShare) {
         const along = (starRnd() * 2 - 1) * span;
         const off = (starRnd() + starRnd() + starRnd() - 1.5) *
-          span * ARENA_SKY_BAND_SPREAD;
+          span * T.bandSpread;
         x = along * 0.92 - off * 0.38;
         y = along * 0.38 + off * 0.92;
       }
@@ -13666,8 +13799,8 @@
         px = 2 + starRnd() * 1;
         alpha = 0.92 + starRnd() * 0.08;
       }
-      const color = ARENA_SKY_STAR_COLORS[
-        (starRnd() * ARENA_SKY_STAR_COLORS.length) | 0];
+      const color = T.starColors[
+        (starRnd() * T.starColors.length) | 0];
       g.beginPath();
       g.circle(x, y, px * unit);
       g.fill({color, alpha});
@@ -13677,7 +13810,7 @@
       if (roll >= 0.985) {
         g.beginPath();
         g.circle(x, y, px * 2.6 * unit);
-        g.fill({color, alpha: 0.13});
+        g.fill({color, alpha: T.haloAlpha});
         g.closePath();
       }
     }
@@ -17219,6 +17352,22 @@
       .qolc-party-relay.is-on {
         background: #35c9b6; border-color: #7ff0e3; color: #04241f;
       }
+      /* 1.0.5. The arena theme picker. Same shape as the relay chooser one
+         card down — both are "pick exactly one of a short list", and giving
+         them two different appearances would say they were different kinds of
+         choice when they are not. */
+      .qolc-theme-picks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+      .qolc-subrow > .qolc-theme-picks { margin-top: 0; flex: 0 0 auto; justify-content: flex-end; }
+      .qolc-theme-pick {
+        padding: 5px 9px; border-radius: 9px; cursor: pointer;
+        border: 1px solid rgba(203,255,250,0.22); background: rgba(0,40,20,0.35);
+        color: #eafffb; font: bold 10.5px/1 system-ui, sans-serif;
+        transition: background 0.15s ease, border-color 0.15s ease;
+      }
+      .qolc-theme-pick:hover { background: rgba(183,255,247,0.25); }
+      .qolc-theme-pick.is-on {
+        background: #35c9b6; border-color: #7ff0e3; color: #04241f;
+      }
       .qolc-party-roster { margin-top: 9px; display: grid; gap: 5px; }
       .qolc-party-member {
         display: flex; align-items: center; gap: 8px;
@@ -17419,7 +17568,8 @@
     quickChat: 'Quick chat — keys 1 to 5 send a message you have written into mope\'s public chat. While the upgrade menu is open those keys go back to picking an animal, so upgrading is never affected.',
     quickChatSlot: 'The message this key sends. Up to 35 characters, mope\'s own limit. An empty slot leaves the key alone entirely.',
     hpUnits: 'Show as — the unit for both rows above. Percentage is exactly what the game sends and works on every animal. Hit points multiplies it by a maximum this script works out itself: the figures are approximate, and rares, skins and King Dragon get no number at all.',
-    arenaSky: 'Arena starfield — a night sky behind your own 1v1 duels. Z toggles it in game.',
+    arenaSky: 'Arena theme — a backdrop behind your own 1v1 duels. Z toggles it in game.',
+    arenaTheme: 'Which backdrop. Starfield is deep space and the original; Antimatter is the same sky as a negative, pale with dark stars; Deep Water is pale motes on blue-green with no star band.',
     biteIndicator: 'Bite indicator — a bitten fighter cannot be bitten again for three seconds. A purple mark on their health bar counts that down, so you can see when they are worth biting again.',
     arenaFocus: "Focus mode — hides party dots, tags, the list and chat while you are in a 1v1 of your own. You keep sending, so the party still sees you; P and Enter go back to the game until the duel ends.",
     cameraZoom: "Camera zoom — scroll, or the − and = keys, in place of mope's own wheel zoom.",
@@ -18908,15 +19058,68 @@
     // the switch does to mope's own Arena Culling — is in the info bar now,
     // like every other row's.
     const arenaSkyRow = makeRow(
-      'Arena starfield',
+      'Arena theme',
       'arenaSky',
       settings.arenaSky,
       (on) => { arenaSkySet(on, 'panel'); }
     );
     // First in the pane, though it is built after the turn card — the starfield
     // is what the category is named for.
-    arenaPane.insertBefore(arenaSkyRow.row, arenaPane.firstChild);
-    syncArenaSkyRow = () => arenaSkyRow.sw.classList.toggle('on', !!settings.arenaSky);
+    // Inserted as a card below, once the theme row exists to go in it.
+    syncArenaSkyRow = () => {
+      arenaSkyRow.sw.classList.toggle("on", !!settings.arenaSky);
+      syncArenaThemeRow();
+    };
+
+    // The theme picker, as a dependent row under the switch. It is one card
+    // with the switch because "is the backdrop on" and "which backdrop" are
+    // the same feature answered at two levels — the same relationship the dots
+    // and their names have, and the same treatment.
+    const themeRow = document.createElement('div');
+    themeRow.className = 'qolc-subrow';
+    hinted(themeRow, 'arenaTheme');
+    const themeLabel = document.createElement('div');
+    themeLabel.className = 'qolc-row-name';
+    themeLabel.textContent = 'Theme';
+    themeRow.appendChild(themeLabel);
+    const themePicks = document.createElement('div');
+    themePicks.className = 'qolc-theme-picks';
+    const themeButtons = [];
+    for (const th of ARENA_THEMES) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'qolc-theme-pick';
+      btn.textContent = th.label;
+      btn.title = th.note;
+      btn.dataset.theme = th.id;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        settings.arenaTheme = th.id;
+        store.set('arenaTheme', th.id);
+        // The sky is geometry, built once and kept until the view changes
+        // enough to be worth redrawing. A recolour is not a change of view, so
+        // nothing would have rebuilt it — clearing the built span is how the
+        // next tick is told the thing on screen is out of date.
+        arenaSky.builtSpan = 0;
+        syncThemePicks();
+        dbg('arena theme', th.id);
+      });
+      themePicks.appendChild(btn);
+      themeButtons.push(btn);
+    }
+    themeRow.appendChild(themePicks);
+    function syncThemePicks() {
+      const active = arenaThemeOf().id;
+      for (const b of themeButtons) b.classList.toggle('is-on', b.dataset.theme === active);
+    }
+    syncThemePicks();
+    const arenaSkyCard = makeCard(arenaSkyRow.row, [themeRow]);
+    arenaPane.insertBefore(arenaSkyCard, arenaPane.firstChild);
+    syncArenaThemeRow = () => {
+      themeRow.classList.toggle('qolc-row-off', !settings.arenaSky);
+      syncThemePicks();
+    };
+    syncArenaThemeRow();
 
     // 1.28.0's two. Both go under the starfield and above the turn card, so
     // the pane reads as "the three things that only happen in a duel" and
@@ -18934,7 +19137,7 @@
     );
     // No sub-options left since 1.0.4, so it is a plain row rather than a card
     // wrapping nothing.
-    arenaPane.insertBefore(biteRow.row, arenaSkyRow.row.nextSibling);
+    arenaPane.insertBefore(biteRow.row, arenaSkyCard.nextSibling);
 
     const focusRow = makeRow(
       'Focus mode',
