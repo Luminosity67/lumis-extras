@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.3
+// @version      1.0.4
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -29,6 +29,35 @@
  *      Lumi's — if you are working on this and think a change earns it, ask.
  *      Default to leaving it alone.
  *   y  everything else: features, fixes, extra gradients, copy tweaks.
+ *
+ * 1.0.4 REVERTS THE HARM 1.0.3 DID. The starfield flashing on and off inside
+ * an arena, and the bite indicator not working at all, were both mine, both
+ * from one line, and both shipped the same day.
+ *
+ * 1.0.3 taught the HP lock to refuse rather than guess when it could not tell
+ * two duellists apart. arenaSkyPick() opens by reading hpState.playerEntry and
+ * hands it to arenaSkyLockIsSelf(), which returns false on a null entry — so a
+ * refusal did not merely withhold the HP bar. It made the duel read as
+ * not-yours, which took the sky down and meant biteTick() never ran. And it
+ * flashed, because a refusal is not stable: whenever one fighter drifted out
+ * of the near-centre circle there was one candidate, the lock adopted, the sky
+ * returned, and the moment both were near again it refused.
+ *
+ * Two things were wrong and both are fixed:
+ *   - Identity was almost never AVAILABLE. nameKey() reads the name-colour
+ *     panel's field, empty unless you have set a name colour, so refusing was
+ *     the default case rather than the rare one. hpSelfNameKey() now falls
+ *     back to mope's own nickname box, which nearly everybody has.
+ *   - Refusing is only defensible when a question was asked and came back no.
+ *     It is now conditioned on hpHaveIdentity(); with no name and no tag there
+ *     was never a question, and it falls through to the old nearest-to-centre
+ *     answer. A guess that is usually right beats a feature that is always
+ *     dark. Where a lock already exists it is HELD rather than cleared, which
+ *     is what removes the flashing outright.
+ *
+ * BITE INDICATOR: the outline style is gone. Filling the whole bar is now the
+ * only behaviour, so the sub-option, its setting and its stored key are all
+ * removed and `fullBar` answers with a constant.
  *
  * 1.0.3 fixes two reported bugs that turned out to be ONE bug wearing two
  * hats: both features identified a thing by what it LOOKED like instead of by
@@ -2639,7 +2668,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.3';
+    return '1.0.4';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -2850,7 +2879,6 @@
     // duel of your own, so neither costs anything in an ordinary game.
     arenaFocus: !!store.get('arenaFocus', false),
     biteIndicator: !!store.get('biteIndicator', false),
-    biteFullBar: !!store.get('biteFullBar', false),
     // 1.30.0. mope's FPS/ping/players block, redrawn as three independent
     // figures. Off by default: it replaces something the game already draws,
     // which is a bigger thing to do to somebody than adding an overlay.
@@ -9366,7 +9394,6 @@
   // exist and do nothing until there is a switch to move.
   let syncArenaSkyRow = () => {};
   // 1.29.0. The bite indicator's style sub-option dims with its parent.
-  let syncBiteRows = () => {};
   // 1.31.0. The units picker lights the chosen mode and dims while neither of
   // the two features it governs is switched on.
   let syncHpUnitsRow = () => {};
@@ -12024,6 +12051,38 @@
   //
   // Returns '' for neither. This is the same ladder resolveSelfCandidates()
   // has used in the scene sweep for years; the HP lock simply never asked.
+  // YOUR NAME, from the nickname you are actually playing under.
+  //
+  // 1.0.4, and it is half the fix for 1.0.3's regression. nameKey() reads the
+  // NAME-COLOUR panel's field, which is empty unless you have set a name
+  // colour — so on most installs the lock had no identity to work with at all,
+  // and the arena refusal below fired on every frame of every duel.
+  //
+  // mope's own nickname box is the authority and is what the server renders
+  // over your animal. It is cached because the menu is hidden during play and
+  // the field can be unreadable while you are in a game, which is precisely
+  // when the lock needs it.
+  let hpNickCache = '';
+  function hpSelfNameKey() {
+    const panel = nameKey();
+    if (panel) return panel;
+    try {
+      const el = document.getElementById('name');
+      const typed = el && typeof el.value === 'string' ? baseKey(el.value) : '';
+      if (typed) hpNickCache = typed;
+    } catch (e) { /* not on the menu */ }
+    return hpNickCache;
+  }
+
+  // Whether we have ANY way to recognise ourselves by name. The arena refusal
+  // is conditioned on this: refusing to guess is only defensible when we had a
+  // question to ask and it came back no. With no name and no tag there was
+  // never a question, and going dark by default is worse than the guess.
+  function hpHaveIdentity() {
+    const key = hpSelfNameKey();
+    return !!(nameColorState.emitted || (key && key !== 'mope.io'));
+  }
+
   function hpSelfByName(entity) {
     const text = hpPlateTextOf(entity);
     if (!text) return '';
@@ -12033,9 +12092,9 @@
     // a plate without it is somebody else however the letters read — which is
     // the same rule styleFor() applies to the nameplate colour, and the same
     // impersonation it was written to stop. Falling through to the visible
-    // name here would handle the lock to anyone who typed your name.
-    if (emitted) return "";
-    const key = nameKey();
+    // name here would hand the lock to anyone who typed your name.
+    if (emitted) return '';
+    const key = hpSelfNameKey();
     // "mope.io" is what the server renders for every player who set no name,
     // so it identifies nobody — the same carve-out styleFor() makes.
     if (key && key !== 'mope.io' && baseKey(text) === key) return 'name';
@@ -12126,21 +12185,44 @@
       }
     }
 
-    // NOTHING IDENTIFIED YOU AND THERE IS MORE THAN ONE CANDIDATE. Outside an
-    // arena, nearest-to-centre is a good guess and stays the answer: the camera
-    // follows you, so the animal in the middle is overwhelmingly likely to be
-    // yours, and the cost of being wrong is a mislabelled damage number.
+    // NOTHING IDENTIFIED YOU AND THERE IS MORE THAN ONE CANDIDATE.
     //
-    // Inside an arena it is a coin flip between you and the person trying to
-    // kill you, and the cost of being wrong is showing their health as yours
-    // and their boost count as yours. So the guess is refused. Showing nothing
-    // is a worse experience than showing the right thing and a far better one
-    // than confidently showing the wrong thing, which is what was happening.
+    // 1.0.3 refused here whenever an arena was running, and that shipped a
+    // regression worth writing down in full, because the reasoning was sound
+    // and the result was still wrong.
     //
-    // This is the same rule hpLockByName() already applies one level down —
-    // "more than one candidate: no answer is safer" — finally applied at the
-    // level where the ambiguity actually arises.
-    if (near.length > 1 && arenaDuel.active) {
+    // Refusing means hpAdoptPlayer(null), and arenaSkyPick() opens by reading
+    // hpState.playerEntry and passing it to arenaSkyLockIsSelf(), which
+    // returns false on a null entry. So a refusal did not merely withhold the
+    // HP bar: it made the duel read as not-yours, which took the starfield off
+    // and stopped biteTick() ever running. And it FLASHED, because the refusal
+    // is not stable — whenever one duellist drifted out of the near-centre
+    // circle there was only one candidate, so the lock adopted, the sky came
+    // back, and the moment both were near again it refused. On and off, at
+    // frame rate, for the length of every fight.
+    //
+    // Two things were wrong. The first is that identity was almost never
+    // AVAILABLE: nameKey() reads the name-colour panel's field, which is empty
+    // unless you have set a name colour, so the refusal was not the rare
+    // ambiguous case, it was the default case. hpSelfNameKey() now falls back
+    // to mope's own nickname box, which nearly everyone has.
+    //
+    // The second is the rule itself. Refusing to guess is only defensible when
+    // a question was asked and came back no. With no name and no tag there was
+    // never a question — so the refusal is now conditioned on hpHaveIdentity(),
+    // and without one this falls through to the old nearest-to-centre answer.
+    // A guess that is right most of the time beats a feature that is dark all
+    // of the time.
+    //
+    // Kept deliberately narrow: an arena, more than one candidate, AND a name
+    // we could have matched but did not. That is a genuine "these two animals
+    // are both plausible and neither is you" and is worth showing nothing for.
+    if (near.length > 1 && arenaDuel.active && hpHaveIdentity()) {
+      // Held rather than cleared where a lock already exists. Thrashing the
+      // lock is what produced the flashing, and a lock that was good enough a
+      // frame ago is better evidence than an ambiguity that resolves itself
+      // the moment the camera moves.
+      if (hpState.playerEntry) { hpLockRefusedAt = now; return hpState.player; }
       hpLockRefusedAt = now;
       return hpAdoptPlayer(null);
     }
@@ -14129,7 +14211,10 @@
     // Read through a getter rather than copied in, so flipping the sub-option
     // in the panel is picked up by the next redraw with nothing to notify —
     // and mid-window, which is when somebody switching styles is looking.
-    get fullBar() { return !!settings.biteFullBar; },
+    // 1.0.4: the outline style is gone and the full bar is the only one. The
+    // getter stays so every call site keeps its shape, and now answers with a
+    // constant instead of a setting nobody can reach.
+    get fullBar() { return true; },
   };
 
   const BITE_LOG_MAX = 60;
@@ -17336,7 +17421,6 @@
     hpUnits: 'Show as — the unit for both rows above. Percentage is exactly what the game sends and works on every animal. Hit points multiplies it by a maximum this script works out itself: the figures are approximate, and rares, skins and King Dragon get no number at all.',
     arenaSky: 'Arena starfield — a night sky behind your own 1v1 duels. Z toggles it in game.',
     biteIndicator: 'Bite indicator — a bitten fighter cannot be bitten again for three seconds. A purple mark on their health bar counts that down, so you can see when they are worth biting again.',
-    biteFullBar: 'Fill the whole bar — the whole health bar goes purple and drains, instead of a purple outline around it. Louder, but it hides the health colour while it runs.',
     arenaFocus: "Focus mode — hides party dots, tags, the list and chat while you are in a 1v1 of your own. You keep sending, so the party still sees you; P and Enter go back to the game until the duel ends.",
     cameraZoom: "Camera zoom — scroll, or the − and = keys, in place of mope's own wheel zoom.",
     hook: 'Camera hook — only needed if the zoom stops responding. Re-hook re-arms it without reloading the tab.',
@@ -18845,29 +18929,12 @@
         settings.biteIndicator = on;
         store.set('biteIndicator', on);
         if (!on) biteClearAll();
-        syncBiteRows();
         dbg('bite indicator', on ? 'enabled' : 'disabled');
       }
     );
-    // The two styles are one setting with two values, so it is a dependent
-    // switch under the feature rather than a second feature. Nesting carries
-    // the relationship, which is the rule the 1.25.0 rebuild settled.
-    const biteFullRow = makeSubRow(
-      'Fill the whole bar',
-      'biteFullBar',
-      settings.biteFullBar,
-      (on) => {
-        settings.biteFullBar = on;
-        store.set('biteFullBar', on);
-        dbg('bite indicator style', on ? 'full bar' : 'outline');
-      }
-    );
-    const biteCard = makeCard(biteRow.row, [biteFullRow.row]);
-    syncBiteRows = () => {
-      biteFullRow.row.classList.toggle('qolc-row-off', !settings.biteIndicator);
-    };
-    syncBiteRows();
-    arenaPane.insertBefore(biteCard, arenaSkyRow.row.nextSibling);
+    // No sub-options left since 1.0.4, so it is a plain row rather than a card
+    // wrapping nothing.
+    arenaPane.insertBefore(biteRow.row, arenaSkyRow.row.nextSibling);
 
     const focusRow = makeRow(
       'Focus mode',
@@ -18884,7 +18951,7 @@
         dbg('arena focus mode', on ? 'enabled' : 'disabled');
       }
     );
-    arenaPane.insertBefore(focusRow.row, biteCard.nextSibling);
+    arenaPane.insertBefore(focusRow.row, biteRow.row.nextSibling);
 
     // 1.35.0. Under focus mode, above the turn card: it belongs with the three
     // things that only happen in a duel. Pane order is decided by where an
