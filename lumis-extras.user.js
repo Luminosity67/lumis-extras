@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.7
+// @version      1.0.8
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -29,6 +29,47 @@
  *      Lumi's — if you are working on this and think a change earns it, ask.
  *      Default to leaving it alone.
  *   y  everything else: features, fixes, extra gradients, copy tweaks.
+ *
+ * 1.0.8 fixes the "67" bug PROPERLY, and makes the draw-order keys work.
+ *
+ * THE GRADIENT ON A HEALTH NUMBER. 1.0.3 aimed at this and hit the wrong
+ * target. It scoped domSweep to the leaderboard, which was a real improvement
+ * and not the bug: the numbers on a health bar are not HTML. They are Pixi
+ * text nodes in the game world, and the SCENE sweep colours every text node it
+ * walks — so a player called "67" and a dragon's health reading of 67 were the
+ * same eight bits of string with nothing to tell them apart. Reported again,
+ * from the same dragon, after 1.0.3 shipped.
+ *
+ * The scene sweep now asks textIsBarReadout() first, which is hpIsHealthBar()
+ * put to the text node's PARENT — mope's health number is a child of the bar
+ * container, so the bar matcher already knew how to recognise it. Answers are
+ * cached in two WeakSets, because hpBarParts() measures children and that is
+ * far too much work to repeat per text node per sweep; a container cannot stop
+ * being a health bar, and a WeakSet lets the scene drop nodes freely.
+ *
+ * Worth stating what is NOT fixed: a chat bubble or a floating tag whose text
+ * happens to equal a registered name will still take that name's colour. The
+ * same collision, a different container, and it needs a positive test for
+ * "this is a nameplate" rather than another exclusion.
+ *
+ * DRAW ORDER ACROSS LAYERS. 1.0.6 re-attached you to YOUR OWN layer, on the
+ * theory that a layer draws in attach order and going last puts you on top.
+ * True, and not enough: mope keeps animals on more than one layer and decides
+ * between them — so a tier 2 dove re-attached to the end of `belowAnimal` is
+ * still under every dragon on `defaultAnimal`, however last it is. Reported
+ * exactly that way.
+ *
+ * The layer is now CHOSEN. A RenderLayer is itself a child of a container and
+ * mope builds them in draw order, so a layer's index among its parent's
+ * children is its depth and comparing two is comparing two integers — no layer
+ * NAME is needed, which is what keeps this working when mope renames or
+ * reorders them. Above moves you to the highest layer any animal on screen is
+ * drawn on; below moves you to the lowest and re-attaches everyone sharing it.
+ *
+ * And turning it off puts you back. mope picks your layer from what you are,
+ * so a dove promoted onto the big-animal layer and left there is a change the
+ * player did not ask to keep. The home layer is remembered per ENTITY, since a
+ * respawn hands you a new one and mope picks its layer afresh.
  *
  * 1.0.7 adds a SETTINGS category: keybinds, and a theme for the panel itself.
  *
@@ -2790,7 +2831,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.7';
+    return '1.0.8';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -5166,6 +5207,39 @@
         : 'the one nearest the screen centre') : 'none'));
   }
 
+  // IS THIS TEXT NODE A HEALTH-BAR READOUT RATHER THAN A NAMEPLATE?
+  //
+  // 1.0.8, and the actual fix for a bug 1.0.3 aimed at and missed.
+  //
+  // The report was a player called "67" and, hours later, a dragon's health
+  // reaching 67 and being drawn in that player's gradient. 1.0.3 scoped
+  // domSweep to the leaderboard, which was a real improvement and the wrong
+  // sweep: the numbers on a health bar are not HTML. They are Pixi text nodes
+  // in the game world, and the SCENE sweep colours every text node it walks,
+  // so "67" the name and "67" the health reading were the same eight bits of
+  // string with nothing to tell them apart.
+  //
+  // mope's own health number is a child of the bar container, so the bar
+  // matcher already knows how to recognise its parent — this is hpIsHealthBar
+  // asked of the text node's parent, and nothing more.
+  //
+  // CACHED IN TWO WeakSets because hpBarParts() measures children, which is
+  // far too much work to repeat for every text node of every sweep. A
+  // container's answer cannot change (a health bar does not stop being one),
+  // and a WeakSet lets the scene drop nodes without this holding them alive.
+  const nameBarYes = new WeakSet();
+  const nameBarNo = new WeakSet();
+
+  function textIsBarReadout(node) {
+    const p = node && node.parent;
+    if (!p) return false;
+    if (nameBarYes.has(p)) return true;
+    if (nameBarNo.has(p)) return false;
+    let is = false;
+    try { is = !!hpIsHealthBar(p); } catch (e) { is = false; }
+    try { (is ? nameBarYes : nameBarNo).add(p); } catch (e) { /* not an object */ }
+    return is;
+  }
   function sweep(root) {
     let visited = 0;
     const ownKey = nameKey();
@@ -5185,14 +5259,22 @@
       // length test for all but a handful of nodes.
       if (arenaScan.active) arenaConsiderNode(n);
       if (typeof n.text === 'string' && n.text) {
-        const st = styleFor(n.text, ownKey);
-        applyNameStyle(n, st);
-        if (st) {
-          // Only names this script actually recognised are counted, which
-          // keeps the tally to a handful of nodes rather than the whole walk.
-          const base = baseKey(n.text);
-          nameSeenCounts.set(base, (nameSeenCounts.get(base) || 0) + 1);
-          if (st.self) selfCandidates.push(n);
+        // A health bar's own number is not a name, however much it looks like
+        // one. See textIsBarReadout — this is the whole fix for the "67" bug.
+        // Cleared rather than skipped: a bar coloured by an earlier build, or
+        // by this one before the parent was classified, has to be put back.
+        if (textIsBarReadout(n)) {
+          applyNameStyle(n, null);
+        } else {
+          const st = styleFor(n.text, ownKey);
+          applyNameStyle(n, st);
+          if (st) {
+            // Only names this script actually recognised are counted, which
+            // keeps the tally to a handful of nodes rather than the whole walk.
+            const base = baseKey(n.text);
+            nameSeenCounts.set(base, (nameSeenCounts.get(base) || 0) + 1);
+            if (st.self) selfCandidates.push(n);
+          }
         }
       }
       const ch = n.children;
@@ -13816,22 +13898,73 @@
     mode: 0,        // 0 off, 1 above everything, -1 below everything
     at: 0,          // last time it was applied
     api: '',        // what the engine turned out to support, for the debug hook
+    layers: 0,      // how many distinct animal layers the last pass saw
+    movedTo: -1,    // the rank of the layer it moved onto
+    // The layer mope had YOU on before any of this touched you, so turning
+    // the feature off can put you back. Without it a dove promoted onto the
+    // big-animal layer stays there for the rest of the session.
+    home: null,
+    homeFor: null,  // which entity that home belongs to
     applied: 0,     // how many objects the last pass moved
   };
 
   function zorderOn() { return settings.masterEnabled && zorder.mode !== 0; }
 
-  function zorderMove(obj) {
-    const layer = obj && obj.parentRenderLayer;
-    if (!layer || typeof layer.attach !== 'function') return false;
+  // WHICH LAYER DRAWS LAST, 1.0.8 and the fix for "it does nothing".
+  //
+  // 1.0.6 re-attached you to YOUR OWN layer, on the theory that a layer draws
+  // its objects in attach order and going last therefore puts you on top. That
+  // is true, and it is not enough: mope does not keep every animal on one
+  // layer. It has `belowAnimal` and `defaultAnimal` at least, and it decides
+  // between them — so a tier 2 dove re-attached to the end of `belowAnimal` is
+  // still under every dragon on `defaultAnimal`, no matter how last it is.
+  // Reported exactly that way: a dove that would not draw over a dragon.
+  //
+  // So the layer has to be chosen, not inherited. A RenderLayer is itself a
+  // child of a container, and mope builds them in draw order — so the layer's
+  // index among its parent's children IS its depth, and comparing two of them
+  // is comparing two integers. Nothing here needs to know a layer's NAME,
+  // which is what keeps it working when mope renames or reorders them.
+  function zorderRank(layer) {
+    try {
+      const p = layer && layer.parent;
+      const kids = p && p.children;
+      if (!kids || typeof kids.indexOf !== 'function') return -1;
+      return kids.indexOf(layer);
+    } catch (e) { return -1; }
+  }
+
+  // Every layer any animal on screen is currently drawn on, ranked. Built from
+  // the HP scan's set, which is every animal carrying a health bar — that is
+  // every animal that could be drawn over you, which is exactly the question.
+  function zorderLayers(me) {
+    const seen = [];
+    const add = (layer) => {
+      if (!layer || typeof layer.attach !== 'function') return;
+      for (const s of seen) if (s.layer === layer) return;
+      seen.push({layer, rank: zorderRank(layer)});
+    };
+    add(me && me.parentRenderLayer);
+    for (const entry of hpState.bars.values()) {
+      if (entry.entity) add(entry.entity.parentRenderLayer);
+    }
+    return seen;
+  }
+
+  function zorderMove(obj, layer) {
+    const to = layer || (obj && obj.parentRenderLayer);
+    if (!obj || !to || typeof to.attach !== 'function') return false;
     try {
       // Detach first where the engine offers it. attach() on an object the
       // layer is already holding is the one call that could leave it in the
       // list twice, and an animal drawn twice is worse than one drawn under
-      // somebody.
-      if (typeof layer.detach === 'function') layer.detach(obj);
-      else if (!zorder.api) zorder.api = 'attach only (no detach) — re-attach may not reorder';
-      layer.attach(obj);
+      // somebody. Detaching from the CURRENT layer matters more now that the
+      // target can be a different one.
+      const from = obj.parentRenderLayer;
+      if (from && typeof from.detach === 'function') from.detach(obj);
+      else if (to !== from && typeof to.detach === 'function') to.detach(obj);
+      else if (!zorder.api) zorder.api = 'attach only (no detach) - re-attach may not reorder';
+      to.attach(obj);
       return true;
     } catch (e) { return false; }
   }
@@ -13841,24 +13974,46 @@
     if (!force && now - zorder.at < ZORDER_APPLY_MS) return;
     zorder.at = now;
     const me = hpState.playerEntry && hpState.playerEntry.entity;
-    if (!me) { zorder.api = 'no player locked — nothing to reorder'; zorder.applied = 0; return; }
+    if (!me) { zorder.api = 'no player locked - nothing to reorder'; zorder.applied = 0; return; }
     if (!me.parentRenderLayer) {
-      zorder.api = 'your animal is not on a render layer — nothing to reorder';
+      zorder.api = 'your animal is not on a render layer - nothing to reorder';
       zorder.applied = 0;
       return;
     }
-    if (!zorder.api) zorder.api = 'render layers found';
+    const layers = zorderLayers(me);
+    if (!layers.length) { zorder.api = 'no render layers found'; zorder.applied = 0; return; }
+    // Ranked, and only where the rank could actually be read. An unrankable
+    // layer is left out of the comparison rather than treated as depth -1,
+    // which would make it win "lowest" and put you under the map.
+    const ranked = layers.filter((l) => l.rank >= 0);
+    const pool = ranked.length ? ranked : layers;
+    let target = pool[0];
+    for (const l of pool) {
+      if (zorder.mode > 0 ? l.rank > target.rank : l.rank < target.rank) target = l;
+    }
+    zorder.layers = pool.length;
+    zorder.movedTo = zorderRank(target.layer);
+    zorder.api = ranked.length
+      ? 'render layers ranked by scene order'
+      : 'render layers found but not rankable - falling back to your own layer';
+
+    // Remembered before the first move, and only for the animal it belongs
+    // to: respawning gives you a new entity and mope picks its layer afresh.
+    if (zorder.homeFor !== me) { zorder.homeFor = me; zorder.home = me.parentRenderLayer || null; }
+
     let n = 0;
     if (zorder.mode > 0) {
-      if (zorderMove(me)) n++;
+      // Onto the highest layer anything is drawn on, and last within it.
+      if (zorderMove(me, target.layer)) n++;
     } else {
-      // Everyone else, so they all land after you. Only animals the HP scan is
-      // already tracking — that is every animal with a health bar on screen,
-      // which is every animal that could be drawn over you.
+      // Onto the lowest layer, and then everyone who shares it goes after us.
+      // Animals on higher layers need no help: their layer already draws later.
+      if (zorderMove(me, target.layer)) n++;
       for (const entry of hpState.bars.values()) {
         const other = entry.entity;
         if (!other || other === me) continue;
-        if (zorderMove(other)) n++;
+        if (other.parentRenderLayer !== target.layer) continue;
+        if (zorderMove(other, target.layer)) n++;
       }
     }
     zorder.applied = n;
@@ -13880,7 +14035,26 @@
       : want < 0 ? 'Drawing below other players'
       : 'Draw order back to normal', want ? '' : 'quiet');
     dbg('draw order', want, source);
-    if (want) zorderApply(performance.now(), true);
+    if (want) { zorderApply(performance.now(), true); return; }
+    // Off means OFF, which includes undoing the layer move. Restoring beats
+    // leaving it: mope chooses your layer by what you are, and a dove left on
+    // the big-animal layer is a change the player did not ask to keep.
+    zorderRestore();
+  }
+
+  // Put back on the layer mope had chosen, if we still know which that was and
+  // it is still the same animal. A respawn replaces the entity, and mope picks
+  // the new one's layer itself — so there is nothing to restore and nothing to
+  // get wrong.
+  function zorderRestore() {
+    const me = hpState.playerEntry && hpState.playerEntry.entity;
+    if (me && me === zorder.homeFor && zorder.home && me.parentRenderLayer !== zorder.home) {
+      zorderMove(me, zorder.home);
+    }
+    zorder.home = null;
+    zorder.homeFor = null;
+    zorder.movedTo = -1;
+    zorder.applied = 0;
   }
 
   function zorderDebug() {
@@ -13888,6 +14062,8 @@
       mode: zorder.mode > 0 ? 'above' : zorder.mode < 0 ? 'below' : 'off',
       engine: zorder.api || '(not applied yet)',
       movedLastPass: zorder.applied,
+      animalLayersSeen: zorder.layers,
+      movedOntoLayerRank: zorder.movedTo,
       playerLocked: !!(hpState.playerEntry && hpState.playerEntry.entity),
       animalsTracked: hpState.bars.size,
     };
