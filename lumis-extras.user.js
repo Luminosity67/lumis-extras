@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.6
+// @version      1.0.7
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -29,6 +29,54 @@
  *      Lumi's — if you are working on this and think a change earns it, ask.
  *      Default to leaving it alone.
  *   y  everything else: features, fixes, extra gradients, copy tweaks.
+ *
+ * 1.0.7 adds a SETTINGS category: keybinds, and a theme for the panel itself.
+ *
+ * WHY A REGISTRY. There were five keydown handlers, each with its own literal,
+ * its own typing guard and its own idea of when to stand down. That is fine
+ * until two of them want the same key, at which point nothing in the script
+ * knows both exist and the loser fails silently. KEYBINDS is the only place a
+ * question like "is anything already on this key" has an answer. See the block
+ * above it for the three kinds of clash and what override/underride mean.
+ *
+ * Underride is the default for every bind, which preserves exactly what each
+ * of these keys did before this existed — including the one that matters:
+ * Digit1-Digit9 while the upgrade menu is up still reaches mope untouched.
+ *
+ * NINE THINGS TWO REVIEWERS FOUND, all fixed here, worth recording because
+ * most were in the new code rather than the old:
+ *
+ *  - The arena hotkey still asked mopeBindFor(ARENA_SKY_KEY) — a frozen
+ *    'KeyZ' — AFTER kbHit had decided. Override was inoperative for that bind
+ *    (kbHit says yes, then this said no on the exact case Override exists
+ *    for), and rebinding it carried Z's clash onto the new key.
+ *  - kb.capturing could stick. The game-to-menu transition hides the panel
+ *    from a POLLED DOM walk, which is neither a click nor a blur, so it
+ *    reached none of the cancels. An armed capture survived it invisibly:
+ *    every hotkey dead (kbHit refuses while capturing) AND the next key
+ *    pressed on the menu silently rebound. kbCancelCapture() is now called
+ *    from that path.
+ *  - The panel hotkey was on `document`, downstream of mope's own handlers,
+ *    so Override could never work for it. Moved to the window at capture like
+ *    every other hotkey, and it was also the only kbHit caller with no
+ *    isTrusted check — which now lives inside kbHit for all of them.
+ *  - Two handlers outside the registry (the shared zoom hub's -/=, party
+ *    chat's Enter) consume with stopImmediatePropagation and register at
+ *    document-start, ahead of the capture listener — so those keys could
+ *    never BE bound. Both now stand down while a capture is armed, and both
+ *    appear in SCRIPT_RESERVED so a bind moved onto them shows a clash.
+ *  - The summary line ranked clashes last-wins, so a milder 'bound' row could
+ *    hide a 'fixed' row above it — on the one line whose job is to say which
+ *    problem matters.
+ *  - Capture consumed before filtering, so F5 would not reload and F12 would
+ *    not open devtools while armed. It now refuses unbindable keys WITHOUT
+ *    consuming them.
+ *  - kbHit did not filter shiftKey while three call sites did, so Shift+N and
+ *    Shift+P fired. Filtered centrally.
+ *  - The theme picker's own active button was a hardcoded teal, so choosing
+ *    Ember lit the Ember button teal. That and the panel's frame are now
+ *    tokenised. Note ~45 other teal literals in the stylesheet still are not:
+ *    themes reach the panel's chrome and its controls, not every last inset.
  *
  * 1.0.6 is one bug and one feature.
  *
@@ -2557,6 +2605,11 @@
     PAGE.addEventListener('keydown', (event) => {
       if (!event.isTrusted || event.repeat) return;
       if (event.ctrlKey || event.altKey || event.metaKey) return;
+      // The panel is waiting for a key to bind, so this one is not ours to
+      // take. Without this the zoom keys could never BE bound: this handler
+      // registers at document-start, long before the panel's capture listener,
+      // and stopImmediatePropagation below would eat the press first.
+      if (kbCapturing()) return;
       const out = event.code === 'Minus' || event.key === '-';
       const into = event.code === 'Equal' || event.key === '=' || event.key === '+';
       if (!out && !into) return;
@@ -2737,7 +2790,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.6';
+    return '1.0.7';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -2949,6 +3002,9 @@
     // somebody's choice — arenaThemeOf() falls back to the first entry for an
     // id it does not recognise, which is what an uninstalled theme should do.
     arenaTheme: String(store.get('arenaTheme', 'starfield') || 'starfield'),
+    // 1.0.7. Which palette the PANEL wears. Same id-not-index reasoning as
+    // arenaTheme, and the same fallback to the first entry.
+    panelTheme: String(store.get('panelTheme', 'teal') || 'teal'),
     // 1.0.6. Draw-order override: 1 above every other animal, -1 below them,
     // 0 off. Not remembered as two booleans, because "above and below" is not
     // a state that means anything.
@@ -2971,6 +3027,302 @@
     turnStyle: normalizeTurnStyle(store.get('turnStyle', 'linear')),
     debug: !!store.get('debug', false),
   };
+
+  /* ================= keybinds (1.0.7) =================
+   *
+   * Every key this script owns, in one registry, rebindable, with the clashes
+   * it can see reported rather than discovered mid-fight.
+   *
+   * WHY A REGISTRY AND NOT FIVE HANDLERS. There were five, each with its own
+   * literal, its own typing guard and its own idea of when to stand down. That
+   * is fine until two of them want the same key, at which point nothing in the
+   * script knows both exist and the loser fails silently. A registry is the
+   * only place a question like "is anything already on this key" has an
+   * answer.
+   *
+   * THREE KINDS OF CLASH, and they are genuinely different problems:
+   *
+   *   OURS   two Lumi's Extras binds on one key. Always wrong, always red: no
+   *          priority setting can make one key mean two things.
+   *
+   *   BOUND  mope has one of its OWN rebindable actions on that key, which
+   *          mopeBindFor() can see and name. Resolvable — that is what the
+   *          priority control is for — so it is a warning, not an error.
+   *
+   *   FIXED  mope hardcodes the key in a context and it is NOT in its bind
+   *          list, so mopeBindFor() reports the key as free when it is not.
+   *          Digit1-Digit9 while the upgrade menu is open is the whole of this
+   *          list today, and it is exactly the case that made this necessary:
+   *          quick chat wanting the number row is why quick chat ships off.
+   *
+   * OVERRIDE AND UNDERRIDE, per bind, because the right answer differs per
+   * person and per key:
+   *
+   *   override   ours wins. The event is consumed, so mope never sees it.
+   *   underride  mope wins IN THE CONTEXT WHERE IT CLAIMS THE KEY, and ours
+   *              works everywhere else. This is not "our bind off" — quick
+   *              chat on underride still sends on 1-5 in open play and stands
+   *              down only while the upgrade menu is up.
+   *
+   * Underride is the default for everything, which preserves exactly the
+   * behaviour every one of these keys had before this existed.
+   */
+  const KB_KEYS = {codes: 'keybindCodes', prio: 'keybindPriority'};
+
+  const KEYBINDS = [
+    {id: 'panel',      def: 'KeyN',         label: 'Open the panel'},
+    {id: 'partyChat',  def: 'KeyP',         label: 'Party chat channel'},
+    {id: 'arenaTheme', def: 'KeyZ',         label: 'Arena theme on/off'},
+    {id: 'zAbove',     def: 'BracketRight', label: 'Draw above players'},
+    {id: 'zBelow',     def: 'BracketLeft',  label: 'Draw below players'},
+    {id: 'chat1',      def: 'Digit1',       label: 'Quick chat 1'},
+    {id: 'chat2',      def: 'Digit2',       label: 'Quick chat 2'},
+    {id: 'chat3',      def: 'Digit3',       label: 'Quick chat 3'},
+    {id: 'chat4',      def: 'Digit4',       label: 'Quick chat 4'},
+    {id: 'chat5',      def: 'Digit5',       label: 'Quick chat 5'},
+  ];
+
+  // Keys mope claims in code rather than through its bind list, with the
+  // context it claims them in. `has` is asked at event time, because a fixed
+  // clash is only a clash while that context is actually up.
+  const MOPE_FIXED = [
+    {
+      codes: ['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5',
+              'Digit6', 'Digit7', 'Digit8', 'Digit9'],
+      what: 'the upgrade menu',
+      has: function () { return !!document.getElementById('upgradeMenu'); },
+    },
+  ];
+
+  // Keys owned by handlers that are NOT in the registry, so a bind moved onto
+  // one still shows a clash. The zoom hub is shared code with Lumi's Moderator
+  // Extras and both scripts must keep the same handler, so it cannot simply be
+  // folded in here; party chat's Enter is contextual on the channel being
+  // selected. Neither is rebindable, and saying so is better than a panel that
+  // reports a taken key as free.
+  const SCRIPT_RESERVED = {
+    Minus: 'Camera zoom out', Equal: 'Camera zoom in',
+    Enter: 'Send a party chat message',
+  };
+
+  // Read through a hoisted function with a try, because the two handlers that
+  // ask register at document-start — before the const below is evaluated — and
+  // touching it in that window would be a temporal-dead-zone throw rather than
+  // an undefined.
+  function kbCapturing() { try { return !!kb.capturing; } catch (e) { return false; } }
+
+  function kbFixedFor(code) {
+    for (const f of MOPE_FIXED) if (f.codes.indexOf(code) >= 0) return f;
+    return null;
+  }
+
+  // capturing is set while the panel is waiting for a key to bind. kbHit()
+  // refuses everything while it is true, so the key being captured cannot also
+  // fire the action it is being bound to.
+  const kb = {codes: {}, prio: {}, capturing: false};
+  (function () {
+    const savedCodes = store.get(KB_KEYS.codes, null);
+    const savedPrio = store.get(KB_KEYS.prio, null);
+    for (const b of KEYBINDS) {
+      // Validated on the way IN. Storage can hold anything — an older build's
+      // shape, a hand-edited value — and a bind is about to be compared
+      // against event.code, so anything that is not a plausible code drops
+      // back to the default rather than quietly never matching.
+      const want = savedCodes && typeof savedCodes[b.id] === 'string'
+        ? savedCodes[b.id] : '';
+      kb.codes[b.id] = /^[A-Za-z0-9]{1,24}$/.test(want) ? want : b.def;
+      const p = savedPrio && savedPrio[b.id];
+      kb.prio[b.id] = p === 'override' ? 'override' : 'underride';
+    }
+  })();
+
+  function kbCode(id) { return kb.codes[id] || ''; }
+  function kbPrio(id) { return kb.prio[id] === 'override' ? 'override' : 'underride'; }
+  function kbDefOf(id) { for (const b of KEYBINDS) if (b.id === id) return b; return null; }
+
+  function kbSave() {
+    store.set(KB_KEYS.codes, kb.codes);
+    store.set(KB_KEYS.prio, kb.prio);
+  }
+
+  function kbSetCode(id, code) {
+    if (!kbDefOf(id) || !/^[A-Za-z0-9]{1,24}$/.test(code)) return false;
+    kb.codes[id] = code;
+    kbSave();
+    dbg('keybind', id, 'to', code);
+    return true;
+  }
+
+  function kbSetPrio(id, prio) {
+    if (!kbDefOf(id)) return false;
+    kb.prio[id] = prio === 'override' ? 'override' : 'underride';
+    kbSave();
+    return true;
+  }
+
+  function kbResetAll() {
+    for (const b of KEYBINDS) { kb.codes[b.id] = b.def; kb.prio[b.id] = 'underride'; }
+    kbSave();
+  }
+
+  // Everything wrong with one bind, worst first. Returned as data rather than
+  // as a string so the panel can colour it and the debug hook can print it.
+  function kbConflicts(id) {
+    const code = kbCode(id);
+    const out = [];
+    if (!code) return out;
+    for (const b of KEYBINDS) {
+      if (b.id === id) continue;
+      if (kbCode(b.id) === code) out.push({kind: 'ours', what: b.label});
+    }
+    const fixed = kbFixedFor(code);
+    if (fixed) out.push({kind: 'fixed', what: fixed.what});
+    if (SCRIPT_RESERVED[code]) out.push({kind: 'ours', what: SCRIPT_RESERVED[code] + ' (not rebindable)'});
+    const bound = mopeBindFor(code);
+    if (bound) out.push({kind: 'bound', what: bound});
+    return out;
+  }
+
+  function kbWorstKind(list) {
+    if (!list || !list.length) return '';
+    for (const c of list) if (c.kind === 'ours') return 'ours';
+    for (const c of list) if (c.kind === 'fixed') return 'fixed';
+    return 'bound';
+  }
+
+  // The one guard every hotkey in this script already had, in one place.
+  function kbTyping() {
+    if (document.getElementById('chatInput')) return true;
+    const active = document.activeElement;
+    if (!active) return false;
+    return active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' ||
+      active.tagName === 'SELECT' || active.isContentEditable === true;
+  }
+
+  // Does this event match this bind, AND are we allowed to act on it?
+  //
+  // Deliberately one function rather than a match test and a permission test,
+  // because every caller wants both and splitting them is how a handler ends
+  // up checking one and not the other.
+  function kbHit(id, event) {
+    if (kb.capturing) return false;
+    if (!event || !event.isTrusted) return false;
+    // isTrusted lives here rather than at each call site: every caller already
+    // checked it except the panel hotkey, which is exactly the one that could
+    // be reached by a synthetic key from the other script sharing this page.
+    if (!settings.masterEnabled) return false;
+    if (!event || event.repeat) return false;
+    // Modifiers are never part of a bind here: a key with ctrl or alt held is
+    // a browser or OS gesture far more often than it is a game action.
+    if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return false;
+    const code = kbCode(id);
+    if (!code || event.code !== code) return false;
+    if (kbTyping()) return false;
+    if (kbPrio(id) === 'override') return true;
+    // Underride stands down only where something else actually claims the key
+    // RIGHT NOW. A bound clash is contextless — mope acts on it whenever the
+    // game has focus — so underride yields outright. A fixed clash is
+    // contextual, so it yields only while that context is up.
+    const fixed = kbFixedFor(code);
+    if (fixed && fixed.has()) return false;
+    if (mopeBindFor(code)) return false;
+    return true;
+  }
+
+  // How a code should be written on a key cap. event.code is a physical
+  // position and reads badly — "BracketRight" is not what is printed on the
+  // key — so the common families are unwrapped and anything unrecognised is
+  // shown as it came, which is still better than showing nothing.
+  const KB_NAMES = {
+    BracketLeft: '[', BracketRight: ']', Semicolon: ';', Quote: 'Apostrophe',
+    Comma: ',', Period: '.', Slash: '/', Backslash: 'Backslash', Backquote: 'Backtick',
+    Minus: '-', Equal: '=', Space: 'Space', Enter: 'Enter', Escape: 'Esc',
+    Tab: 'Tab', Backspace: 'Backspace', ArrowUp: 'Up', ArrowDown: 'Down',
+    ArrowLeft: 'Left', ArrowRight: 'Right',
+  };
+  function kbLabelOf(code) {
+    if (!code) return 'none';
+    if (KB_NAMES[code]) return KB_NAMES[code];
+    if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+    if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+    if (/^Numpad/.test(code)) return 'Num ' + code.slice(6);
+    if (/^F[0-9]{1,2}$/.test(code)) return code;
+    return code;
+  }
+
+
+  /* ----- panel themes (1.0.7) -----
+   *
+   * The panel already had its colours in custom properties on #qolc-panel, so
+   * a theme is a second block of the same properties under an attribute
+   * selector and nothing else has to know. That is the whole reason this is
+   * cheap: no component was ever written against a literal, so none of them
+   * need touching.
+   *
+   * The shell gradient is the one thing that was NOT a property — it sat
+   * inline on the panel rule — so 1.0.7 lifts it into --qolc-shell. Without
+   * that, a theme could recolour every control and leave the panel itself
+   * teal, which reads as a bug rather than as a theme.
+   *
+   * Default is the original, exactly, and is what an unrecognised id falls
+   * back to.
+   */
+  const PANEL_THEMES = [
+    {id: 'teal',   label: 'Teal',   note: 'The original.'},
+    {id: 'ember',  label: 'Ember',  note: 'Warm orange over a dark ground.'},
+    {id: 'violet', label: 'Violet', note: 'Deep purple with a lilac accent.'},
+    {id: 'slate',  label: 'Slate',  note: 'Neutral grey-blue. The quiet one.'},
+  ];
+
+  function panelThemeOf() {
+    const want = String(settings.panelTheme || '');
+    for (const t of PANEL_THEMES) if (t.id === want) return t;
+    return PANEL_THEMES[0];
+  }
+
+  function panelThemeApply() {
+    const el = extras && extras.panel;
+    if (!el) return;
+    // Written as an attribute rather than a class so it cannot collide with
+    // the state classes the panel already carries, and so the stylesheet reads
+    // as one selector per theme.
+    try { el.setAttribute('data-qolc-theme', panelThemeOf().id); } catch (e) {}
+  }
+
+  function panelThemeSet(id) {
+    for (const t of PANEL_THEMES) {
+      if (t.id !== id) continue;
+      settings.panelTheme = id;
+      store.set('panelTheme', id);
+      panelThemeApply();
+      dbg('panel theme', id);
+      return true;
+    }
+    return false;
+  }
+  function kbDebug() {
+    const rows = KEYBINDS.map(function (b) {
+      const list = kbConflicts(b.id);
+      return {
+        bind: b.label,
+        key: kbLabelOf(kbCode(b.id)) + ' (' + kbCode(b.id) + ')',
+        priority: kbPrio(b.id),
+        conflicts: list.length
+          ? list.map(function (c) { return c.kind + ': ' + c.what; }).join(', ')
+          : 'none',
+      };
+    });
+    console.log(TAG, 'keybinds');
+    if (console.table) console.table(rows); else console.log(rows);
+    // Said separately because a null here is not "no clashes" — it is "we
+    // cannot see mope's bind list at all", and every BOUND check above is
+    // therefore silently answering no.
+    console.log(TAG, 'mope bind list readable:',
+      mopeSettings.proxy ? 'yes' : 'NO - bound-key clashes cannot be detected');
+    return rows;
+  }
+  try { PAGE.__lumiKeybindDebug = kbDebug; }
+  catch (e) { window.__lumiKeybindDebug = kbDebug; }
 
   function dbg(...args) { if (settings.debug) console.log(TAG, ...args); }
 
@@ -8507,7 +8859,7 @@
       if (partyChatTypingElsewhere()) return;
       if (prevMenuVisible !== false) return;
 
-      if (e.key === 'P' || e.key === 'p') {
+      if (kbHit('partyChat', e)) {
         // The hotkey follows the feature switch, so someone who does not want
         // P taken can turn the whole thing off in the panel.
         if (!party.chat) return;
@@ -8521,6 +8873,9 @@
       // Enter opens OUR input rather than mope's, but ONLY while the party
       // channel is selected. In public chat it is left completely alone — that
       // is the difference between a chat feature and a chat bug.
+      // Same reason as the zoom keys: while a bind is being captured this
+      // handler must not swallow Enter, or Enter could never be bound.
+      if (kbCapturing()) return;
       if (e.key === 'Enter' && partyChat.mode && partyChatOn() && !partyChat.open) {
         partyChatSwallow.add(e.key);
         e.preventDefault();
@@ -9476,6 +9831,11 @@
   let syncArenaSkyRow = () => {};
   let syncArenaThemeRow = () => {};
   let syncZorderRows = () => {};
+  let syncKeybinds = () => {};
+  // Assigned with the Settings pane. Called from every path that takes the
+  // panel off screen — including the polled game-to-menu transition, which is
+  // neither a click nor a blur and so reaches none of the other cancels.
+  let kbCancelCapture = () => {};
   // 1.29.0. The bite indicator's style sub-option dims with its parent.
   // 1.31.0. The units picker lights the chosen mode and dims while neither of
   // the two features it governs is switched on.
@@ -14250,22 +14610,16 @@
   // unused by this script, and sit together on the right hand so "above" and
   // "below" are one key apart rather than two unrelated letters. Matched on
   // CODE for the reason Z is — position beats letter on a non-QWERTY layout.
-  const ZORDER_ABOVE_KEY = 'BracketRight';
-  const ZORDER_BELOW_KEY = 'BracketLeft';
-
   PAGE.addEventListener('keydown', (event) => {
-    if (!event.isTrusted || event.repeat) return;
-    if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
-    if (!settings.masterEnabled) return;
-    // The same stand-down every hotkey in this script takes: a bracket typed
-    // into a chat box is a bracket, not a command.
-    if (arenaSkyTypingElsewhere()) return;
+    if (!event.isTrusted) return;
+    if (event.shiftKey) return;
     // Only in a game. On the menu there is nothing to reorder and the key
-    // keeps whatever meaning it already had.
+    // keeps whatever meaning it already had. Everything else — repeat,
+    // modifiers, typing, the bind itself and whether we may act on it — is
+    // kbHit's job now.
     if (prevMenuVisible !== false) return;
-    const code = event.code;
-    const above = code ? code === ZORDER_ABOVE_KEY : event.key === ']';
-    const below = code ? code === ZORDER_BELOW_KEY : event.key === '[';
+    const above = kbHit('zAbove', event);
+    const below = !above && kbHit('zBelow', event);
     if (!above && !below) return;
     event.preventDefault();
     event.stopPropagation();
@@ -14282,7 +14636,7 @@
   PAGE.addEventListener('keydown', (event) => {
     if (!event.isTrusted || event.repeat) return;
     if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
-    if (!arenaSkyIsHotkey(event)) return;
+    if (!kbHit('arenaTheme', event)) return;
     if (!settings.masterEnabled) return;
     // Off the menu, and while spectating, Z keeps whatever meaning it already
     // had. Spectate is checked here and not only in the tick so that the key
@@ -14294,19 +14648,12 @@
     const target = event.target;
     if (target && target.closest && target.closest(QOLC_OWN_UI)) return;
 
-    const clash = mopeBindFor(ARENA_SKY_KEY);
-    if (clash) {
-      // Not consumed — mope's own handler is left to run on it, which is the
-      // whole point of standing down.
-      dbg('arena starfield: Z is bound to mope\'s "' + clash + '", standing down');
-      const nowMs = performance.now();
-      if (nowMs - arenaSkyClashSaidAt >= ARENA_SKY_CLASH_TOAST_MS) {
-        arenaSkyClashSaidAt = nowMs;
-        qolcToast('Z is bound to mope\'s "' + clash + '" — ' +
-          'use the panel switch instead', 'is-bad');
-      }
-      return;
-    }
+    // 1.0.7 REMOVED a second clash check that used to sit here. It asked
+    // mopeBindFor(ARENA_SKY_KEY) — a frozen 'KeyZ' — AFTER kbHit had already
+    // decided. That made Override inoperative for this bind (kbHit says yes,
+    // then this said no on the exact case Override exists for) and it carried
+    // Z's clash onto whatever the bind was moved to. kbHit owns the question
+    // now, for every bind, in one place.
 
     event.preventDefault();
     event.stopImmediatePropagation();
@@ -14334,10 +14681,13 @@
         : 'in a game',
       inGame: arenaPlaying(),
       // The hotkey, and the one thing that can take it away.
-      hotkey: 'Z' + (mopeBindFor(ARENA_SKY_KEY)
-        ? ' — TAKEN: you have mope\'s "' + mopeBindFor(ARENA_SKY_KEY) +
-          '" bound to it, so the hotkey stands down. The panel switch still works.'
-        : ' (free — nothing of mope\'s is bound to it)'),
+      // Read from the registry rather than from a frozen constant, so this
+      // reports the key the feature is actually on.
+      hotkey: kbLabelOf(kbCode('arenaTheme')) + ' (' + kbPrio('arenaTheme') + ')' +
+        (kbConflicts('arenaTheme').length
+          ? ' - CLASH: ' + kbConflicts('arenaTheme')
+              .map(function (c) { return c.kind + ': ' + c.what; }).join(', ')
+          : ''),
       state: arenaSky.why,
       // The health-bar outline rides this feature, so it is reported with it.
       // "lit" is the gate; a lit sky with no outlines means the plate's drawing
@@ -16175,23 +16525,30 @@
   PAGE.addEventListener('keydown', (event) => {
     if (!event.isTrusted || event.repeat) return;
     if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
-    // `code`, not `key`: it is what mope's own digit handler matches on, so
-    // the two agree about which physical key this is on every layout.
-    const slot = event.code ? CHAT_KEYS.indexOf(event.code) : -1;
+    // Which slot, from the REGISTRY rather than from a fixed digit list, so a
+    // quick chat moved off the number row still works and one left on it still
+    // clashes with the upgrade menu exactly as it always did.
+    let slot = -1;
+    for (let i = 0; i < CHAT_KEYS.length; i++) {
+      if (event.code === kbCode('chat' + (i + 1))) { slot = i; break; }
+    }
     if (slot === -1) return;
     if (!chatQuickOn()) return;
     if (!arenaPlaying()) { chatNote('not in a game', slot); return; }
 
-    // THE UPGRADE MENU OWNS THESE KEYS while it is open, and mope's claim on
-    // them is hardcoded rather than bound — so this is checked by the menu's
-    // own root and NOT consumed, leaving mope's handler to upgrade with it.
-    if (document.getElementById('upgradeMenu')) {
-      chatNote('the upgrade menu has these keys', slot);
+    // THE UPGRADE MENU AND MOPE'S BIND LIST are both asked through kbHit now,
+    // which is what makes override/underride mean anything here. On underride
+    // — the default, and what every earlier version did unconditionally — this
+    // returns false while the upgrade menu is up or while mope has an action
+    // bound to the key, and the event is NOT consumed, so upgrading works
+    // exactly as it always has. On override it returns true and the key is
+    // ours, which is the choice the panel now offers.
+    if (!kbHit('chat' + (slot + 1), event)) {
+      chatNote(document.getElementById('upgradeMenu')
+        ? 'the upgrade menu has this key — set the bind to Override to take it'
+        : 'something else has this key — see Settings, Keybinds', slot);
       return;
     }
-    // Typing somewhere. mope's chat box existing at all is enough: the player
-    // is deliberately talking, and a digit is part of what they are saying.
-    if (arenaSkyTypingElsewhere()) { chatNote('typing somewhere', slot); return; }
     if (extras && extras.panel && extras.panel.style.display === 'block') {
       chatNote('the panel is open', slot);
       return;
@@ -16201,11 +16558,6 @@
       chatNote('the press was inside our own UI', slot);
       return;
     }
-    // Somebody may have moved one of mope's own actions onto the number row.
-    // Same treatment as the starfield's Z: stand down, do not consume.
-    const clash = mopeBindFor(event.code);
-    if (clash) { chatNote('mope has "' + clash + '" bound to this key', slot); return; }
-
     // An empty slot is not a refusal — the key simply is not ours, so it is
     // left alone rather than swallowed. This is what makes the feature safe to
     // leave switched on with two of the five filled in.
@@ -16374,6 +16726,7 @@
       showFirstGameHint();
     } else if (wasMenuVisible === false && playVisible) {
       // Returning to the menu should not leave the centered in-game panel open.
+      kbCancelCapture();
       if (extras) extras.panel.style.display = 'none';
       // 1.21.0. The XP bar goes with the game, but the last figure read off it
       // does not — and mope starts the next run back at zero. Without this, the
@@ -16492,11 +16845,11 @@
         z-index: 2147483646; pointer-events: auto; display: none;
         font-family: Quicksand, "Trebuchet MS", Verdana, sans-serif;
         color: var(--qolc-ink);
-        background: linear-gradient(155deg, rgba(54,207,194,0.34), rgba(9,74,84,0.56));
+        background: var(--qolc-shell);
         backdrop-filter: blur(15px) saturate(1.4);
         -webkit-backdrop-filter: blur(15px) saturate(1.4);
-        border: 1px solid rgba(196,255,249,0.46); border-radius: 16px;
-        box-shadow: 0 14px 40px rgba(0,32,34,0.45), inset 0 1px 0 rgba(255,255,255,0.28);
+        border: 1px solid var(--qolc-edge-lit); border-radius: 16px;
+        box-shadow: 0 14px 40px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.28);
         padding: 0; user-select: none; overflow: hidden;
       }
       /* The panel itself stays a plain block that is shown and hidden with
@@ -16727,6 +17080,10 @@
         --qolc-field: rgba(0,55,45,0.42);
         --qolc-switch-off: rgba(0,40,34,0.42);
         --qolc-row-pad: 14px;
+        /* The panel's own gradient, a property since 1.0.7 so a theme can
+           reach it. Without this a theme recolours every control and leaves
+           the shell teal, which reads as a bug rather than as a theme. */
+        --qolc-shell: linear-gradient(155deg, rgba(54,207,194,0.34), rgba(9,74,84,0.56));
       }
 
       /* ---- header ---- */
@@ -17577,23 +17934,131 @@
       }
       .qolc-party-relay:hover { background: rgba(183,255,247,0.25); }
       .qolc-party-relay.is-on {
-        background: #35c9b6; border-color: #7ff0e3; color: #04241f;
+        background: var(--qolc-accent); border-color: var(--qolc-accent-lit); color: var(--qolc-accent-ink);
       }
       /* 1.0.5. The arena theme picker. Same shape as the relay chooser one
          card down — both are "pick exactly one of a short list", and giving
+      /* ---- keybinds (1.0.7) ---- */
+      .qolc-kb-list { display: grid; gap: 5px; margin-top: 8px; }
+      .qolc-kb-row {
+        display: flex; align-items: center; gap: 9px;
+        padding: 7px 10px; border-radius: 9px; font-size: 12px;
+        background: var(--qolc-card); border: 1px solid var(--qolc-edge);
+      }
+      .qolc-kb-row.has-clash { border-color: rgba(255,196,90,0.5); }
+      .qolc-kb-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      /* Fixed width so the caps line up down the column and the eye can run
+         the list without re-finding the key each row. */
+      .qolc-kb-cap {
+        flex: 0 0 auto; min-width: 74px; text-align: center;
+        padding: 5px 10px; border-radius: 8px; cursor: pointer;
+        border: 1px solid var(--qolc-edge-lit); background: var(--qolc-field);
+        color: var(--qolc-ink); font: bold 11px/1 "Consolas", ui-monospace, monospace;
+        transition: background 0.15s ease, border-color 0.15s ease;
+      }
+      .qolc-kb-cap:hover { background: var(--qolc-nav-active); }
+      .qolc-kb-cap.is-armed {
+        background: var(--qolc-accent); border-color: var(--qolc-accent-lit);
+        color: var(--qolc-accent-ink); min-width: 96px;
+      }
+      .qolc-kb-prio {
+        flex: 0 0 auto; min-width: 78px; text-align: center;
+        padding: 5px 9px; border-radius: 8px; cursor: pointer;
+        border: 1px solid var(--qolc-edge); background: var(--qolc-inset);
+        color: var(--qolc-dim); font: bold 10px/1 system-ui, sans-serif;
+        letter-spacing: 0.03em;
+        transition: background 0.15s ease, color 0.15s ease;
+      }
+      .qolc-kb-prio.is-over {
+        background: var(--qolc-accent); border-color: var(--qolc-accent-lit);
+        color: var(--qolc-accent-ink);
+      }
+      /* Always in the row and empty when there is nothing wrong, so a clash
+         appearing does not shift the whole line sideways. */
+      .qolc-kb-haz {
+        flex: 0 0 auto; width: 20px; text-align: center;
+        font: bold 12px/1 system-ui, sans-serif; color: transparent;
+      }
+      .qolc-kb-haz.is-bound, .qolc-kb-haz.is-fixed { color: #ffc45a; }
+      .qolc-kb-haz.is-ours { color: #ff6b5e; }
+      .qolc-kb-foot {
+        display: flex; align-items: center; gap: 10px; margin-top: 9px;
+      }
+      .qolc-kb-note {
+        flex: 1; min-width: 0; font-size: 10.5px; line-height: 1.4;
+        color: var(--qolc-faint);
+      }
+      .qolc-kb-note.is-bound, .qolc-kb-note.is-fixed { color: #ffc45a; }
+      .qolc-kb-note.is-ours { color: #ff6b5e; }
+
+      /* ---- panel themes (1.0.7) ----
+         Every control already reads its colour from these properties, so a
+         theme is this block and nothing else. --qolc-shell is the panel's own
+         gradient, lifted out of the rule above so a theme can reach it. */
+      #qolc-panel[data-qolc-theme="ember"] {
+        --qolc-ink: #fff1e6;
+        --qolc-dim: rgba(255,241,230,0.68);
+        --qolc-faint: rgba(255,241,230,0.46);
+        --qolc-accent: #e2703a;
+        --qolc-accent-lit: #ffb27a;
+        --qolc-accent-ink: #2b1004;
+        --qolc-card: rgba(255,214,184,0.13);
+        --qolc-edge: rgba(255,214,184,0.18);
+        --qolc-edge-lit: rgba(255,214,184,0.36);
+        --qolc-inset: rgba(56,20,6,0.38);
+        --qolc-nav: rgba(58,22,8,0.3);
+        --qolc-nav-active: rgba(226,112,58,0.28);
+        --qolc-field: rgba(58,22,8,0.46);
+        --qolc-switch-off: rgba(48,18,6,0.46);
+        --qolc-shell: linear-gradient(155deg, rgba(214,106,54,0.34), rgba(74,26,9,0.6));
+      }
+      #qolc-panel[data-qolc-theme="violet"] {
+        --qolc-ink: #f3ecff;
+        --qolc-dim: rgba(243,236,255,0.68);
+        --qolc-faint: rgba(243,236,255,0.46);
+        --qolc-accent: #8b6ce0;
+        --qolc-accent-lit: #c3aaff;
+        --qolc-accent-ink: #17092e;
+        --qolc-card: rgba(219,204,255,0.13);
+        --qolc-edge: rgba(219,204,255,0.18);
+        --qolc-edge-lit: rgba(219,204,255,0.36);
+        --qolc-inset: rgba(30,14,58,0.4);
+        --qolc-nav: rgba(32,15,60,0.3);
+        --qolc-nav-active: rgba(139,108,224,0.28);
+        --qolc-field: rgba(32,15,60,0.48);
+        --qolc-switch-off: rgba(26,12,50,0.48);
+        --qolc-shell: linear-gradient(155deg, rgba(128,98,214,0.34), rgba(38,18,72,0.6));
+      }
+      #qolc-panel[data-qolc-theme="slate"] {
+        --qolc-ink: #eef2f6;
+        --qolc-dim: rgba(238,242,246,0.68);
+        --qolc-faint: rgba(238,242,246,0.46);
+        --qolc-accent: #5b8bb5;
+        --qolc-accent-lit: #a9cbe6;
+        --qolc-accent-ink: #0b1720;
+        --qolc-card: rgba(214,230,242,0.12);
+        --qolc-edge: rgba(214,230,242,0.17);
+        --qolc-edge-lit: rgba(214,230,242,0.34);
+        --qolc-inset: rgba(14,26,36,0.4);
+        --qolc-nav: rgba(16,28,38,0.3);
+        --qolc-nav-active: rgba(91,139,181,0.28);
+        --qolc-field: rgba(16,28,38,0.48);
+        --qolc-switch-off: rgba(12,22,30,0.48);
+        --qolc-shell: linear-gradient(155deg, rgba(96,134,168,0.3), rgba(18,32,44,0.62));
+      }
          them two different appearances would say they were different kinds of
          choice when they are not. */
       .qolc-theme-picks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
       .qolc-subrow > .qolc-theme-picks { margin-top: 0; flex: 0 0 auto; justify-content: flex-end; }
       .qolc-theme-pick {
         padding: 5px 9px; border-radius: 9px; cursor: pointer;
-        border: 1px solid rgba(203,255,250,0.22); background: rgba(0,40,20,0.35);
-        color: #eafffb; font: bold 10.5px/1 system-ui, sans-serif;
+        border: 1px solid var(--qolc-edge); background: var(--qolc-inset);
+        color: var(--qolc-ink); font: bold 10.5px/1 system-ui, sans-serif;
         transition: background 0.15s ease, border-color 0.15s ease;
       }
-      .qolc-theme-pick:hover { background: rgba(183,255,247,0.25); }
+      .qolc-theme-pick:hover { background: var(--qolc-nav-active); }
       .qolc-theme-pick.is-on {
-        background: #35c9b6; border-color: #7ff0e3; color: #04241f;
+        background: var(--qolc-accent); border-color: var(--qolc-accent-lit); color: var(--qolc-accent-ink);
       }
       .qolc-party-roster { margin-top: 9px; display: grid; gap: 5px; }
       .qolc-party-member {
@@ -17797,6 +18262,7 @@
     hpUnits: 'Show as — the unit for both rows above. Percentage is exactly what the game sends and works on every animal. Hit points multiplies it by a maximum this script works out itself: the figures are approximate, and rares, skins and King Dragon get no number at all.',
     arenaSky: 'Arena theme — a backdrop behind your own 1v1 duels. Z toggles it in game.',
     arenaTheme: 'Which backdrop. Starfield is deep space and the original; Antimatter is the same sky as a negative, pale with dark stars; Deep Water is pale motes on blue-green with no star band.',
+    panelTheme: 'Panel theme — recolours the Extras panel itself. It changes nothing about the game.',
     zorderAbove: 'Draw above other players — forces your animal to be painted over every other one. mope decides this inconsistently on its own. Toggled in game with the ] key.',
     zorderBelow: 'Draw below other players — the opposite: everyone else is painted over you. Toggled in game with the [ key.',
     biteIndicator: 'Bite indicator — a bitten fighter cannot be bitten again for three seconds. A purple mark on their health bar counts that down, so you can see when they are worth biting again.',
@@ -18780,9 +19246,13 @@
     // that is about where things are rather than whether they are on — and
     // because it is the one you go to after you have decided the rest.
     const catLayout = makeCategory('layout', 'Customization (WIP)', side, content);
+    // 1.0.7. Sixth, and last: it is about the MOD rather than about the game,
+    // so it sits below everything that changes what you see while playing.
+    const catSettings = makeCategory('settings', 'Settings', side, content);
     const cats = {
       general: catGeneral, arena: catArena,
       cosmetics: catCosmetics, party: catParty, layout: catLayout,
+      settings: catSettings,
     };
     for (const key of Object.keys(cats)) {
       content.appendChild(cats[key].title);
@@ -18811,6 +19281,7 @@
     // as a table of contents rather than as plumbing.
     const generalPane = catGeneral.pane, arenaPane = catArena.pane;
     const cosmeticsPane = catCosmetics.pane, partyPane = catParty.pane;
+    const settingsPane = catSettings.pane;
     // Built in one call and in one place, unlike every other pane: the whole
     // category is one preview and one button, and there are no rows for a
     // later pass to append in the wrong order.
@@ -20092,19 +20563,251 @@
     syncNameColorUI();
     syncZoomUI();
     syncTurnUI();
-    syncPartyUI();
-    document.addEventListener('keydown', (e) => {
-      const active = document.activeElement;
-      const typing = active && (active.tagName === 'INPUT' ||
-        active.tagName === 'TEXTAREA' || active.tagName === 'SELECT' ||
-        active.isContentEditable);
-      if (!typing && !e.repeat && (e.key === 'N' || e.key === 'n') &&
-          prevMenuVisible === false) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        togglePanel(e);
+
+    /* ---- Settings: keybinds ---- */
+    //
+    // One row per bind: what it does, the key it is on, whether it wins or
+    // yields when something else wants that key, and what is currently wrong
+    // with it. The hazard chip is last because it is the thing you look for
+    // when scanning the list and the thing you ignore when there is none.
+    settingsPane.appendChild(makeSecLabel('Keybinds'));
+
+    const kbRows = [];
+    const kbList = document.createElement('div');
+    kbList.className = 'qolc-kb-list';
+
+    for (const bind of KEYBINDS) {
+      const row = document.createElement('div');
+      row.className = 'qolc-kb-row';
+
+      const name = document.createElement('div');
+      name.className = 'qolc-kb-name';
+      name.textContent = bind.label;
+
+      // The key cap. Clicking it arms capture; the NEXT key pressed becomes
+      // the bind. Escape cancels, because a capture with no way out is a trap
+      // for anyone who clicked it by accident.
+      const cap = document.createElement('button');
+      cap.type = 'button';
+      cap.className = 'qolc-kb-cap';
+      cap.addEventListener('click', (e) => {
+        e.stopPropagation();
+        kbBeginCapture(bind.id);
+      });
+
+      // Priority. Two states rather than a switch, because "override" and
+      // "underride" are two named things and a switch would have to imply one
+      // of them is the off position.
+      const prio = document.createElement('button');
+      prio.type = 'button';
+      prio.className = 'qolc-kb-prio';
+      prio.addEventListener('click', (e) => {
+        e.stopPropagation();
+        kbSetPrio(bind.id, kbPrio(bind.id) === 'override' ? 'underride' : 'override');
+        syncKeybinds();
+      });
+
+      const haz = document.createElement('span');
+      haz.className = 'qolc-kb-haz';
+
+      row.appendChild(name);
+      row.appendChild(haz);
+      row.appendChild(prio);
+      row.appendChild(cap);
+      kbList.appendChild(row);
+      kbRows.push({bind, row, cap, prio, haz});
+    }
+    settingsPane.appendChild(kbList);
+
+    const kbFoot = document.createElement('div');
+    kbFoot.className = 'qolc-kb-foot';
+    const kbNote = document.createElement('div');
+    kbNote.className = 'qolc-kb-note';
+    const kbReset = document.createElement('button');
+    kbReset.type = 'button';
+    kbReset.className = 'qolc-obtn qolc-obtn-sm';
+    kbReset.textContent = 'Reset all keybinds';
+    kbReset.addEventListener('click', (e) => {
+      e.stopPropagation();
+      kbResetAll();
+      syncKeybinds();
+    });
+    kbFoot.appendChild(kbNote);
+    kbFoot.appendChild(kbReset);
+    settingsPane.appendChild(kbFoot);
+
+    // Capture. The armed row is held here rather than on the element so that
+    // only one can ever be armed, and so that a pane rebuild cannot leave a
+    // listener waiting on a row nobody can see.
+    let kbArmed = '';
+    function kbBeginCapture(id) {
+      kbArmed = id;
+      kb.capturing = true;
+      syncKeybinds();
+    }
+    kbCancelCapture = () => { if (kbArmed) kbEndCapture(); };
+    function kbEndCapture() {
+      kbArmed = '';
+      kb.capturing = false;
+      syncKeybinds();
+    }
+    // On the window at capture, ahead of every other handler in this script
+    // AND ahead of mope's — while a capture is armed the key belongs to the
+    // panel and to nothing else, which is why this consumes the event
+    // outright. kbHit() also refuses everything while kb.capturing is set, so
+    // even a handler registered earlier cannot act on the press.
+    // The keys a bind may actually be. Everything else is refused, and refused
+    // WITHOUT being consumed — the previous form called preventDefault before
+    // deciding, so while a capture was armed F5 would not reload and F12 would
+    // not open devtools, with nothing on screen to say why.
+    const KB_BINDABLE = /^(Key[A-Z]|Digit[0-9]|Numpad[A-Za-z0-9]+|F[1-9]|F1[0-2]|Bracket(Left|Right)|Semicolon|Quote|Comma|Period|Slash|Backslash|Backquote|Minus|Equal|Arrow(Up|Down|Left|Right)|Space|Insert|Delete|Home|End|Page(Up|Down))$/;
+    // Refused even though they match above: the browser needs them more than a
+    // mope hotkey does, and binding one would be a trap with no way back.
+    const KB_FORBIDDEN = {F5: 1, F11: 1, F12: 1};
+
+    PAGE.addEventListener('keydown', (event) => {
+      if (!kbArmed || !event.isTrusted) return;
+      const code = event.code;
+      if (!code) return;
+      // Escape is the way out, and is consumed so it does not also close
+      // whatever else on the page listens for it.
+      if (code === 'Escape') {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        kbEndCapture();
+        return;
       }
+      // Modifier keys alone are not binds. Pressing shift to reach a symbol
+      // would otherwise capture "ShiftLeft" and leave the bind unusable. Held
+      // rather than cancelled, so the capture waits for the real key.
+      if (/^(Shift|Control|Alt|Meta)/.test(code)) return;
+      if (!KB_BINDABLE.test(code) || KB_FORBIDDEN[code]) {
+        // Not consumed: the browser gets its key, and the capture stands down
+        // rather than sitting armed on a press the user meant for something
+        // else.
+        kbEndCapture();
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      kbSetCode(kbArmed, code);
+      kbEndCapture();
     }, true);
+
+    // A capture that is armed and then abandoned would leave kb.capturing set
+    // forever, and kbHit() refuses everything while it is — so walking away
+    // from a half-finished rebind would silently kill every hotkey in the
+    // script until the panel was reopened and Escape pressed. Both ways out of
+    // the panel therefore cancel it.
+    document.addEventListener('mousedown', (e) => {
+      if (!kbArmed) return;
+      // The armed cap itself is not an escape: clicking it again should read
+      // as still waiting, not as a cancel that looks like nothing happened.
+      const on = e.target && e.target.closest &&
+        e.target.closest('.qolc-kb-cap.is-armed');
+      if (!on) kbEndCapture();
+    }, true);
+    PAGE.addEventListener('blur', () => { if (kbArmed) kbEndCapture(); });
+
+    syncKeybinds = () => {
+      let worst = '';
+      for (const r of kbRows) {
+        const armed = kbArmed === r.bind.id;
+        r.cap.textContent = armed ? 'Press a key…' : kbLabelOf(kbCode(r.bind.id));
+        r.cap.classList.toggle('is-armed', armed);
+        const over = kbPrio(r.bind.id) === 'override';
+        r.prio.textContent = over ? 'Override' : 'Underride';
+        r.prio.classList.toggle('is-over', over);
+        r.prio.title = over
+          ? 'This key is ours. mope never sees it.'
+          : 'mope wins wherever it claims this key, and this works everywhere else.';
+        const list = kbConflicts(r.bind.id);
+        const kind = kbWorstKind(list);
+        r.haz.className = 'qolc-kb-haz' + (kind ? ' is-' + kind : '');
+        r.haz.textContent = kind === 'ours' ? '!!' : kind ? '!' : '';
+        r.haz.title = list.length
+          ? list.map((c) => c.kind === 'ours' ? 'Also bound to: ' + c.what
+              : c.kind === 'fixed' ? 'mope uses this key for ' + c.what
+              : 'mope has "' + c.what + '" bound to this key').join('\n')
+          : '';
+        r.row.classList.toggle('has-clash', !!kind);
+        // Ranked, not last-wins. The previous form let a 'bound' row further
+        // down the list overwrite a 'fixed' row above it, so the summary named
+        // the milder problem — on the one line whose job is to say which
+        // problem matters.
+        const rank = {ours: 3, fixed: 2, bound: 1};
+        if ((rank[kind] || 0) > (rank[worst] || 0)) worst = kind;
+      }
+      // One line that says what the list means, so the chips do not have to be
+      // hovered one at a time to find out whether anything is actually broken.
+      kbNote.textContent = worst === 'ours'
+        ? 'Two Lumi’s Extras binds share a key. One of them will not fire.'
+        : worst === 'fixed'
+          ? 'A bind sits on a key mope uses itself. Underride yields to it; Override takes it.'
+          : worst === 'bound'
+            ? 'A bind sits on a key you have bound in mope. Underride yields to it; Override takes it.'
+            : mopeSettings.proxy
+              ? 'No conflicts.'
+              : 'No conflicts found — but mope’s own bind list could not be read, so clashes with it cannot be seen.';
+      kbNote.className = 'qolc-kb-note' + (worst ? ' is-' + worst : '');
+    };
+    syncKeybinds();
+
+    /* ---- Settings: panel theme ---- */
+    settingsPane.appendChild(makeSecLabel('Appearance'));
+    const themePanelRow = document.createElement('div');
+    themePanelRow.className = 'qolc-subrow';
+    hinted(themePanelRow, 'panelTheme');
+    const themePanelLabel = document.createElement('div');
+    themePanelLabel.className = 'qolc-row-name';
+    themePanelLabel.textContent = 'Panel theme';
+    themePanelRow.appendChild(themePanelLabel);
+    const themePanelPicks = document.createElement('div');
+    themePanelPicks.className = 'qolc-theme-picks';
+    const panelThemeButtons = [];
+    for (const th of PANEL_THEMES) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'qolc-theme-pick';
+      btn.textContent = th.label;
+      btn.title = th.note;
+      btn.dataset.ptheme = th.id;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        panelThemeSet(th.id);
+        syncPanelTheme();
+      });
+      themePanelPicks.appendChild(btn);
+      panelThemeButtons.push(btn);
+    }
+    themePanelRow.appendChild(themePanelPicks);
+    settingsPane.appendChild(themePanelRow);
+    function syncPanelTheme() {
+      const active = panelThemeOf().id;
+      for (const b of panelThemeButtons) {
+        b.classList.toggle('is-on', b.dataset.ptheme === active);
+      }
+    }
+    syncPanelTheme();
+    syncPartyUI();
+    // ON THE WINDOW AT CAPTURE, like every other hotkey here. It was on
+    // `document` until 1.0.7, which put it DOWNSTREAM of mope's own handlers —
+    // capture visits window before document — so setting this bind to Override
+    // on a key mope has bound did nothing at all: mope had already acted by the
+    // time preventDefault ran. Override was silently inoperative for the one
+    // bind most likely to be moved.
+    //
+    // The hand-rolled typing check that used to sit here is gone with it:
+    // kbHit calls kbTyping(), which is the same test plus the #chatInput check
+    // this copy was missing.
+    PAGE.addEventListener('keydown', (e) => {
+      if (!kbHit('panel', e) || prevMenuVisible !== false) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      togglePanel(e);
+    }, true);
+    // The stored theme, applied once the panel element exists to carry it.
+    panelThemeApply();
     return extras;
   }
 
