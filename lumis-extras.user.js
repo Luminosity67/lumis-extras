@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.8
+// @version      1.0.9
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -29,6 +29,46 @@
  *      Lumi's — if you are working on this and think a change earns it, ask.
  *      Default to leaving it alone.
  *   y  everything else: features, fixes, extra gradients, copy tweaks.
+ *
+ * 1.0.9 fixes the mis-hook properly. The boost counter following the opponent
+ * and the draw-order keys working backwards in an arena were ONE bug: the
+ * player lock was on the wrong animal, and everything downstream repeated it.
+ *
+ * The inversion is the tell. "Above" re-attaches the locked animal and "below"
+ * re-attaches everyone EXCEPT it — so with the lock on your opponent, above
+ * lifts them (you sink) and below lifts everyone but them (you rise). Exactly
+ * backwards, which is what was reported.
+ *
+ * WHY THE LOCK WAS WRONG. The species check — "is this animal the animal the
+ * HUD says I am" — was gated on `near.length > 1`. With a single animal near
+ * the middle of the screen it did not run at all, so when the camera sat
+ * nearer the opponent than to you the lock adopted them WITHOUT EVER ASKING
+ * whether they were your species, even though hpIdentifySelfFromHud() could
+ * have said no outright. Both players in the report were called "mope.io" —
+ * the default name — so the nameplate path added in 1.0.3 could not help
+ * either: styleFor() and hpSelfByName() both refuse to match "mope.io",
+ * because every nameless player shows it.
+ *
+ * THREE CHANGES:
+ *   - hpLockByName() — "exactly one animal on screen is the animal the HUD
+ *     says I am" — now runs BEFORE position is consulted, over every bar. It
+ *     could always answer this; it was only ever called as a last resort when
+ *     nothing at all was near the centre, so the strongest signal available to
+ *     a nameless player was the one the lock reached for last and usually
+ *     never. Only a UNIQUE match counts, so a mirror match still declines.
+ *   - The near-centre species pass keeps its `near.length > 1` shape, since
+ *     being near the centre is corroborating evidence in its own right.
+ *   - Position is now CHECKED rather than trusted. Before adopting the nearest
+ *     animal, if the HUD names our species and that animal is positively a
+ *     different one, it is refused. A candidate we can identify as NOT us is
+ *     worse than no candidate: it is confidently wrong, and the boost counter,
+ *     the HP bar, the damage numbers, the party health and the draw-order keys
+ *     all repeat the mistake.
+ *
+ * What is still a guess, honestly: a mirror match between two nameless players
+ * of the same species has nothing left to separate them but position, and the
+ * lock takes the nearest. Setting a nickname removes the ambiguity outright,
+ * since the nameplate path is checked first and beats all of this.
  *
  * 1.0.8 fixes the "67" bug PROPERLY, and makes the draw-order keys work.
  *
@@ -2831,7 +2871,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.8';
+    return '1.0.9';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -12743,52 +12783,82 @@
     // centre of the screen is a fact about where the camera is pointing. Only
     // one of those is an identity, so it goes first.
 
+    // THE SPECIES, ACROSS EVERY BAR, BEFORE POSITION IS CONSULTED AT ALL.
+    //
+    // 1.0.9. hpLockByName() has always been able to answer "exactly one animal
+    // on screen is the animal the HUD says I am" — but it was only ever called
+    // when NOTHING was near the centre, as a last resort. So the strongest
+    // signal available to a player with no name was the one the lock reached
+    // for last, and usually never.
+    //
+    // It is an identity for the same reason a nameplate is: it is a fact about
+    // WHICH ANIMAL this is, not about where the camera happens to be pointing.
+    // Only a unique match counts — hpLockByName returns null the moment two
+    // animals share your species, which is the honest answer in a mirror
+    // match and is why this can sit this high without being reckless.
+    if (self) {
+      const only = hpLockByName(self);
+      if (only) { hpLockRefusedAt = 0; return hpAdoptPlayer(only); }
+    }
+
+    // Then among the ones near the middle. Unlike the pass above this accepts
+    // the FIRST match rather than requiring uniqueness, because being near the
+    // centre is corroborating evidence in its own right.
     if (near.length > 1 && self) {
       for (let i = 0; i < near.length && i < 4; i++) {
         const ident = hpIdentify(near[i].entry.entity);
         if (ident && ident.species === self.species && ident.sub === self.sub) {
+          hpLockRefusedAt = 0;
           return hpAdoptPlayer(near[i].entry);
         }
       }
     }
 
-    // NOTHING IDENTIFIED YOU AND THERE IS MORE THAN ONE CANDIDATE.
+    // NOTHING IDENTIFIED YOU. What is left is position, and position is a
+    // guess — so before taking it, check it does not contradict something we
+    // actually know.
+    //
+    // THIS IS THE BUG FROM THE FIELD REPORT. The species check above used to
+    // be the only one, and it was gated on `near.length > 1`. With a single
+    // animal near the middle it did not run at all — so when the camera sat
+    // nearer the opponent than to you, the lock adopted them WITHOUT EVER
+    // ASKING whether they were your species, even though the HUD could have
+    // said no. The boost counter, the HP bar, the damage numbers and the party
+    // health all followed the opponent, and the draw-order keys inverted,
+    // because "above" then lifted them and "below" lifted everyone but them.
+    //
+    // A candidate we can positively identify as NOT us is worse than no
+    // candidate: it is confidently wrong, and every feature downstream repeats
+    // the mistake.
+    const pick = near[0];
+    if (self && pick) {
+      const ident = hpIdentify(pick.entry.entity);
+      if (ident && (ident.species !== self.species || ident.sub !== self.sub)) {
+        // Hold an existing lock rather than clearing it — the same
+        // anti-thrash rule as below, and for the same reason.
+        if (hpState.playerEntry) { hpLockRefusedAt = now; return hpState.player; }
+        hpLockRefusedAt = now;
+        return hpAdoptPlayer(null);
+      }
+    }
+
+    // Ambiguous rather than contradicted: more than one plausible candidate and
+    // a name we could have matched but did not.
     //
     // 1.0.3 refused here whenever an arena was running, and that shipped a
-    // regression worth writing down in full, because the reasoning was sound
-    // and the result was still wrong.
+    // regression worth recording. Refusing means hpAdoptPlayer(null), and
+    // arenaSkyPick() opens by reading hpState.playerEntry and hands it to
+    // arenaSkyLockIsSelf(), which returns false on a null entry — so a refusal
+    // did not merely withhold the HP bar, it made the duel read as not-yours,
+    // which took the starfield down and stopped biteTick() ever running. And it
+    // FLASHED, because a refusal is not stable: whenever one fighter drifted
+    // out of the near-centre circle there was one candidate, the lock adopted,
+    // and the moment both were near again it refused.
     //
-    // Refusing means hpAdoptPlayer(null), and arenaSkyPick() opens by reading
-    // hpState.playerEntry and passing it to arenaSkyLockIsSelf(), which
-    // returns false on a null entry. So a refusal did not merely withhold the
-    // HP bar: it made the duel read as not-yours, which took the starfield off
-    // and stopped biteTick() ever running. And it FLASHED, because the refusal
-    // is not stable — whenever one duellist drifted out of the near-centre
-    // circle there was only one candidate, so the lock adopted, the sky came
-    // back, and the moment both were near again it refused. On and off, at
-    // frame rate, for the length of every fight.
-    //
-    // Two things were wrong. The first is that identity was almost never
-    // AVAILABLE: nameKey() reads the name-colour panel's field, which is empty
-    // unless you have set a name colour, so the refusal was not the rare
-    // ambiguous case, it was the default case. hpSelfNameKey() now falls back
-    // to mope's own nickname box, which nearly everyone has.
-    //
-    // The second is the rule itself. Refusing to guess is only defensible when
-    // a question was asked and came back no. With no name and no tag there was
-    // never a question — so the refusal is now conditioned on hpHaveIdentity(),
-    // and without one this falls through to the old nearest-to-centre answer.
-    // A guess that is right most of the time beats a feature that is dark all
-    // of the time.
-    //
-    // Kept deliberately narrow: an arena, more than one candidate, AND a name
-    // we could have matched but did not. That is a genuine "these two animals
-    // are both plausible and neither is you" and is worth showing nothing for.
+    // So it is conditioned on hpHaveIdentity() — refusing to guess is only
+    // defensible when a question was asked and came back no — and an existing
+    // lock is HELD rather than cleared.
     if (near.length > 1 && arenaDuel.active && hpHaveIdentity()) {
-      // Held rather than cleared where a lock already exists. Thrashing the
-      // lock is what produced the flashing, and a lock that was good enough a
-      // frame ago is better evidence than an ambiguity that resolves itself
-      // the moment the camera moves.
       if (hpState.playerEntry) { hpLockRefusedAt = now; return hpState.player; }
       hpLockRefusedAt = now;
       return hpAdoptPlayer(null);
