@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.5
+// @version      1.0.6
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -29,6 +29,39 @@
  *      Lumi's — if you are working on this and think a change earns it, ask.
  *      Default to leaving it alone.
  *   y  everything else: features, fixes, extra gradients, copy tweaks.
+ *
+ * 1.0.6 is one bug and one feature.
+ *
+ * THE OUTLINE NOW FOLLOWS THE SHAPE, not just the bar. Geometry is copied off
+ * mope's plate at attach time, which is right, but it was only ever copied
+ * ONCE — so turning mope's Rounded Corners off left a rounded ring around a
+ * square bar. The header above used to claim the next duel corrected it; it
+ * does not reliably, because the outline lives as long as the bar entry does
+ * and that outlasts several fights. The plate is now re-read on a 400ms
+ * throttle and the ring rebuilt when the shape under it has changed. An
+ * unreadable plate is not treated as a change — hpEdgeAttach already refuses
+ * to build a ring it cannot measure, so rebuilding on a failed read would drop
+ * the outline for good.
+ *
+ * DRAW ORDER, on two keys: ] draws you above every other animal, [ draws you
+ * below them. Works in the open world as well as in an arena, because mope's
+ * inconsistency does.
+ *
+ * The lever is not zIndex and not the child list. mope builds its world out of
+ * about forty named RenderLayers, and a layer draws what is attached to it in
+ * ATTACH ORDER — so re-attaching moves an object to the end and therefore
+ * draws it last. Above re-attaches YOU; below re-attaches everyone else so
+ * they all land after you. That asymmetry is unavoidable: a layer can be told
+ * to draw something last and has no equivalent for first.
+ *
+ * Every engine call is feature-detected and a missing one turns the feature
+ * off rather than half-applying it — a duplicate attach would draw an animal
+ * twice, which is far worse than the inconsistency being fixed. detach comes
+ * before attach wherever it exists, because attach alone on an object the
+ * layer already holds is the one call that could duplicate. Re-applied on a
+ * 250ms throttle, since mope re-attaches animals as they enter and leave view
+ * and a single application at keypress would be undone within seconds.
+ * __lumiZOrderDebug() reports what the engine turned out to support.
  *
  * 1.0.5 turns the starfield into ARENA THEMES, and adds two.
  *
@@ -2704,7 +2737,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.5';
+    return '1.0.6';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -2916,6 +2949,10 @@
     // somebody's choice — arenaThemeOf() falls back to the first entry for an
     // id it does not recognise, which is what an uninstalled theme should do.
     arenaTheme: String(store.get('arenaTheme', 'starfield') || 'starfield'),
+    // 1.0.6. Draw-order override: 1 above every other animal, -1 below them,
+    // 0 off. Not remembered as two booleans, because "above and below" is not
+    // a state that means anything.
+    zorderMode: (() => { const v = Number(store.get('zorderMode', 0)); return v === 1 || v === -1 ? v : 0; })(),
     // 1.28.0. Both are arena-only and both stand down completely outside a
     // duel of your own, so neither costs anything in an ordinary game.
     arenaFocus: !!store.get('arenaFocus', false),
@@ -4930,6 +4967,9 @@
             lastHpWork = now;
             hpLastStage = stage;
             hpTick(this, now);
+            // Draw order, on the HP budget: it reorders the same animals the
+            // HP scan is already holding, and has its own 250ms throttle.
+            zorderApply(now, false);
           }
           // Party dots still update before Pixi draws; redundant intervening
           // renders are skipped because peers publish at only 10 Hz.
@@ -9435,6 +9475,7 @@
   // exist and do nothing until there is a switch to move.
   let syncArenaSkyRow = () => {};
   let syncArenaThemeRow = () => {};
+  let syncZorderRows = () => {};
   // 1.29.0. The bite indicator's style sub-option dims with its parent.
   // 1.31.0. The units picker lights the chosen mode and dims while neither of
   // the two features it governs is switched on.
@@ -11093,17 +11134,55 @@
     // outline fades in with the bar and vanishes with it, which is exactly
     // right. There is no missing health to point at when there is none.
     entry.edge = node;
+    entry.edgeKey = hpEdgeKeyOf(shape);
+    entry.edgeCheckAt = 0;
     hpEdgeLive++;
     return node;
   }
 
-  function hpEdgeApply(entry, want) {
+  // A signature for the rectangle an outline was drawn against, so a change in
+  // it can be noticed. Rounded and square are different SHAPES rather than
+  // different numbers, so the flag leads.
+  function hpEdgeKeyOf(shape) {
+    return shape ? (shape.rounded ? 'r|' : 's|') + shape.args.join(',') : '';
+  }
+
+  const HP_EDGE_RECHECK_MS = 400;
+
+  function hpEdgeApply(entry, want, now) {
     // A bar rebuilt underneath us leaves the outline attached to a container
     // nothing points at any more. Dropped before anything else is decided, so
     // the branch below can only ever build onto the bar this entry is holding.
     if (entry.edge && entry.edge.parent !== entry.bar) hpEdgeDetach(entry);
-    if (want) { if (!entry.edge) hpEdgeAttach(entry); }
-    else if (entry.edge) hpEdgeDetach(entry);
+    if (!want) { if (entry.edge) hpEdgeDetach(entry); return; }
+    if (!entry.edge) { hpEdgeAttach(entry); return; }
+
+    // 1.0.6. THE OUTLINE HAS TO FOLLOW THE SHAPE, NOT JUST THE BAR.
+    //
+    // Geometry is copied off mope's plate at attach time, which is right — but
+    // it was only ever copied ONCE. Rounded Corners is a live setting the
+    // player owns, so mope redraws the plate as a rect the moment it is turned
+    // off while our ring carries on being a roundRect. The header used to
+    // claim the next duel corrected it; it does not reliably, because the
+    // outline lives as long as the bar entry does and that can outlast several
+    // fights.
+    //
+    // So the plate is re-read on a throttle and the ring rebuilt when the
+    // shape underneath it has changed. Throttled because this walks the
+    // plate's drawing instructions and hpTick runs over every tracked bar —
+    // 400ms is far below noticing a corner change and far above doing this
+    // per bar per frame.
+    if (now - entry.edgeCheckAt < HP_EDGE_RECHECK_MS) return;
+    entry.edgeCheckAt = now;
+    const plate = entry.parts && entry.parts.plate;
+    if (!plate || plate.parent !== entry.bar) return;
+    const key = hpEdgeKeyOf(hpPlateShape(plate));
+    // An unreadable plate is not evidence of a change. Leaving the ring alone
+    // is the safe answer: hpEdgeAttach() already refuses to build one it cannot
+    // measure, so rebuilding here would just drop the outline for good.
+    if (!key || key === entry.edgeKey) return;
+    hpEdgeDetach(entry);
+    hpEdgeAttach(entry);
   }
 
   // Every outline, off. Called from the two places an entry can stop being
@@ -11983,6 +12062,10 @@
         stack: 0, stackAt: 0,
         fx: null, outline: -1, burnAt: 0, arenaAt: 0,
         edge: null,   // our missing-health outline, while the starfield is up
+        // The plate geometry the outline was BUILT for, and when it was last
+        // re-read. Rounded Corners is a live setting, so the shape it was
+        // drawn against can change under it — see hpEdgeApply().
+        edgeKey: "", edgeCheckAt: 0,
       });
     }
   }
@@ -12358,7 +12441,7 @@
       // worth MEASURING. It is not a reading — it is a change to the bar
       // itself — and every branch below this drops bars that are still on
       // screen and still want outlining.
-      hpEdgeApply(entry, edging);
+      hpEdgeApply(entry, edging, now);
 
       // Nobody is told who dealt the damage, so an animal that is not you only
       // counts while it is close enough to be something you are fighting.
@@ -13336,6 +13419,124 @@
     return settings.masterEnabled && settings.arenaFocus;
   }
 
+  /* ----- draw order override (1.0.6) -----
+   *
+   * mope decides which animal draws over which, and the answer is not stable:
+   * sometimes you are painted over a bigger player and sometimes under them.
+   * This is two keys that settle it — one that puts you on top of every other
+   * animal, one that puts you under them — and it works in the open world as
+   * well as in an arena, because the inconsistency does.
+   *
+   * HOW DRAW ORDER ACTUALLY WORKS HERE, since it is not the scene graph. mope
+   * builds its world out of about forty named RenderLayers in a fixed order,
+   * and a RenderLayer draws the objects attached to it in ATTACH ORDER. So the
+   * lever is not zIndex and not the child list — it is re-attaching, which
+   * moves an object to the end of its layer's list and therefore draws it last.
+   *
+   *   ABOVE  re-attach YOU, so you go to the end of your own layer.
+   *   BELOW  re-attach everyone else, so they all go after you.
+   *
+   * Below costs more than above and that asymmetry is unavoidable: a layer can
+   * be told to draw something last, and has no equivalent for first.
+   *
+   * NOTHING IS ASSUMED ABOUT THE ENGINE. Every call is feature-detected and a
+   * missing one turns the feature off rather than half-applying it — a
+   * duplicate attach would draw an animal twice, which is a far worse artefact
+   * than the inconsistency being fixed. detach-then-attach is preferred where
+   * detach exists, because attach alone on an object already in the layer is
+   * the one case that could duplicate.
+   *
+   * Re-applied on a throttle rather than every frame: mope re-attaches animals
+   * as they enter and leave view, so a single application at keypress would be
+   * undone within seconds. 250ms is well under noticing and well over doing
+   * this on the frame path.
+   */
+  const ZORDER_APPLY_MS = 250;
+  const zorder = {
+    mode: 0,        // 0 off, 1 above everything, -1 below everything
+    at: 0,          // last time it was applied
+    api: '',        // what the engine turned out to support, for the debug hook
+    applied: 0,     // how many objects the last pass moved
+  };
+
+  function zorderOn() { return settings.masterEnabled && zorder.mode !== 0; }
+
+  function zorderMove(obj) {
+    const layer = obj && obj.parentRenderLayer;
+    if (!layer || typeof layer.attach !== 'function') return false;
+    try {
+      // Detach first where the engine offers it. attach() on an object the
+      // layer is already holding is the one call that could leave it in the
+      // list twice, and an animal drawn twice is worse than one drawn under
+      // somebody.
+      if (typeof layer.detach === 'function') layer.detach(obj);
+      else if (!zorder.api) zorder.api = 'attach only (no detach) — re-attach may not reorder';
+      layer.attach(obj);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function zorderApply(now, force) {
+    if (!zorderOn()) return;
+    if (!force && now - zorder.at < ZORDER_APPLY_MS) return;
+    zorder.at = now;
+    const me = hpState.playerEntry && hpState.playerEntry.entity;
+    if (!me) { zorder.api = 'no player locked — nothing to reorder'; zorder.applied = 0; return; }
+    if (!me.parentRenderLayer) {
+      zorder.api = 'your animal is not on a render layer — nothing to reorder';
+      zorder.applied = 0;
+      return;
+    }
+    if (!zorder.api) zorder.api = 'render layers found';
+    let n = 0;
+    if (zorder.mode > 0) {
+      if (zorderMove(me)) n++;
+    } else {
+      // Everyone else, so they all land after you. Only animals the HP scan is
+      // already tracking — that is every animal with a health bar on screen,
+      // which is every animal that could be drawn over you.
+      for (const entry of hpState.bars.values()) {
+        const other = entry.entity;
+        if (!other || other === me) continue;
+        if (zorderMove(other)) n++;
+      }
+    }
+    zorder.applied = n;
+  }
+
+  // Setting a mode clears the other one: above and below are the same question
+  // answered two ways, so holding both would be a state with no meaning.
+  // Pressing the key you are already in turns it off, which is what makes one
+  // key enough for each.
+  function zorderSet(mode, source) {
+    const want = zorder.mode === mode ? 0 : mode;
+    zorder.mode = want;
+    zorder.at = 0;
+    zorder.api = '';
+    settings.zorderMode = want;
+    store.set('zorderMode', want);
+    syncZorderRows();
+    qolcToast(want > 0 ? 'Drawing above other players'
+      : want < 0 ? 'Drawing below other players'
+      : 'Draw order back to normal', want ? '' : 'quiet');
+    dbg('draw order', want, source);
+    if (want) zorderApply(performance.now(), true);
+  }
+
+  function zorderDebug() {
+    const report = {
+      mode: zorder.mode > 0 ? 'above' : zorder.mode < 0 ? 'below' : 'off',
+      engine: zorder.api || '(not applied yet)',
+      movedLastPass: zorder.applied,
+      playerLocked: !!(hpState.playerEntry && hpState.playerEntry.entity),
+      animalsTracked: hpState.bars.size,
+    };
+    console.log(TAG, 'draw order', report);
+    return report;
+  }
+  try { PAGE.__lumiZOrderDebug = zorderDebug; }
+  catch (e) { window.__lumiZOrderDebug = zorderDebug; }
+
   function biteOn() {
     return settings.masterEnabled && settings.biteIndicator;
   }
@@ -14044,6 +14245,32 @@
     return active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' ||
       active.tagName === 'SELECT' || active.isContentEditable === true;
   }
+
+  // The draw-order keys. Bracket keys deliberately: they are unused by mope,
+  // unused by this script, and sit together on the right hand so "above" and
+  // "below" are one key apart rather than two unrelated letters. Matched on
+  // CODE for the reason Z is — position beats letter on a non-QWERTY layout.
+  const ZORDER_ABOVE_KEY = 'BracketRight';
+  const ZORDER_BELOW_KEY = 'BracketLeft';
+
+  PAGE.addEventListener('keydown', (event) => {
+    if (!event.isTrusted || event.repeat) return;
+    if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
+    if (!settings.masterEnabled) return;
+    // The same stand-down every hotkey in this script takes: a bracket typed
+    // into a chat box is a bracket, not a command.
+    if (arenaSkyTypingElsewhere()) return;
+    // Only in a game. On the menu there is nothing to reorder and the key
+    // keeps whatever meaning it already had.
+    if (prevMenuVisible !== false) return;
+    const code = event.code;
+    const above = code ? code === ZORDER_ABOVE_KEY : event.key === ']';
+    const below = code ? code === ZORDER_BELOW_KEY : event.key === '[';
+    if (!above && !below) return;
+    event.preventDefault();
+    event.stopPropagation();
+    zorderSet(above ? 1 : -1, 'hotkey');
+  }, true);
 
   // On the window at capture, like every other hotkey in this script: the
   // capture phase visits window before document, and mope's own handlers are
@@ -17570,6 +17797,8 @@
     hpUnits: 'Show as — the unit for both rows above. Percentage is exactly what the game sends and works on every animal. Hit points multiplies it by a maximum this script works out itself: the figures are approximate, and rares, skins and King Dragon get no number at all.',
     arenaSky: 'Arena theme — a backdrop behind your own 1v1 duels. Z toggles it in game.',
     arenaTheme: 'Which backdrop. Starfield is deep space and the original; Antimatter is the same sky as a negative, pale with dark stars; Deep Water is pale motes on blue-green with no star band.',
+    zorderAbove: 'Draw above other players — forces your animal to be painted over every other one. mope decides this inconsistently on its own. Toggled in game with the ] key.',
+    zorderBelow: 'Draw below other players — the opposite: everyone else is painted over you. Toggled in game with the [ key.',
     biteIndicator: 'Bite indicator — a bitten fighter cannot be bitten again for three seconds. A purple mark on their health bar counts that down, so you can see when they are worth biting again.',
     arenaFocus: "Focus mode — hides party dots, tags, the list and chat while you are in a 1v1 of your own. You keep sending, so the party still sees you; P and Enter go back to the game until the duel ends.",
     cameraZoom: "Camera zoom — scroll, or the − and = keys, in place of mope's own wheel zoom.",
@@ -19155,6 +19384,32 @@
       }
     );
     arenaPane.insertBefore(focusRow.row, biteRow.row.nextSibling);
+
+    // Draw order. Two rows rather than one three-state control, because they
+    // are two things a player wants in two different moments — and each has
+    // its own key, so each wants its own line showing that key.
+    const zAboveRow = makeRow(
+      'Draw above other players  ]',
+      'zorderAbove',
+      settings.zorderMode > 0,
+      () => { zorderSet(1, 'panel'); }
+    );
+    const zBelowRow = makeRow(
+      'Draw below other players  [',
+      'zorderBelow',
+      settings.zorderMode < 0,
+      () => { zorderSet(-1, 'panel'); }
+    );
+    arenaPane.insertBefore(zAboveRow.row, focusRow.row.nextSibling);
+    arenaPane.insertBefore(zBelowRow.row, zAboveRow.row.nextSibling);
+    syncZorderRows = () => {
+      // Written from zorder.mode rather than toggled, because the two switches
+      // are one exclusive choice: turning either on has to turn the other off
+      // on screen as well as in the state.
+      zAboveRow.sw.classList.toggle('on', zorder.mode > 0);
+      zBelowRow.sw.classList.toggle('on', zorder.mode < 0);
+    };
+    syncZorderRows();
 
     // 1.35.0. Under focus mode, above the turn card: it belongs with the three
     // things that only happen in a duel. Pane order is decided by where an
