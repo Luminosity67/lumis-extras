@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.9
+// @version      1.0.10
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -2871,7 +2871,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.9';
+    return '1.0.10';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -3533,9 +3533,18 @@
     store.set(LAYOUT_POS_KEY, layout.pos);
   }
 
-  function layoutSetPos(id, x, y) {
+  // Apply a position without committing it. A drag emits one of these per
+  // pointermove — up to a hundred a second — and layoutSave() is a synchronous
+  // GM_setValue PLUS a JSON.stringify and a localStorage write, which is not
+  // something to do at pointer rate on a slow disk or a phone. The commit
+  // happens once, when the pointer is let go.
+  function layoutSetPosLive(id, x, y) {
     layout.pos[id] = {x, y};
     layout.mopeDirty = true;
+  }
+
+  function layoutSetPos(id, x, y) {
+    layoutSetPosLive(id, x, y);
     layoutSave();
   }
 
@@ -3761,6 +3770,25 @@
     }
     layout.mopeDirty = false;
   }
+
+  // A VIEWPORT CHANGE INVALIDATES EVERY MOPE OVERRIDE (1.0.10).
+  //
+  // Stored positions are dvmin, but what is written onto mope's elements is
+  // PIXELS, resolved once and then left alone until something marks the
+  // registry dirty. Only three things ever did — a drag, a reset, and the
+  // menu/game transition — so resizing the window mid-game (or going
+  // fullscreen, or changing browser zoom) left every dragged element at the
+  // old viewport's pixels until the player next died back to the menu. After a
+  // shrink that includes sitting outside the window entirely, which is the
+  // exact case layoutClamp() exists to prevent and could not, because nothing
+  // asked it to run again.
+  //
+  // A listener rather than a per-tick size comparison: it fires only when the
+  // answer actually changed, and the handler is one boolean assignment, so a
+  // continuous drag-resize costs nothing measurable. The 250ms pacer does the
+  // work on its next tick, which also coalesces a burst of resize events into
+  // one re-place. `resize` covers fullscreen and orientation changes too.
+  PAGE.addEventListener('resize', () => { layout.mopeDirty = true; }, {passive: true});
 
   // The HUD is not finished laying itself out the instant a game starts, so
   // the one-shot sample waits for it. Long enough that the ability cards have
@@ -4237,6 +4265,11 @@
     // joins a party still expects it to move, so the layout path asks for the
     // same cached container on its own account.
     at: 0,
+    // Whether WE are the ones holding the minimap invisible. Un-hiding used to
+    // be left to mope rewriting `visible` from its own update(), which is a
+    // promise about somebody else's code; this makes the undo ours, and it is
+    // only ever true while the player has the map switched off.
+    hidMap: false,
   };
 
   const LAYOUT_PIXI_SCAN_MS = 500;
@@ -4247,6 +4280,39 @@
   // hand, and does nothing at all — one map lookup — unless the user has
   // actually dragged something drawn into the canvas.
   function layoutSyncPixi(stage, renderer, now) {
+    if (!stage || !renderer) return;
+
+    // HIDING IS DECIDED BEFORE PLACEMENT, AND INDEPENDENTLY OF IT (1.0.10).
+    //
+    // It used to be decided after, below the "no position" early return — so
+    // "Show on screen: Minimap" did nothing whatsoever unless the player had
+    // ALSO dragged the map at some point. Turning a thing off and turning a
+    // thing's position off are different questions, and the second one was
+    // answering the first. The DOM half of the hide feature has no entry for
+    // the map either (it is drawn into the canvas, so there is no element for
+    // a CSS rule to reach), which is why nothing else covered the gap.
+    //
+    // A hidden map needs no placing, so this returns rather than falling
+    // through: the only work while it is off is one comparison.
+    const hidden = settings.masterEnabled && layoutHidden('map');
+    if (hidden || layoutPixi.hidMap) {
+      const container = partyCachedMinimap(stage, now);
+      if (container && container.parent) {
+        if (hidden) {
+          if (container.visible !== false) container.visible = false;
+          layoutPixi.hidMap = true;
+        } else {
+          // Ours to undo, so undone here rather than waiting for mope's next
+          // update() to happen to rewrite the flag.
+          if (container.visible === false) container.visible = true;
+          layoutPixi.hidMap = false;
+        }
+      } else if (!hidden) {
+        layoutPixi.hidMap = false;
+      }
+      if (hidden) return;
+    }
+
     // The master switch counts as "not placed"; it falls into the restore
     // branch below rather than leaving the map where it was dragged.
     const pos = settings.masterEnabled ? layoutPosOf('map') : null;
@@ -4263,7 +4329,7 @@
     // and written back the first time it is not needed.
     if (!pos) {
       const home = layoutPixi.home;
-      if (!home || !stage || !renderer) return;
+      if (!home) return;
       layoutPixi.home = null;
       const container = partyCachedMinimap(stage, now);
       if (container && container.parent) {
@@ -4271,19 +4337,14 @@
       }
       return;
     }
-    if (!stage || !renderer) return;
     // Kept on the party feature's cache deliberately: two independent scans
     // for the same container, with two independent ideas of which one it is,
     // is exactly the kind of duplication the layout registry exists to stop.
     const container = partyCachedMinimap(stage, now);
     if (!container || !container.parent) return;
-    // The minimap has no element for the hide rules to reach, so its own
-    // visible flag is the equivalent. Re-applied here because mope writes it
-    // too, from update().
-    if (settings.masterEnabled && layoutHidden('map')) {
-      if (container.visible !== false) container.visible = false;
-      return;
-    }
+    // The hide decision was made at the top of this function and returned
+    // there if it applied, so anything reaching here is a map that should be
+    // both visible and placed.
     const screen = partyTagScreenOf(renderer, now);
     if (!screen || !screen.rect.width || !screen.rect.height) return;
 
@@ -5002,7 +5063,14 @@
   // would take the whole script down on an old engine instead of just this.
   const NAME_EMOJI_RE = (() => {
     try {
-      return new RegExp('\p{Emoji_Presentation}|\p{Regional_Indicator}|\uFE0F', 'u');
+      // The backslashes MUST be doubled. Written as '\p{...}' the string
+      // literal collapses \p to a bare p, so the source became p{...} \u2014 an
+      // unescaped { that is not a quantifier, which is a SyntaxError under the
+      // u flag on EVERY engine. The try/catch then swallowed it and the crude
+      // fallback below ran everywhere, which is the opposite of what this
+      // indirection was written to achieve: the graceful path was never once
+      // taken, on any browser, since it was added.
+      return new RegExp('\\p{Emoji_Presentation}|\\p{Regional_Indicator}|\uFE0F', 'u');
     } catch (e) {
       // No Unicode property escapes: the surrogate ranges that hold almost
       // every emoji, plus the explicit presentation selector.
@@ -5384,8 +5452,19 @@
   // sweep. What it does not start is any of the per-frame work that scan
   // feeds: hpTick skips every animal but you, and every drawing path is still
   // behind hpActive() or hpBarOn().
+  // 1.0.10 adds draw order to this list, and it is a FIX rather than a tidy.
+  // zorderApply() rides the HP budget because it reorders the same animals the
+  // HP scan is already holding — but nothing here said so, so with damage
+  // numbers, the party and every arena feature switched off, the scan never
+  // ran, hpState.bars stayed empty, and the ] and [ keys toasted "Drawing above
+  // other players" and reordered nothing, for ever. The feature worked only as
+  // long as something ELSE happened to keep the scan alive, which is the worst
+  // kind of dependency: invisible, and it looks like the keys are broken.
+  //
+  // zorderOn() is masterEnabled && mode !== 0, so this costs exactly nothing
+  // for anyone not using it.
   function hpReadingNeeded() {
-    return hpActive() || partyNeedsSelfHealth() || arenaNeeded();
+    return hpActive() || partyNeedsSelfHealth() || arenaNeeded() || zorderOn();
   }
 
   function hpWorkNeeded() {
@@ -9768,9 +9847,19 @@
   // list does: a miss here would have this repaint a member's name over the
   // dot colour it was just given, AND spend online-registry subscriptions
   // asking about names this script had itself written to the page.
-  const QOLC_OWN_UI = '#qolc-panel, #qolc-zoom, #qolc-btn, #qolc-party, ' +
-    '#qolc-party-input, #qolc-party-toast, #qolc-party-list, #qolc-hp, ' +
-    '#qolc-hpbar, #qolc-cd, #qolc-game-hint';
+  // 1.0.10 makes this a PREFIX test rather than a hand-maintained list. The
+  // list had already drifted twice: #qolc-stats and #qolc-boost are both
+  // appended straight to body, and neither was named here — so the script's
+  // own fps/ping/boost readouts were fed to styleFor as if they were player
+  // names, spending registry subscriptions on our own text and letting a stat
+  // that happened to read "67" take a player's colour. That is the same
+  // collision the 1.0.8 bar-readout fix chased, arriving by a different door.
+  //
+  // Every surface this script builds carries an id beginning "qolc-", so an
+  // attribute-prefix selector is correct BY CONSTRUCTION for surfaces that do
+  // not exist yet. The id convention is now the contract; anything new is
+  // covered the moment it is named.
+  const QOLC_OWN_UI = '[id^="qolc-"]';
 
   const domTouched = new Map(); // element -> original inline styles
 
@@ -11062,8 +11151,30 @@
 
   const HP_SETTLE_MS = 90;      // a reading must hold still this long to count
   const HP_BLIND_MS = 2500;     // unreadable longer than this and the baseline is dropped
-  const HP_MIN_DAMAGE = 0.05;   // below this it is rounding noise, not a hit
+  // HP mode's noise floor, as a FRACTION OF THE ANIMAL'S MAXIMUM rather than a
+  // flat number of hit points (1.0.10).
+  //
+  // It was 0.05 HP flat, and that quietly deleted small hits on small animals.
+  // The percent reading moves in whole points, so the smallest real hit an
+  // animal can take is max/100 HP — which for anything with a maximum of 4 or
+  // less is BELOW 0.05 and was dropped: a 1% burn tick on a max-4 animal is
+  // 0.04, on a max-2.5 mouse 0.025. Every tier up to 13 has a maximum of 4 or
+  // less, so for most of the roster HP mode silently showed fewer numbers than
+  // percent mode — which reads as the indicator being unreliable rather than as
+  // a threshold doing its job.
+  //
+  // Half of one percentage point keeps every genuine whole-point change and
+  // still rejects sub-point jitter from a MEASURED bar (hpPercentOf falls back
+  // to measuring when mope prints no label). The small absolute floor underneath
+  // is for float noise alone.
+  const HP_MIN_DAMAGE_FRACTION = 0.005;  // half of one percentage point of max
+  const HP_MIN_DAMAGE_FLOOR = 0.01;      // never trust a change smaller than this
   const HP_MIN_DAMAGE_PCT = 1;  // percent mode: one whole point is the smallest hit there is
+
+  function hpMinDamageFor(max) {
+    const scaled = (typeof max === 'number' && max > 0) ? max * HP_MIN_DAMAGE_FRACTION : 0;
+    return scaled > HP_MIN_DAMAGE_FLOOR ? scaled : HP_MIN_DAMAGE_FLOOR;
+  }
   const HP_IDENT_MS = 1200;     // how often an animal's species is re-checked
   const HP_LOCK_FRACTION = 0.10; // "at the centre of the screen", as a screen fraction
   // How close an enemy has to be for its damage to be counted as yours, as a
@@ -12616,7 +12727,23 @@
       hpState.playerEntry = entry;
       return hpState.player;
     }
-    return null;   // that animal has left the scene; find yourself again
+    // That animal has left the scene; find yourself again.
+    //
+    // 1.0.10: the ENTRY is dropped here, and it did not used to be. The entry
+    // is the health-bar reading; once the bar is gone from the scan the entry
+    // is a corpse — a frozen figure with nothing behind it. Leaving it in place
+    // let the two "hold rather than clear" branches below resurrect it on a
+    // truthiness test alone, so partySelfHealth() went on publishing a stale
+    // number as live health, and the arena and draw-order features went on
+    // reading an animal that had left.
+    //
+    // hpState.player is deliberately KEPT. The entity reference is how you are
+    // re-found the moment your bar comes back into the scan, and holding it is
+    // the whole point of "being at the centre of the screen is how you are
+    // FOUND, not how you are recognised once you have been". Only the reading
+    // is stale, so only the reading is dropped.
+    hpState.playerEntry = null;
+    return null;
   }
 
   // Whether a held lock has stopped being believable. Checked occasionally
@@ -12711,10 +12838,58 @@
   // When the lock last refused to guess, for __lumiHpDebug. A feature that has
   // gone quiet on purpose should be able to say so.
   let hpLockRefusedAt = 0;
+  // Why it refused, in words, for the same reason.
+  let hpLockRefusedWhy = '';
+
+  // IS THE IN-GAME HUD ACTUALLY UP? (1.0.10)
+  //
+  // The BAR has asked this since the death screen was first handled — see
+  // HP_NO_HUD_GRACE_MS — but the LOCK never did, and that was the bug. On the
+  // death screen the game takes its whole HUD down, so hpIdentifySelfFromHud()
+  // returns null; with `self` null every species guard below is skipped and the
+  // last line of hpLockPlayer adopts near[0] unconditionally — a stranger
+  // wandering past the camera. Everything downstream then repeats it, and the
+  // one that leaves the screen is the party: partyNeedsSelfHealth() is still
+  // true on the death screen, so this client publishes a STRANGER'S health to
+  // the party as its own.
+  //
+  // Gating the lock on the same evidence the bar uses is the whole fix. Note
+  // the two failure modes it must keep apart, because only one of them is this
+  // one: "the HUD is gone" (nobody can be identified — stand down) and "the HUD
+  // is up but this animal's icon did not match" (the ordinary case for a large
+  // part of the roster — carry on and use position).
+  //
+  // Throttled because hpLockPlayer runs at the HP tick rate whenever no lock is
+  // held, which is exactly the death-screen state, and hpHudCluster() measures
+  // up to six elements. The HUD appears and disappears at human speed; 250ms
+  // costs four measurements a second instead of thirty-three and cannot be
+  // perceived. The grace period is shared with the bar so the two cannot
+  // disagree about a single frame of the HUD rebuilding.
+  const HP_HUD_CHECK_MS = 250;
+  let hpHudCheckAt = -Infinity;
+  let hpHudGoneAt = 0;          // 0 means the cards were there last time we looked
+
+  function hpHudDown(now) {
+    if (now - hpHudCheckAt >= HP_HUD_CHECK_MS) {
+      hpHudCheckAt = now;
+      if (hpHudCluster()) hpHudGoneAt = 0;
+      else if (!hpHudGoneAt) hpHudGoneAt = now;
+    }
+    return hpHudGoneAt !== 0 && now - hpHudGoneAt > HP_NO_HUD_GRACE_MS;
+  }
 
   function hpLockPlayer(scr, now) {
     const kept = hpRelock();
     if (kept && !hpLockGoneBad(hpState.playerEntry, now)) return kept;
+
+    // No HUD, no lock. Above the searches rather than inside them: with the
+    // cards gone there is no identity to be had, so every pass below is
+    // position guessing among strangers, and the honest answer is no answer.
+    if (hpHudDown(now)) {
+      hpLockRefusedAt = now;
+      hpLockRefusedWhy = 'the in-game HUD is down (death screen or menu)';
+      return hpAdoptPlayer(null);
+    }
 
     // THE NAME IS ASKED FIRST, AND ACROSS EVERY BAR — not just the ones near
     // the middle of the screen. That second half is the entire fix, and the
@@ -12835,9 +13010,16 @@
       const ident = hpIdentify(pick.entry.entity);
       if (ident && (ident.species !== self.species || ident.sub !== self.sub)) {
         // Hold an existing lock rather than clearing it — the same
-        // anti-thrash rule as below, and for the same reason.
-        if (hpState.playerEntry) { hpLockRefusedAt = now; return hpState.player; }
+        // anti-thrash rule as below, and for the same reason. hpRelock() has
+        // already dropped the entry if that animal left the scene, so this can
+        // only hold a reading that is still live.
+        if (hpState.playerEntry) {
+          hpLockRefusedAt = now;
+          hpLockRefusedWhy = 'nearest animal is not our species; holding the existing lock';
+          return hpState.player;
+        }
         hpLockRefusedAt = now;
+        hpLockRefusedWhy = 'nearest animal is positively a different species';
         return hpAdoptPlayer(null);
       }
     }
@@ -12859,17 +13041,27 @@
     // defensible when a question was asked and came back no — and an existing
     // lock is HELD rather than cleared.
     if (near.length > 1 && arenaDuel.active && hpHaveIdentity()) {
-      if (hpState.playerEntry) { hpLockRefusedAt = now; return hpState.player; }
+      if (hpState.playerEntry) {
+        hpLockRefusedAt = now;
+        hpLockRefusedWhy = 'ambiguous in an arena; holding the existing lock';
+        return hpState.player;
+      }
       hpLockRefusedAt = now;
+      hpLockRefusedWhy = 'ambiguous in an arena and identity is available';
       return hpAdoptPlayer(null);
     }
     hpLockRefusedAt = 0;
+    hpLockRefusedWhy = '';
     return hpAdoptPlayer(near[0].entry);
   }
 
   function hpAdoptPlayer(entry) {
     hpState.playerEntry = entry || null;
     hpState.player = entry ? entry.entity : null;
+    // Adopting anything is the end of a refusal, so the reason is cleared here
+    // rather than at each of the four sites that adopt — a refusal path calls
+    // this with null and its reason survives, which is the whole distinction.
+    if (entry) hpLockRefusedWhy = '';
     return hpState.player;
   }
 
@@ -13045,7 +13237,7 @@
       // floor that HP mode needs would never fire — but it is still written
       // per mode rather than shared, because the two are different units and
       // a single constant covering both would be a coincidence, not a rule.
-      if (damage < (percentMode ? HP_MIN_DAMAGE_PCT : HP_MIN_DAMAGE)) continue;
+      if (damage < (percentMode ? HP_MIN_DAMAGE_PCT : hpMinDamageFor(max))) continue;
 
       const at = hpScreenPos(bar);
       if (!at) continue;
@@ -13389,9 +13581,19 @@
               const scr = renderers[0] ? viewportOf(renderers[0])
                 : {w: innerWidth, h: innerHeight};
               const cx = scr.w / 2, cy = scr.h / 2;
+              const refusedMsAgo = hpLockRefusedAt
+                ? Math.round(performance.now() - hpLockRefusedAt) : null;
               return {
                 screen: scr,
                 mustBeWithinPx: Math.round(Math.min(scr.w, scr.h) * HP_LOCK_FRACTION),
+                // 1.0.10. These two were recorded from the first release that
+                // could refuse and reported by nothing, so a lock that had gone
+                // quiet ON PURPOSE looked exactly like one that was broken.
+                refusedMsAgo,
+                refusedBecause: hpLockRefusedWhy || null,
+                // The gate that stands the lock down on the death screen. When
+                // this is true a null lock is correct and not a fault.
+                hudIsDown: hpHudDown(performance.now()),
                 barsAndHowFarOffCentre: [...hpState.bars.values()].map((e) => {
                   const at = hpScreenPos(e.entity);
                   const ident = hpIdentify(e.entity);
@@ -13965,7 +14167,13 @@
    */
   const ZORDER_APPLY_MS = 250;
   const zorder = {
-    mode: 0,        // 0 off, 1 above everything, -1 below everything
+    // 1.0.10: seeded from the stored setting. It used to be a literal 0 while
+    // zorderSet() faithfully wrote the mode to storage and the panel rows took
+    // settings.zorderMode as their initial state — so the setting round-tripped
+    // through disk perfectly and was then overwritten by syncZorderRows()
+    // reading this 0 back out. Three call sites each assumed a fourth that did
+    // not exist, and the mode silently reset on every reload.
+    mode: settings.zorderMode,   // 0 off, 1 above everything, -1 below everything
     at: 0,          // last time it was applied
     api: '',        // what the engine turned out to support, for the debug hook
     layers: 0,      // how many distinct animal layers the last pass saw
@@ -14025,15 +14233,35 @@
     const to = layer || (obj && obj.parentRenderLayer);
     if (!obj || !to || typeof to.attach !== 'function') return false;
     try {
-      // Detach first where the engine offers it. attach() on an object the
-      // layer is already holding is the one call that could leave it in the
-      // list twice, and an animal drawn twice is worse than one drawn under
-      // somebody. Detaching from the CURRENT layer matters more now that the
-      // target can be a different one.
+      // Detach first. attach() on an object some layer is already holding is
+      // the one call that can leave it in two draw lists, and an animal drawn
+      // twice is worse than one drawn under somebody.
+      //
+      // 1.0.10 CLOSES A HOLE THIS COMMENT ALREADY PROMISED WAS CLOSED. The old
+      // code fell through to a branch that merely RECORDED "attach only (no
+      // detach)" and then called to.attach() regardless. That was survivable
+      // while the target was always the object's own layer — the worst case was
+      // a re-attach that did not reorder. Since 1.0.8 the target can be a
+      // DIFFERENT layer, so the same fall-through attached the animal to a
+      // second layer while the first still held it: the exact double-draw the
+      // paragraph above forbids. The fallback predated the cross-layer move and
+      // was never revisited.
+      //
+      // An object that is on no layer yet cannot duplicate, so that case still
+      // attaches. Anything else without a working detach REFUSES, per the
+      // feature's own rule: a missing engine call turns the feature off rather
+      // than half-applying it.
       const from = obj.parentRenderLayer;
-      if (from && typeof from.detach === 'function') from.detach(obj);
-      else if (to !== from && typeof to.detach === 'function') to.detach(obj);
-      else if (!zorder.api) zorder.api = 'attach only (no detach) - re-attach may not reorder';
+      if (from) {
+        if (typeof from.detach !== 'function') {
+          if (!zorder.api) {
+            zorder.api = 'no detach() on the current layer - refusing, ' +
+              'because attaching without it would draw the animal twice';
+          }
+          return false;
+        }
+        from.detach(obj);
+      }
       to.attach(obj);
       return true;
     } catch (e) { return false; }
@@ -16403,10 +16631,21 @@
   // spent on boosting. That correction is most of what 1.35.1 is: at 25% water
   // 1.35.0 said sixteen boosts and the true answer is six.
   //
-  // The percentage is the server's own integer for every animal that can be
-  // in a duel except King Dragon, which divides by 125 — so the raw resource
-  // value is recovered before dividing rather than the percent being used as
-  // though it were one.
+  // BOTH SIDES OF THE DIVISION ARE PERCENTAGES (corrected in 1.0.10).
+  //
+  // This used to recover the raw resource value first — `(pct - 15) / 100 *
+  // max` — on the reasoning that the cost was in resource points. It is not:
+  // the fit is trained in waterNote() on `delta = pct - previous`, a
+  // difference of METER PERCENTAGES, so boostCost() comes back as percent per
+  // press. Dividing a raw amount by a percent cost is a unit mismatch that
+  // cancels out only while max is 100 — which is every duel animal except King
+  // Dragon, whose 125 made the counter read 25% high. That is the same
+  // over-read 1.35.1 was written to remove, surviving in the one animal nobody
+  // could easily check.
+  //
+  // Percent over percent is also the honest form for the seed: 1.5 was
+  // measured on max-100 animals, where the two units are the same number, so
+  // nothing about the seeded case changes for anybody else.
   //
   // It rounds DOWN and the last one is not counted as available until it is
   // fully paid for, which is the honest direction to be wrong in: a counter
@@ -16432,10 +16671,10 @@
   function boostsLeft() {
     if (water.pct == null) return null;
     if (water.pct <= BOOST_MIN_PCT) return 0;
-    const raw = (water.pct - BOOST_MIN_PCT) / 100 * (water.max || 100);
+    const usablePct = water.pct - BOOST_MIN_PCT;
     const cost = boostCost();
     if (!(cost > 0)) return null;
-    return Math.max(1, Math.floor(raw / cost + 1e-9));
+    return Math.max(1, Math.floor(usablePct / cost + 1e-9));
   }
 
   // What the division ALONE says, with the clamp taken off. Reported by the
@@ -16444,7 +16683,10 @@
   // the cost estimate is too high for the bottom of the meter.
   function boostsLeftUnclamped() {
     if (water.pct == null) return null;
-    const raw = Math.max(0, water.pct - BOOST_MIN_PCT) / 100 * (water.max || 100);
+    // Percent over percent, exactly as boostsLeft() — the two must agree about
+    // units or the debug hook's "is the clamp carrying the reading?" comparison
+    // is measuring the unit bug instead of the clamp.
+    const raw = Math.max(0, water.pct - BOOST_MIN_PCT);
     const cost = boostCost();
     if (!(cost > 0)) return null;
     // The epsilon is not a fudge, it is a floating-point repair. A measured
@@ -18182,8 +18424,6 @@
       .qolc-party-relay.is-on {
         background: var(--qolc-accent); border-color: var(--qolc-accent-lit); color: var(--qolc-accent-ink);
       }
-      /* 1.0.5. The arena theme picker. Same shape as the relay chooser one
-         card down — both are "pick exactly one of a short list", and giving
       /* ---- keybinds (1.0.7) ---- */
       .qolc-kb-list { display: grid; gap: 5px; margin-top: 8px; }
       .qolc-kb-row {
@@ -18292,8 +18532,18 @@
         --qolc-switch-off: rgba(12,22,30,0.48);
         --qolc-shell: linear-gradient(155deg, rgba(96,134,168,0.3), rgba(18,32,44,0.62));
       }
+      /* 1.0.5. The arena theme picker. Same shape as the relay chooser one
+         card down — both are "pick exactly one of a short list", and giving
          them two different appearances would say they were different kinds of
-         choice when they are not. */
+         choice when they are not.
+
+         1.0.10: this comment used to be TORN IN HALF. Its opening sat above
+         the keybinds block and its tail landed here, at CSS top level, where
+         the parser ate it as a garbage prelude and discarded the rule below —
+         so both theme pickers lost their flex container. The comment-open and
+         comment-close counts still BALANCED, which is why a token-counting
+         guard cannot catch this variant: only a real parse or a computed-style
+         probe can. Never write a comment delimiter inside a comment. */
       .qolc-theme-picks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
       .qolc-subrow > .qolc-theme-picks { margin-top: 0; flex: 0 0 auto; justify-content: flex-end; }
       .qolc-theme-pick {
@@ -18957,6 +19207,7 @@
       try { row.root.remove(); } catch (e) {}
       partyRosterRows.delete(id);
     }
+    let rosterIndex = 0;
     for (const peer of members) {
       let row = partyRosterRows.get(peer.id);
       if (!row) {
@@ -19006,10 +19257,26 @@
         row.swatch.style.background = preset.fill;
         row.swatch.style.boxShadow = '0 0 0 1.5px ' + preset.line;
       }
-      // Appended in roster order every pass. Moving a node that is already in
-      // the right place is a no-op in every engine, and it is what keeps the
-      // alphabetical sort correct as names arrive.
-      refs.roster.appendChild(row.root);
+      // Placed in roster order, but ONLY when it is not already there (1.0.10).
+      //
+      // The old comment claimed "moving a node that is already in the right
+      // place is a no-op in every engine". It is not: appendChild always
+      // removes and re-inserts, even when the node lands back in the same
+      // position. This runs every 750ms over every member, so every row in the
+      // list was being detached and re-attached four times a second — which
+      // BLURS a focused Kick button (removal from the document drops focus),
+      // fires mutation observers, and is exactly the "a click landing mid
+      // rebuild hits a detached element" hazard the patch-don't-rebuild design
+      // was written to avoid.
+      //
+      // Comparing against the node that should follow it keeps the sort
+      // correct as names arrive, and touches the DOM only when the order has
+      // actually changed.
+      // `children`, not `childNodes`: element positions are what the sort is
+      // about, and a stray text node would offset every comparison by one and
+      // reintroduce the churn this replaces.
+      const want = refs.roster.children[rosterIndex++];
+      if (want !== row.root) refs.roster.insertBefore(row.root, want || null);
     }
     refs.empty.style.display = members.length ? 'none' : 'block';
     // Collapsed when there is nobody in it, so the inset does not sit there as
@@ -19036,6 +19303,9 @@
     note: null,
     chips: new Map(),   // id -> element
     dragging: null,
+    // The window pointerup/cancel pair, held only while a drag is running on
+    // an engine that refused pointer capture. Null the rest of the time.
+    winEnd: null,
   };
 
   // px on the stage per px on the screen.
@@ -19128,8 +19398,24 @@
     if (layoutPosOf(id)) layoutPlace(id, el, null);
   }
 
+  // How far the pointer must travel before a press becomes a DRAG (1.0.10).
+  //
+  // There was no threshold, so the first pointermove — one pixel of hand
+  // tremor, or the jitter a trackpad emits on any tap — committed a position.
+  // That is not a cosmetic problem: an entry with no stored position is
+  // ANCHORED and follows mope's HUD, and one with a position is pinned to
+  // fixed coordinates. A stray click silently converted the first into the
+  // second, and it looked identical at the time and wrong later, when the HUD
+  // moved and the element did not. 4px is below the smallest deliberate drag
+  // and above every accidental one, on a mouse or a touchscreen.
+  const LAYOUT_DRAG_SLOP = 4;
+  const LAYOUT_DRAG_SLOP_SQ = LAYOUT_DRAG_SLOP * LAYOUT_DRAG_SLOP;
+
   function layoutBeginDrag(id, chip, ev) {
     if (!layoutUI.stage) return;
+    // One pointer at a time. Without this a second finger overwrites the drag
+    // state and the two fight over one chip.
+    if (layoutUI.dragging) return;
     const stageRect = layoutUI.stage.getBoundingClientRect();
     const chipRect = chip.getBoundingClientRect();
     layoutUI.dragging = {
@@ -19140,9 +19426,25 @@
       dx: ev.clientX - chipRect.left,
       dy: ev.clientY - chipRect.top,
       stageRect,
+      pointerId: ev.pointerId,
+      startX: ev.clientX,
+      startY: ev.clientY,
+      // Whether the slop has been crossed. Until it has, nothing is written.
+      live: false,
     };
     chip.classList.add('qolc-lay-drag');
-    try { chip.setPointerCapture(ev.pointerId); } catch (e) { /* older engines */ }
+    let captured = false;
+    try { chip.setPointerCapture(ev.pointerId); captured = true; } catch (e) { /* older engines */ }
+    // Where capture is unavailable, releasing the pointer outside the chip
+    // would never reach the chip's own pointerup and the drag would stick —
+    // re-arming on the next hover with no button held. A window pair for the
+    // life of the drag closes that, and is removed in layoutEndDrag so nothing
+    // outlives the gesture.
+    if (!captured) {
+      layoutUI.winEnd = layoutEndDrag;
+      PAGE.addEventListener('pointerup', layoutUI.winEnd, true);
+      PAGE.addEventListener('pointercancel', layoutUI.winEnd, true);
+    }
     ev.preventDefault();
     ev.stopPropagation();
   }
@@ -19150,6 +19452,14 @@
   function layoutMoveDrag(ev) {
     const drag = layoutUI.dragging;
     if (!drag) return;
+    if (drag.pointerId != null && ev.pointerId != null &&
+        ev.pointerId !== drag.pointerId) return;
+    if (!drag.live) {
+      const mx = ev.clientX - drag.startX;
+      const my = ev.clientY - drag.startY;
+      if (mx * mx + my * my < LAYOUT_DRAG_SLOP_SQ) { ev.preventDefault(); return; }
+      drag.live = true;
+    }
     const scale = layoutScale();
     if (!(scale > 0)) return;
     const stage = drag.stageRect;
@@ -19163,7 +19473,8 @@
     chip.style.left = Math.round(sx) + 'px';
     chip.style.top = Math.round(sy) + 'px';
     const vmin = layoutVmin();
-    layoutSetPos(drag.id, sx / scale / vmin, sy / scale / vmin);
+    // Applied, not committed — see layoutSetPosLive. layoutEndDrag saves once.
+    layoutSetPosLive(drag.id, sx / scale / vmin, sy / scale / vmin);
     chip.classList.add('qolc-lay-moved');
     layoutApplyNow(drag.id);
     ev.preventDefault();
@@ -19172,9 +19483,20 @@
   function layoutEndDrag(ev) {
     const drag = layoutUI.dragging;
     if (!drag) return;
+    if (drag.pointerId != null && ev && ev.pointerId != null &&
+        ev.pointerId !== drag.pointerId) return;
     layoutUI.dragging = null;
+    if (layoutUI.winEnd) {
+      PAGE.removeEventListener('pointerup', layoutUI.winEnd, true);
+      PAGE.removeEventListener('pointercancel', layoutUI.winEnd, true);
+      layoutUI.winEnd = null;
+    }
     drag.chip.classList.remove('qolc-lay-drag');
-    try { drag.chip.releasePointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+    try { if (ev) drag.chip.releasePointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+    // A press that never crossed the slop changed nothing, so there is nothing
+    // to write and nothing to redraw — and crucially no position is created.
+    if (!drag.live) return;
+    layoutSave();
     layoutRefreshPreview();
     dbg('layout', drag.id, 'moved to', layoutPosOf(drag.id));
   }
@@ -19434,6 +19756,21 @@
       applyHpNumbers();
       domSweep();
       syncNameColorUI();
+      // 1.0.10. The layout registry has to be told, and it was not.
+      //
+      // layoutSyncMope() removes every override class while the master switch
+      // is off — but it only runs when the registry is DIRTY, and the switch
+      // marked nothing. So the hidden HUD pieces came back (layoutApplyHidden
+      // runs unconditionally) and the minimap was restored (the pixi path
+      // reads the switch directly), while anything DRAGGED — the leaderboard,
+      // the coin counter, an ability button — stayed exactly where it had been
+      // put until the player changed screens. Half the feature undid itself and
+      // half did not, which reads as the switch being broken.
+      layout.mopeDirty = true;
+      // Draw order is the same shape of omission: the mode stays armed and the
+      // animal stays on the layer it was promoted to. mope's own re-attach
+      // churn heals it within seconds, but "off" should mean off now.
+      if (!on) zorderRestore();
       // Nothing to re-apply: the zoom hub already collapses its factor to 1
       // while the master switch is off, and the camera reads it on its next
       // frame. The turn multiplier collapses the same way.
@@ -21130,13 +21467,38 @@
     });
     // roundRect(x, y, w, h, radii) — radii may be a number, a DOMPoint-ish
     // object, or an array of either. Negative entries throw RangeError.
+    //
+    // 1.0.10 actually handles the object form this comment has always named.
+    // A {x, y} radius fell through both branches untouched, so the one shape
+    // the comment called out by name was the one still able to take the render
+    // loop down. Handled by copying the point rather than writing to it: the
+    // caller owns that object and may reuse it across draws, so clamping in
+    // place would silently rewrite mope's own geometry.
+    const clampRadius = (v) => {
+      if (typeof v === 'number' || typeof v === 'string') return radiusClamp(v, 'roundRect');
+      if (v && typeof v === 'object') {
+        const x = radiusClamp(v.x, 'roundRect');
+        const y = radiusClamp(v.y, 'roundRect');
+        // Only replaced when something actually needed clamping, so the normal
+        // path allocates nothing and hands back the caller's own object.
+        return (x === v.x && y === v.y) ? v : {x, y};
+      }
+      return v;
+    };
     radiusPatch(proto, 'roundRect', (a) => {
       const r = a[4];
-      if (typeof r === 'number' || typeof r === 'string') {
-        a[4] = radiusClamp(r, 'roundRect');
-      } else if (Array.isArray(r)) {
-        a[4] = r.map((v) => (typeof v === 'number' || typeof v === 'string'
-          ? radiusClamp(v, 'roundRect') : v));
+      if (Array.isArray(r)) {
+        let changed = false;
+        const out = new Array(r.length);
+        for (let i = 0; i < r.length; i++) {
+          out[i] = clampRadius(r[i]);
+          if (out[i] !== r[i]) changed = true;
+        }
+        // Allocate only when a clamp actually happened; roundRect is a
+        // per-frame call and mope passes a plain number on the ordinary path.
+        if (changed) a[4] = out;
+      } else if (r != null) {
+        a[4] = clampRadius(r);
       }
       return a;
     });
@@ -21173,13 +21535,27 @@
       for (const method of ['fillText', 'strokeText']) {
         const original = proto[method];
         if (typeof original !== 'function') continue;
-        proto[method] = function (text) {
+        // 1.0.10: marked, the way radiusPatch above has always been marked.
+        // Without it a second installed copy of this script wraps the wrapper,
+        // and every text draw — the client's hottest call — pays two hook
+        // frames and calls noteXpText twice, for ever. The script explicitly
+        // tolerates duplicate installs as a degraded state, so the guard has to
+        // exist rather than be assumed away.
+        if (original.__lumiXpHooked) continue;
+        const wrapped = function (text) {
           try {
             if (typeof text === 'string' && text.indexOf('XP') !== -1) noteXpText(text);
           } catch (e) { /* never break the game's rendering */ }
           // hot path: `arguments` avoids allocating an array per draw call
           return original.apply(this, arguments);
         };
+        wrapped.__lumiXpHooked = true;
+        // Keep it looking native-ish, for the same reason radiusPatch does.
+        try {
+          Object.defineProperty(wrapped, 'name', {value: method});
+          Object.defineProperty(wrapped, 'length', {value: original.length});
+        } catch (e) { /* non-fatal */ }
+        proto[method] = wrapped;
       }
       dbg('canvas XP hook installed');
     } catch (e) {
