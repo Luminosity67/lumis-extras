@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.10
+// @version      1.0.11
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -2871,7 +2871,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.10';
+    return '1.0.11';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -3209,9 +3209,18 @@
       // shape, a hand-edited value — and a bind is about to be compared
       // against event.code, so anything that is not a plausible code drops
       // back to the default rather than quietly never matching.
-      const want = savedCodes && typeof savedCodes[b.id] === 'string'
-        ? savedCodes[b.id] : '';
-      kb.codes[b.id] = /^[A-Za-z0-9]{1,24}$/.test(want) ? want : b.def;
+      //
+      // The empty string is the one exception, and it is load-bearing: it
+      // means the user unbound this, and it has to survive a reload or the
+      // unbind quietly undoes itself. It is safe as a sentinel precisely
+      // because no earlier build could have written one — kbSetCode refused an
+      // empty code and this loader only ever wrote a real code or the default
+      // — so a '' here can only have come from kbClearCode.
+      const raw = savedCodes ? savedCodes[b.id] : undefined;
+      const want = typeof raw === 'string' ? raw : null;
+      kb.codes[b.id] = want === '' ? ''
+        : (want !== null && /^[A-Za-z0-9]{1,24}$/.test(want)) ? want
+        : b.def;
       const p = savedPrio && savedPrio[b.id];
       kb.prio[b.id] = p === 'override' ? 'override' : 'underride';
     }
@@ -3231,6 +3240,23 @@
     kb.codes[id] = code;
     kbSave();
     dbg('keybind', id, 'to', code);
+    return true;
+  }
+
+  // Unbind. Deliberately its own function rather than kbSetCode('') folded in,
+  // because "put this bind on a key" and "take this bind off every key" are
+  // different intentions, and a setter that silently does the second when
+  // handed a falsy argument is one typo away from wiping a bind nobody touched.
+  //
+  // An unbound bind is '' everywhere, and nothing downstream had to learn a new
+  // state: kbHit() already refused on a falsy code, kbConflicts() already
+  // returned nothing for one, and kbLabelOf() already had a word for it. The
+  // only thing that had to change was the loader keeping it.
+  function kbClearCode(id) {
+    if (!kbDefOf(id)) return false;
+    kb.codes[id] = '';
+    kbSave();
+    dbg('keybind', id, 'cleared');
     return true;
   }
 
@@ -3322,7 +3348,7 @@
     ArrowLeft: 'Left', ArrowRight: 'Right',
   };
   function kbLabelOf(code) {
-    if (!code) return 'none';
+    if (!code) return 'Not bound';
     if (KB_NAMES[code]) return KB_NAMES[code];
     if (/^Key[A-Z]$/.test(code)) return code.slice(3);
     if (/^Digit[0-9]$/.test(code)) return code.slice(5);
@@ -3386,7 +3412,9 @@
       const list = kbConflicts(b.id);
       return {
         bind: b.label,
-        key: kbLabelOf(kbCode(b.id)) + ' (' + kbCode(b.id) + ')',
+        key: kbCode(b.id)
+          ? kbLabelOf(kbCode(b.id)) + ' (' + kbCode(b.id) + ')'
+          : 'not bound',
         priority: kbPrio(b.id),
         conflicts: list.length
           ? list.map(function (c) { return c.kind + ': ' + c.what; }).join(', ')
@@ -17018,7 +17046,11 @@
     // clashes with the upgrade menu exactly as it always did.
     let slot = -1;
     for (let i = 0; i < CHAT_KEYS.length; i++) {
-      if (event.code === kbCode('chat' + (i + 1))) { slot = i; break; }
+      // An unbound slot must not match: kbCode() returns '' for one, and an
+      // empty string can never equal a real event.code, but the guard is
+      // written out rather than relied upon.
+      const want = kbCode('chat' + (i + 1));
+      if (want && event.code === want) { slot = i; break; }
     }
     if (slot === -1) return;
     if (!chatQuickOn()) return;
@@ -18447,6 +18479,27 @@
         background: var(--qolc-accent); border-color: var(--qolc-accent-lit);
         color: var(--qolc-accent-ink); min-width: 96px;
       }
+      /* An unbound cap should read as deliberately empty rather than as a
+         control that failed to render, so it says so in words and is dimmed
+         instead of being left blank. */
+      .qolc-kb-cap.is-unbound {
+        color: var(--qolc-faint); font-style: italic;
+        font-weight: normal; letter-spacing: 0.02em;
+      }
+      /* Always in the row, so clearing or setting a bind never reflows the
+         line — only its visibility changes. */
+      .qolc-kb-clear {
+        flex: 0 0 auto; width: 22px; height: 22px; padding: 0;
+        display: flex; align-items: center; justify-content: center;
+        border-radius: 7px; cursor: pointer;
+        border: 1px solid var(--qolc-edge); background: var(--qolc-inset);
+        color: var(--qolc-dim); font: bold 13px/1 system-ui, sans-serif;
+        transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+      }
+      .qolc-kb-clear:hover {
+        background: #ff6b5e; border-color: #ff6b5e; color: #fff;
+      }
+      .qolc-kb-clear.is-idle { visibility: hidden; pointer-events: none; }
       .qolc-kb-prio {
         flex: 0 0 auto; min-width: 78px; text-align: center;
         padding: 5px 9px; border-radius: 8px; cursor: pointer;
@@ -21169,13 +21222,33 @@
 
       // The key cap. Clicking it arms capture; the NEXT key pressed becomes
       // the bind. Escape cancels, because a capture with no way out is a trap
-      // for anyone who clicked it by accident.
+      // for anyone who clicked it by accident, and Backspace clears.
       const cap = document.createElement('button');
       cap.type = 'button';
       cap.className = 'qolc-kb-cap';
       cap.addEventListener('click', (e) => {
         e.stopPropagation();
         kbBeginCapture(bind.id);
+      });
+
+      // Unbinding as a BUTTON and not only as a keystroke. The keyboard
+      // gesture is faster once you know it and undiscoverable until you do;
+      // this is the half of it that can be found by looking. It is hidden
+      // rather than disabled on a bind that is already off, because ten dead
+      // controls down a column read as broken rather than as finished.
+      const clear = document.createElement('button');
+      clear.type = 'button';
+      clear.className = 'qolc-kb-clear';
+      clear.textContent = '×';
+      clear.title = 'Unbind this key';
+      clear.setAttribute('aria-label', 'Unbind ' + bind.label);
+      clear.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // A capture armed on some OTHER row has to be cancelled first, or it
+        // stays armed with its prompt off screen and eats the next key pressed.
+        if (kbArmed) kbEndCapture();
+        kbClearCode(bind.id);
+        syncKeybinds();
       });
 
       // Priority. Two states rather than a switch, because "override" and
@@ -21197,8 +21270,9 @@
       row.appendChild(haz);
       row.appendChild(prio);
       row.appendChild(cap);
+      row.appendChild(clear);
       kbList.appendChild(row);
-      kbRows.push({bind, row, cap, prio, haz});
+      kbRows.push({bind, row, cap, prio, haz, clear});
     }
     settingsPane.appendChild(kbList);
 
@@ -21243,10 +21317,19 @@
     // WITHOUT being consumed — the previous form called preventDefault before
     // deciding, so while a capture was armed F5 would not reload and F12 would
     // not open devtools, with nothing on screen to say why.
-    const KB_BINDABLE = /^(Key[A-Z]|Digit[0-9]|Numpad[A-Za-z0-9]+|F[1-9]|F1[0-2]|Bracket(Left|Right)|Semicolon|Quote|Comma|Period|Slash|Backslash|Backquote|Minus|Equal|Arrow(Up|Down|Left|Right)|Space|Insert|Delete|Home|End|Page(Up|Down))$/;
+    //
+    // Backspace and Delete are deliberately NOT in this list: they are the
+    // gesture that CLEARS a bind, which is worth more than the ability to put
+    // a hotkey on Delete. A bind already sitting on Delete from an older build
+    // still loads and still fires — the loader validates shape, not this list
+    // — it simply cannot be chosen again from here.
+    const KB_BINDABLE = /^(Key[A-Z]|Digit[0-9]|Numpad[A-Za-z0-9]+|F[1-9]|F1[0-2]|Bracket(Left|Right)|Semicolon|Quote|Comma|Period|Slash|Backslash|Backquote|Minus|Equal|Arrow(Up|Down|Left|Right)|Space|Insert|Home|End|Page(Up|Down))$/;
     // Refused even though they match above: the browser needs them more than a
     // mope hotkey does, and binding one would be a trap with no way back.
     const KB_FORBIDDEN = {F5: 1, F11: 1, F12: 1};
+    // Both keys clear, because both are what people reach for and there is no
+    // way to know which one a given person means by "get this off my key".
+    const KB_CLEAR = {Backspace: 1, Delete: 1};
 
     PAGE.addEventListener('keydown', (event) => {
       if (!kbArmed || !event.isTrusted) return;
@@ -21257,6 +21340,17 @@
       if (code === 'Escape') {
         event.preventDefault();
         event.stopImmediatePropagation();
+        kbEndCapture();
+        return;
+      }
+      // Unbind. Consumed for the same reason a real bind is — while a capture
+      // is armed the key belongs to the panel — and Backspace in particular
+      // has to be swallowed, because on a page with no focused field some
+      // setups still read it as "go back".
+      if (KB_CLEAR[code]) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        kbClearCode(kbArmed);
         kbEndCapture();
         return;
       }
@@ -21296,8 +21390,17 @@
       let worst = '';
       for (const r of kbRows) {
         const armed = kbArmed === r.bind.id;
-        r.cap.textContent = armed ? 'Press a key…' : kbLabelOf(kbCode(r.bind.id));
+        const code = kbCode(r.bind.id);
+        r.cap.textContent = armed ? 'Press a key… (⌫ clears)'
+          : code ? kbLabelOf(code) : 'Not bound';
         r.cap.classList.toggle('is-armed', armed);
+        r.cap.classList.toggle('is-unbound', !armed && !code);
+        r.cap.title = code
+          ? 'Click to rebind. Backspace or Delete clears it.'
+          : 'Not bound — click to set a key.';
+        // Nothing to clear on a bind that is already off, and a dead button on
+        // every unbound row would read as broken rather than as finished.
+        r.clear.classList.toggle('is-idle', !code);
         const over = kbPrio(r.bind.id) === 'override';
         r.prio.textContent = over ? 'Override' : 'Underride';
         r.prio.classList.toggle('is-over', over);
@@ -21323,6 +21426,8 @@
       }
       // One line that says what the list means, so the chips do not have to be
       // hovered one at a time to find out whether anything is actually broken.
+      // With nothing wrong it says how to unbind instead, because that is the
+      // one thing about this list you cannot discover by looking at it.
       kbNote.textContent = worst === 'ours'
         ? 'Two Lumi’s Extras binds share a key. One of them will not fire.'
         : worst === 'fixed'
@@ -21330,7 +21435,7 @@
           : worst === 'bound'
             ? 'A bind sits on a key you have bound in mope. Underride yields to it; Override takes it.'
             : mopeSettings.proxy
-              ? 'No conflicts.'
+              ? 'No conflicts. Press × to unbind a key, or Backspace while setting one.'
               : 'No conflicts found — but mope’s own bind list could not be read, so clashes with it cannot be seen.';
       kbNote.className = 'qolc-kb-note' + (worst ? ' is-' + worst : '');
     };
