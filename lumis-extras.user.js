@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.2
+// @version      1.0.3
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -29,6 +29,41 @@
  *      Lumi's — if you are working on this and think a change earns it, ask.
  *      Default to leaving it alone.
  *   y  everything else: features, fixes, extra gradients, copy tweaks.
+ *
+ * 1.0.3 fixes two reported bugs that turned out to be ONE bug wearing two
+ * hats: both features identified a thing by what it LOOKED like instead of by
+ * what it was, and both were then surprised when something else looked the
+ * same.
+ *
+ * GRADIENTS LANDING ON THINGS THAT ARE NOT NAMES. Reported as: a friend
+ * playing under the name "67", and hours later this client's own health
+ * reaching 67 and being drawn in their gradient. The colourer matches a text
+ * node by its text, which is the only thing it can do — "67" the name and "67"
+ * the health reading are the same two characters. The text was never the
+ * problem; walking the whole document was. Given the entire page, a
+ * name-shaped string will eventually collide with something that is not a
+ * name. The sweep is now scoped to where names actually are: in game, the
+ * leaderboard and nothing else, so every HUD number is simply out of reach; in
+ * the menu, the whole document, which has no live HUD to collide with. An
+ * ALLOW-list, so mope's future elements arrive excluded rather than included.
+ *
+ * THE BOOST COUNTER FOLLOWING THE OPPONENT. It hangs off the HP lock, and the
+ * lock chose species-then-nearest-to-the-centre. In ordinary play that is
+ * sound, because the camera follows you and you ARE the centre. In an arena it
+ * is not: the camera pins to neither duellist, and in a tier-matched duel both
+ * animals are usually the same species, so the species check separated nothing
+ * and it fell through to a coin flip between you and the person trying to kill
+ * you. The HP bar, the damage numbers, the health published to the party and
+ * the boost counter all followed that choice.
+ *
+ * The lock now reads the NAMEPLATE first, and across every bar rather than
+ * only the ones near the centre — the first attempt scanned just the
+ * near-centre candidates and a test caught it immediately, because in an arena
+ * you are frequently not near the centre at all. Your emitted share tag is
+ * accepted as proof; your configured name as strong evidence. Position is
+ * consulted only when neither answers, and inside an arena an unresolved
+ * choice is REFUSED rather than guessed: showing nothing beats confidently
+ * showing your opponent's numbers as your own.
  *
  * 1.0.2 is three party changes.
  *
@@ -2604,7 +2639,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.2';
+    return '1.0.3';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -9210,16 +9245,63 @@
     el.style.backgroundClip = orig.bclip;
     el.style.webkitTextFillColor = orig.tfill;
   }
+  // WHERE THIS SWEEP IS ALLOWED TO LOOK. 1.0.3, and the whole fix for a class
+  // of bug rather than one instance of it.
+  //
+  // The colourer matches a text node by its TEXT. That is the only thing it
+  // can do — a player called "67" and a health reading of "67" are the same
+  // eight bits of string, and nothing about the characters can tell them
+  // apart. So the text was never the problem: walking the whole document was.
+  // Given the entire page, a name-shaped string will eventually collide with
+  // something that is not a name, and the report that found this was exactly
+  // that — a friend playing as "67", and hours later this client's own health
+  // hitting 67 and turning up in their gradient.
+  //
+  // The feature's own setting says what it was always meant to cover: "also
+  // color name in leaderboard/menus (HTML)". In-world nameplates are Pixi and
+  // belong to the scene sweep, which matches entities and never came near
+  // this. So the DOM half only ever needed two places, and this gives it
+  // exactly those:
+  //
+  //   IN GAME  — the leaderboard, and nothing else. Every other number on the
+  //              screen while you are playing is the HUD talking about YOU:
+  //              health, XP, coins, the boost count, the stats block, the
+  //              timer. None of them are names and none of them can now be
+  //              mistaken for one, because the walk never reaches them.
+  //   IN MENU  — the whole document, which is where the profile, the account
+  //              panel and every other place a handle is printed live. There
+  //              is no live HUD in the menu, so there is nothing there for a
+  //              name to collide with.
+  //
+  // This is an ALLOW-list on purpose. The previous shape was a deny-list — our
+  // own panel, then SCRIPT and STYLE — and a deny-list can only ever exclude
+  // the collisions somebody has already hit. Every text node mope adds in a
+  // future build arrives excluded rather than included.
+  function domSweepRoots() {
+    if (prevMenuVisible === false) {
+      const lb = document.getElementById('leaderboard');
+      return lb ? [lb] : [];
+    }
+    return document.body ? [document.body] : [];
+  }
+  // How many text nodes the last sweep actually looked at, reported by
+  // __lumiNameDebug: a sweep that has been scoped away from where somebody
+  // expected it can then say so, rather than quietly colouring nothing.
+  let domSweepScanned = 0;
+
   function domSweep() {
     if (!document.body) return;
     const active = settings.masterEnabled && nameColorState.enabled && nameColorState.dom;
     const ownKey = nameKey();
+    domSweepScanned = 0;
     if (active) {
-      const walker = document.createTreeWalker(document.body, PAGE.NodeFilter.SHOW_TEXT);
+      for (const root of domSweepRoots()) {
+      const walker = document.createTreeWalker(root, PAGE.NodeFilter.SHOW_TEXT);
       let t;
       while ((t = walker.nextNode())) {
         const v = t.nodeValue;
         if (!v || v.length > 48) continue;
+        domSweepScanned++;
         // Our own UI is skipped BEFORE styleFor, not after. It used to be
         // after, which was harmless while styleFor only ever read from the
         // text handed to it — but the registry lookup inside it now REGISTERS
@@ -9241,6 +9323,7 @@
           });
         }
         applyDomStyle(el, st);
+      }
       }
     }
     for (const [el, orig] of domTouched) {
@@ -11915,9 +11998,83 @@
     return ident.species !== self.species || ident.sub !== self.sub;
   }
 
+  // The nameplate hanging off an animal, or '' if it has none yet. mope builds
+  // a player as a container whose children include a text node, which is the
+  // same node the scene sweep has been colouring since the first version —
+  // this just reads it instead of painting it.
+  function hpPlateTextOf(entity) {
+    const kids = entity && entity.children;
+    if (!kids || !kids.length) return '';
+    for (let i = 0; i < kids.length; i++) {
+      const k = kids[i];
+      if (k && typeof k.text === 'string' && k.text) return k.text;
+    }
+    return '';
+  }
+
+  // Is this animal YOU, said from the name rather than from where it happens
+  // to be standing? Two strengths, and the difference matters:
+  //
+  //   'tag'  — the nameplate carries the invisible share suffix this client is
+  //            emitting. That suffix belongs to exactly one player, so this is
+  //            an identity, not a resemblance. Only available while colour
+  //            sharing is on.
+  //   'name' — the visible letters match the name you configured. Strong, but
+  //            two players CAN pick the same name, so it is not proof.
+  //
+  // Returns '' for neither. This is the same ladder resolveSelfCandidates()
+  // has used in the scene sweep for years; the HP lock simply never asked.
+  function hpSelfByName(entity) {
+    const text = hpPlateTextOf(entity);
+    if (!text) return '';
+    const emitted = nameColorState.emitted;
+    if (emitted && text.endsWith(emitted)) return 'tag';
+    // Emitting a tag makes the tag the ONLY answer. Your plate carries it, so
+    // a plate without it is somebody else however the letters read — which is
+    // the same rule styleFor() applies to the nameplate colour, and the same
+    // impersonation it was written to stop. Falling through to the visible
+    // name here would handle the lock to anyone who typed your name.
+    if (emitted) return "";
+    const key = nameKey();
+    // "mope.io" is what the server renders for every player who set no name,
+    // so it identifies nobody — the same carve-out styleFor() makes.
+    if (key && key !== 'mope.io' && baseKey(text) === key) return 'name';
+    return '';
+  }
+
+  // When the lock last refused to guess, for __lumiHpDebug. A feature that has
+  // gone quiet on purpose should be able to say so.
+  let hpLockRefusedAt = 0;
+
   function hpLockPlayer(scr, now) {
     const kept = hpRelock();
     if (kept && !hpLockGoneBad(hpState.playerEntry, now)) return kept;
+
+    // THE NAME IS ASKED FIRST, AND ACROSS EVERY BAR — not just the ones near
+    // the middle of the screen. That second half is the entire fix, and the
+    // first attempt got it wrong: it scanned only the near-centre candidates,
+    // and a test caught it at once. In an arena you are frequently NOT near
+    // the centre, because the camera pins to neither duellist — so filtering
+    // by position and then asking who somebody is threw the right answer away
+    // before the question was put. Identity is not a fact about where the
+    // camera is pointing, so it is settled before position is consulted.
+    //
+    // What this replaces: species-then-nearest. In ordinary play that is fine,
+    // because the camera follows you and you ARE the middle. In a tier-matched
+    // duel both animals are usually the same species, so the species check
+    // separated nothing and it fell through to "whoever is nearer the centre"
+    // — a coin flip between you and the person trying to kill you. Everything
+    // downstream followed that choice: the HP bar, the damage numbers, the
+    // health published to the party, and the boost counter, which is where it
+    // was noticed.
+    let tagged = null, named = null;
+    for (const entry of hpState.bars.values()) {
+      const how = hpSelfByName(entry.entity);
+      if (how === 'tag') { tagged = entry; break; }
+      if (how === 'name' && !named) named = entry;
+    }
+    if (tagged) { hpLockRefusedAt = 0; return hpAdoptPlayer(tagged); }
+    if (named)  { hpLockRefusedAt = 0; return hpAdoptPlayer(named); }
 
     const cx = scr.w / 2, cy = scr.h / 2;
     const limit = Math.min(scr.w, scr.h) * HP_LOCK_FRACTION;
@@ -11940,6 +12097,26 @@
     const self = hpIdentifySelfFromHud();
     if (!near.length) return hpAdoptPlayer(hpLockByName(self));
     near.sort((a, b) => a.dist - b.dist);
+
+    // THE NAME IS ASKED FIRST, and 1.0.3 is the version that starts asking.
+    //
+    // Everything below this used to begin at the species check and end at
+    // "whoever is nearest the middle of the screen". In ordinary play that is
+    // fine, because the camera follows you and you ARE the middle. In an arena
+    // it is not: the camera does not pin to either duellist, so your opponent
+    // drifts through the centre as readily as you do. When the two of you are
+    // the same animal — which in a tier-matched duel is the normal case, not
+    // the exotic one — the species check cannot separate you either, and the
+    // lock silently adopted whoever happened to be nearer.
+    //
+    // Everything downstream then followed the wrong animal: the HP bar, the
+    // damage numbers, the health this client publishes to the party, and the
+    // boost counter, which is where it was noticed.
+    //
+    // A nameplate is a fact about WHICH PLAYER an animal is. Distance from the
+    // centre of the screen is a fact about where the camera is pointing. Only
+    // one of those is an identity, so it goes first.
+
     if (near.length > 1 && self) {
       for (let i = 0; i < near.length && i < 4; i++) {
         const ident = hpIdentify(near[i].entry.entity);
@@ -11948,6 +12125,26 @@
         }
       }
     }
+
+    // NOTHING IDENTIFIED YOU AND THERE IS MORE THAN ONE CANDIDATE. Outside an
+    // arena, nearest-to-centre is a good guess and stays the answer: the camera
+    // follows you, so the animal in the middle is overwhelmingly likely to be
+    // yours, and the cost of being wrong is a mislabelled damage number.
+    //
+    // Inside an arena it is a coin flip between you and the person trying to
+    // kill you, and the cost of being wrong is showing their health as yours
+    // and their boost count as yours. So the guess is refused. Showing nothing
+    // is a worse experience than showing the right thing and a far better one
+    // than confidently showing the wrong thing, which is what was happening.
+    //
+    // This is the same rule hpLockByName() already applies one level down —
+    // "more than one candidate: no answer is safer" — finally applied at the
+    // level where the ambiguity actually arises.
+    if (near.length > 1 && arenaDuel.active) {
+      hpLockRefusedAt = now;
+      return hpAdoptPlayer(null);
+    }
+    hpLockRefusedAt = 0;
     return hpAdoptPlayer(near[0].entry);
   }
 
