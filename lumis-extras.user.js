@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.17
+// @version      1.0.18
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -57,6 +57,19 @@
  * about where it sits is dropped. And __lumiArenaDebug() now reports the
  * containers that ALMOST matched, because "no arena in the scene" was the
  * least actionable sentence this feature could produce.
+ *
+ * 1.0.18 FIXES 1.0.17, WHICH BROKE SIX FEATURES FOR EVERYONE. `$.player` is
+ * the entity MODEL, not the Pixi container: the model owns `.container`, and
+ * that container is what the health-bar scan sees. 1.0.17 asked the model for
+ * `.children`, got none, and then refused every animal as "you have no animal
+ * right now" — HP bar, damage numbers, party health, boost counter, starfield
+ * and bite indicator all dark, on main and on beta. The lock now matches
+ * `entry.entity === $.player.container`, reads `.arena` off the model and its
+ * container off the arena model, and — the rule 1.0.17 claimed and did not
+ * keep — a shape it cannot resolve falls back to the old inference and says
+ * so; it never refuses. __lumiHpDebug().lock.gamePlayerShape reports what the
+ * game's object actually looks like, which is the row that would have caught
+ * this in one paste.
  *
  * 1.0.17 REPLACES HOW THE SCRIPT KNOWS WHICH ANIMAL IS YOURS. Every lock
  * before it inferred that — ability icon, nameplate, outline tint, distance
@@ -2955,7 +2968,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.17';
+    return '1.0.18';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -13056,9 +13069,10 @@
     return !!(player && player.destroyed !== true && player.parent);
   }
 
-  // THE NEW SYSTEM (1.0.17): mope's own answer to "which animal is mine".
+  // THE NEW SYSTEM (1.0.17, corrected in 1.0.18): mope's own answer to "which
+  // animal is mine".
   //
-  // Every lock before this one INFERRED identity — from the ability icon, the
+  // Every lock before 1.0.17 INFERRED identity — from the ability icon, the
   // nameplate, the outline tint, distance from the centre of the screen — and
   // §21 of the handoff is five releases of that inference being wrong. It was
   // wrong again with a bot named "mope.io's bot" a few pixels from a player
@@ -13069,52 +13083,88 @@
   // game-loop route, see gameCapture — carries `player`: assigned by
   // setPlayer(e) the moment the server hands you an animal, read by mope
   // itself for your position, health, name and arena, and set to null on
-  // death and on disconnect. It is the animal's own container, the same
-  // object the health-bar scan sees two levels above your bar. So "is this
-  // entry mine" is `entry.entity === $.player` — an equality, not a guess.
+  // death and on disconnect.
   //
-  // Read every time, never cached: the game replaces it on respawn and nulls
-  // it on death, and both are exactly the moments a stale copy would lie.
-  // Null means one of two things, told apart by gameCapture.game: the route
-  // never captured the singleton (fall back to the inference below, and say
-  // so), or it did and you have no animal right now (refuse, and say that).
-  function hpGamePlayer() {
+  // WHAT 1.0.17 GOT WRONG, AND IT TOOK SIX FEATURES DOWN AT ONCE. `player` is
+  // NOT the Pixi container the health-bar scan sees. It is the entity MODEL,
+  // and the model OWNS the container: the entity base constructor reads
+  // `this.HUD = new rn, this.container = new rn({visible: !1}), ...`, and the
+  // animal adds [body, name, arenaWins, resourceIndicator, HUD] to that
+  // container — so bar.parent.parent, the thing hpEntityOf() returns, is
+  // `$.player.container`. 1.0.17 demanded `.children` of the model, got none,
+  // returned null, and hpLockPlayer() then REFUSED every animal as "you have
+  // no animal right now" — HP bar, damage numbers, party health, boost
+  // counter, starfield and bite indicator all dark, for everyone, on every
+  // build. The fix is one property hop, and a rule: a shape this file cannot
+  // resolve falls back to the inference and says so. It never refuses.
+  //
+  // Read every time, never cached: the game replaces the model on respawn and
+  // nulls it on death, and both are exactly the moments a stale copy would lie.
+  function hpGameModel() {
     const game = gameCapture.game;
     const me = game && game.player;
-    if (!me || typeof me !== 'object') return null;
-    if (me.destroyed === true) return null;
-    // A container, or it is not the thing the scan can match against.
-    if (!me.children || typeof me.children.length !== 'number') return null;
-    return me;
+    return me && typeof me === 'object' ? me : null;
+  }
+
+  // The scene container for the game's player, or null when the model's
+  // shape is not one this build can resolve. Both shapes are accepted — a
+  // model owning `.container` (mope today) and a container itself (should a
+  // build ever hand the container over directly) — and the debug hook says
+  // which was seen.
+  function hpGamePlayer() {
+    const model = hpGameModel();
+    if (!model) return null;
+    const node = model.container && typeof model.container === 'object' ? model.container : model;
+    if (node.destroyed === true) return null;
+    if (!node.children || typeof node.children.length !== 'number') return null;
+    return node;
+  }
+
+  function hpGamePlayerShape() {
+    const m = hpGameModel();
+    if (!m) return gameCapture.game ? 'null — the game says you have no animal' : 'n/a — no game object';
+    if (m.container && typeof m.container === 'object') return 'a model owning .container (mope today)';
+    if (m.children && typeof m.children.length === 'number') return 'a container';
+    return 'UNRECOGNISED — keys: ' + Object.keys(m).slice(0, 14).join(', ');
   }
 
   function hpLockPlayer(scr, now) {
-    // 1.0.17: THE GAME'S OWN ANSWER COMES FIRST, and while the singleton is
-    // captured nothing below this block is consulted. See hpGamePlayer().
+    // 1.0.17: THE GAME'S OWN ANSWER COMES FIRST. 1.0.18: and it can only ever
+    // REFUSE when the game positively says you have no animal. A player the
+    // game names but whose shape this build cannot resolve to a scene
+    // container is not a refusal — it is the fallback, said out loud. The
+    // first cut refused there, and refused everyone. See hpGamePlayer().
     if (gameCapture.game) {
-      const me = hpGamePlayer();
-      hpState.lockedBy = 'game';
-      if (!me) {
+      const model = hpGameModel();
+      if (!model) {
+        hpState.lockedBy = 'game';
         hpLockRefusedAt = now;
         hpLockRefusedWhy = 'mope says you have no animal right now (dead, or on the menu)';
         return hpAdoptPlayer(null);
       }
-      for (const entry of hpState.bars.values()) {
-        if (entry.entity === me) { hpLockRefusedAt = 0; return hpAdoptPlayer(entry); }
+      const me = hpGamePlayer();
+      if (me) {
+        hpState.lockedBy = 'game';
+        for (const entry of hpState.bars.values()) {
+          if (entry.entity === me) { hpLockRefusedAt = 0; return hpAdoptPlayer(entry); }
+        }
+        // Named by the game, bar not in the scan yet — not drawn yet, or this
+        // scan missed it. Hold the container and wait for its bar. Never a
+        // stranger.
+        hpState.player = me;
+        hpState.playerEntry = null;
+        hpLockRefusedAt = now;
+        hpLockRefusedWhy = 'mope names your animal; its health bar is not in the scan yet';
+        return me;
       }
-      // Named by the game, bar not in the scan yet — not drawn yet, or this
-      // scan missed it. Hold the entity and wait for its bar. Never a stranger.
-      hpState.player = me;
-      hpState.playerEntry = null;
-      hpLockRefusedAt = now;
-      hpLockRefusedWhy = 'mope names your animal; its health bar is not in the scan yet';
-      return me;
+      hpState.lockedBy = 'heuristic — the game names an animal of a shape this build cannot resolve';
+    } else {
+      // No singleton: the page loaded without the game-loop route firing.
+      hpState.lockedBy = 'heuristic — the game object was never captured';
     }
-    // No singleton: the page loaded without the game-loop route firing. Every
-    // line from here down is the inference this file used before 1.0.17, kept
-    // as the fallback the handoff's rule for `$` asks for — and the debug hook
-    // says which of the two is in use.
-    hpState.lockedBy = 'heuristic';
+    // Every line from here down is the inference this file used before
+    // 1.0.17, kept as the fallback the handoff's rule for `$` asks for — and
+    // hpState.lockedBy says why it is running.
     const kept = hpRelock();
     if (kept && !hpLockGoneBad(hpState.playerEntry, now)) return kept;
 
@@ -13846,12 +13896,14 @@
                 // quiet ON PURPOSE looked exactly like one that was broken.
                 refusedMsAgo,
                 refusedBecause: hpLockRefusedWhy || null,
-                // 1.0.17. WHICH system made the lock. 'game' is mope's own
+                // 1.0.17/1.0.18. WHICH system made the lock, and what the game's
+                // player object actually looks like. 'game' is mope's own
                 // $.player and cannot be on the wrong animal; anything else is
-                // the old inference, running because the singleton was missed.
+                // the old inference, with the reason it is running. The shape
+                // row is the one that would have caught 1.0.17 in a single paste.
                 lockSource: hpState.lockedBy === 'game' ? "mope's own $.player"
-                  : gameCapture.game ? 'inference (unexpected: the game object exists)'
-                  : 'inference — the game object was never captured; see __lumiCaptureDebug()',
+                  : (hpState.lockedBy || 'inference'),
+                gamePlayerShape: hpGamePlayerShape(),
                 gameNamesAnimal: !!hpGamePlayer(),
                 // The gate that stands the lock down on the death screen. When
                 // this is true a null lock is correct and not a fault.
@@ -14994,19 +15046,24 @@
     // The name test is authoritative where the container is recognised. The
     // outline tint is kept only as a fallback for a build this was not written
     // against — and reported either way, so the two can be compared.
-    // 1.0.17: THE GAME'S OWN ANSWER FIRST. mope sets `player.arena` on the two
-    // fighters and on nobody else — it is what its own outline getter and
-    // isNameVisible read — so when the lock is the game's, "am I duelling" is
-    // a field read, and "which arena" is that field. The name test and the
-    // outline memory below are the fallback for a page where the singleton
-    // was never captured, and are still reported beside it.
-    const me = hpState.lockedBy === 'game' ? player : null;
-    const gameArena = me && me.arena && typeof me.arena === 'object' ? me.arena : null;
-    arenaSky.gameSays = me ? (gameArena ? 'duelling' : 'not duelling') : 'n/a';
+    // 1.0.17: THE GAME'S OWN ANSWER FIRST. mope sets `arena` on the two
+    // fighters' MODELS and on nobody else — it is what its own outline getter
+    // and isNameVisible read — so when the lock is the game's, "am I duelling"
+    // is a field read on the model, and "which arena" is that field. The arena
+    // is a model too (1.0.18), and owns the container the scan finds, so the
+    // match is against `arena.container`. The name test and the outline
+    // memory below are the fallback for a page where the singleton was never
+    // captured, and are still reported beside it.
+    const model = hpState.lockedBy === 'game' ? hpGameModel() : null;
+    const gameArena = model && model.arena && typeof model.arena === 'object' ? model.arena : null;
+    const gameArenaNode = !gameArena ? null
+      : (gameArena.container && typeof gameArena.container === 'object') ? gameArena.container
+      : gameArena;
+    arenaSky.gameSays = model ? (gameArena ? 'duelling' : 'not duelling') : 'n/a';
     const hidden = arenaNameHidden(player);
     arenaSky.nameSays = hidden;
     arenaSky.nameAt = arenaNameIndex;
-    if (me) {
+    if (model) {
       arenaSky.duelling = !!gameArena;
     } else {
       // The memory is asked of the ANIMAL as well as of the reading, because
@@ -15017,12 +15074,13 @@
     }
     if (!arenaSky.duelling) return null;
     // The arena BY REFERENCE, when the game handed one over and the scan can
-    // see it in the scene — no geometry and no child-counting for the arena
-    // you are actually in. Geometry remains for a page without the singleton,
-    // and for an arena the game names but the scan did not recognise.
-    if (gameArena && gameArena.parent && arenaScan.found.indexOf(gameArena) !== -1) {
-      const byRef = arenaMineOf(gameArena);
-      arenaSky.arenaBy = byRef ? 'the game (player.arena)' : 'geometry (the game\'s arena could not be measured)';
+    // see its container in the scene — no geometry and no child-counting for
+    // the arena you are actually in. Geometry remains for a page without the
+    // singleton, and for an arena the game names but the scan did not
+    // recognise.
+    if (gameArenaNode && gameArenaNode.parent && arenaScan.found.indexOf(gameArenaNode) !== -1) {
+      const byRef = arenaMineOf(gameArenaNode);
+      arenaSky.arenaBy = byRef ? 'the game (player.arena.container)' : 'geometry (the game\'s arena could not be measured)';
       if (byRef) return byRef;
     } else {
       arenaSky.arenaBy = gameArena ? 'geometry (the game\'s arena is not in the scan)' : 'geometry';
