@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.12
+// @version      1.0.13
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -29,6 +29,34 @@
  *      Lumi's — if you are working on this and think a change earns it, ask.
  *      Default to leaving it alone.
  *   y  everything else: features, fixes, extra gradients, copy tweaks.
+ *
+ * 1.0.13 is the rest of the culled-duel bug, reported as "the background
+ * fails in Black Dragon arenas, or in the volcano". Those are one report:
+ * black_dragon is a volcano species, so those duels are usually the same
+ * duels. Two independent faults, both of which take the starfield, the bite
+ * indicator AND the boost counter down together, because all three hang off
+ * arenaSkyPick() returning an arena.
+ *
+ *   THE ARENA MATCHER counted children and demanded exactly six. An arena
+ *   carrying one more was not mis-measured, it was INVISIBLE — never recorded
+ *   by the scan, so there was no arena to be inside. Parts are now found by
+ *   shape (a floor with a texture, a Graphics that draws circles, four Text
+ *   labels) and carried on `mine`, so the sky's Graphics lookup and the bite
+ *   indicator's score labels stop counting children for themselves too.
+ *
+ *   THE ARENA MEMORY lived on `entry`, which is a reading of a health BAR and
+ *   is dropped the moment that bar leaves a scan — routine inside a culled
+ *   duel, and exactly the state 1.0.12 taught the lock to hold through. So a
+ *   fact about an ANIMAL went out with a reading of its bar, and a duel the
+ *   script had seen seconds earlier read as somebody else's. It is now also
+ *   kept in a WeakMap on the entity.
+ *
+ * Also: an animal's name and wins labels are found as the first ADJACENT pair
+ * of Text children rather than at index 1, since a bigger animal carries extra
+ * art ahead of them — the 1.18.1 fingerprint is kept, only the assumption
+ * about where it sits is dropped. And __lumiArenaDebug() now reports the
+ * containers that ALMOST matched, because "no arena in the scene" was the
+ * least actionable sentence this feature could produce.
  *
  * 1.0.12 fixes the arena features dying together inside a CULLED duel — the
  * starfield, the bite indicator and the boost counter, reported as one bug
@@ -2886,7 +2914,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.12';
+    return '1.0.13';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -11966,15 +11994,46 @@
   // being treated as one for a while.
   const HP_ARENA_MEMORY_MS = 30000;
 
+  // WHERE THIS MEMORY LIVES, and why it is written twice (1.0.13).
+  //
+  // `entry` is a reading of a health BAR. It is created when the bar enters a
+  // scan and dropped the moment the bar leaves one — which inside a culled
+  // duel is a routine event, not an exotic one. So a fact about an ANIMAL had
+  // been living only on a reading of that animal's bar, and went out with it.
+  //
+  // That is what made this the second half of the culled-duel bug: 1.0.12
+  // taught the lock to hold the entity with no reading to hand, and then
+  // arenaSkyPick() asked hpInArena(entry) — with entry null — and was told no.
+  // The animal was in an arena, the script knew it thirty seconds ago, and the
+  // answer was still no, so the duel read as somebody else's and the sky, the
+  // bite indicator and the boost counter all went off together.
+  //
+  // The WeakMap is keyed on the entity, so it survives the reading and is
+  // collected with the animal.
+  const hpArenaSeen = new WeakMap();
+
   function hpNoteOutline(entry, now) {
     const rgb = hpOutlineTint(entry.entity);
     entry.outline = rgb;
-    if (HP_TINT_ARENA.indexOf(rgb) !== -1) entry.arenaAt = now;
+    if (HP_TINT_ARENA.indexOf(rgb) !== -1) {
+      entry.arenaAt = now;
+      try { hpArenaSeen.set(entry.entity, now); } catch (e) { /* not an object */ }
+    }
     return rgb;
   }
 
+  // The same question asked of an ANIMAL rather than of a bar reading, so it
+  // can still be answered while the reading is gone.
+  function hpEntityInArena(entity, now) {
+    if (!entity) return false;
+    let at = 0;
+    try { at = hpArenaSeen.get(entity) || 0; } catch (e) { at = 0; }
+    return at > 0 && now - at < HP_ARENA_MEMORY_MS;
+  }
+
   function hpInArena(entry, now) {
-    return !!entry && entry.arenaAt > 0 && now - entry.arenaAt < HP_ARENA_MEMORY_MS;
+    if (entry && entry.arenaAt > 0 && now - entry.arenaAt < HP_ARENA_MEMORY_MS) return true;
+    return hpEntityInArena(entry && entry.entity, now);
   }
 
   // Each animal also carries an "effects" group holding the visuals for what is
@@ -14178,6 +14237,7 @@
   const arenaScan = {
     active: false,
     found: [],        // every arena container the last sweep walked past
+    nearMiss: [],     // and the ones that ALMOST matched, for the debug hook
   };
 
   const arenaSky = {
@@ -14191,6 +14251,7 @@
     alignedFor: null, // the arena whose culling has already been set to match
     duelling: false,  // whether the game says we are one of the two fighters
     nameSays: null,   // the name-visibility reading, or null if unrecognised
+    nameAt: -1,       // where the name/wins pair was found (1.0.13)
     identAt: -Infinity,
     identOk: true,
     identFor: null,   // which entity that verdict was for (1.0.12)
@@ -14565,54 +14626,80 @@
   // sky, sees six again, re-attaches, and flickers forever at the sweep rate.
   // The party map marks its dots `__lumiPartyDot` for exactly this reason;
   // this is the same trick under a different name.
-  function arenaOwnChildren(kids) {
-    let count = 0;
-    for (let i = 0; i < kids.length; i++) {
-      if (kids[i] && !kids[i].__lumiArenaSky) count++;
-    }
-    return count;
-  }
 
-  function arenaPart(kids, index) {
-    let seen = 0;
+  // THE ARENA'S PARTS, FOUND BY SHAPE (1.0.13).
+  //
+  // This used to demand EXACTLY six own children and then read the parts by
+  // index: 0 base, 1 walls, 2-5 the labels. That is a deny-list wearing a
+  // matcher's clothes — it recognises the arena mope shipped and refuses every
+  // arena mope might ship — and §21's rule says the fix for that is to say
+  // what the thing IS, not to enumerate what it is not. An arena carrying one
+  // extra child was not merely mis-measured, it was invisible: the scan never
+  // recorded it, arenaSkyPick() found no arena to be inside, and the sky, the
+  // bite indicator and the boost counter went off together, which is one of
+  // the two shapes the culled-duel report arrived in.
+  //
+  // The fingerprint is unchanged and still specific: a floor with a texture
+  // and a real width, a Graphics that can draw a circle, and at least four
+  // Text labels. Anything else in there is counted and ignored.
+  //
+  // ORDER MATTERS. Text is tested first, because a Text node also carries a
+  // texture and a finite width and would otherwise be taken for the floor.
+  // Our own sky is skipped, the same trick as `__lumiPartyDot`.
+  const ARENA_KIDS_MIN = 6;
+  const ARENA_KIDS_MAX = 12;   // a bound, so this can never become a walk
+
+  function arenaPartsOf(node) {
+    const kids = node && node.children;
+    if (!kids || kids.length < ARENA_KIDS_MIN || kids.length > ARENA_KIDS_MAX) return null;
+    let base = null, walls = null, extra = 0;
+    const labels = [];
     for (let i = 0; i < kids.length; i++) {
       const kid = kids[i];
       if (!kid || kid.__lumiArenaSky) continue;
-      if (seen === index) return kid;
-      seen++;
+      if (typeof kid.text === 'string') { labels.push(kid); continue; }
+      if (!walls && typeof kid.clear === 'function' && typeof kid.circle === 'function') {
+        walls = kid; continue;
+      }
+      if (!base && kid.texture && Number.isFinite(Number(kid.width))) { base = kid; continue; }
+      extra++;
     }
-    return null;
-  }
-
-  function arenaLooksLikeArena(node) {
-    const kids = node && node.children;
-    if (!kids || arenaOwnChildren(kids) !== 6) return false;
-    const base = arenaPart(kids, 0);
-    if (!base || !base.texture || !Number.isFinite(Number(base.width))) return false;
-    const walls = arenaPart(kids, 1);
-    if (!walls || typeof walls.clear !== 'function' || typeof walls.circle !== 'function') {
-      return false;
-    }
-    let labels = 0;
-    for (let i = 2; i < 6; i++) {
-      const kid = arenaPart(kids, i);
-      if (kid && typeof kid.text === 'string') labels++;
-    }
-    return labels === 4;
+    if (!base || !walls || labels.length < 4) return null;
+    return {base, walls, labels, extra};
   }
 
   function arenaBeginScan() {
     arenaScan.active = arenaNeeded();
-    if (arenaScan.active) arenaScan.found.length = 0;
+    if (arenaScan.active) { arenaScan.found.length = 0; arenaScan.nearMiss.length = 0; }
   }
 
   // Called for every node the scene sweep walks past, alongside the health-bar
   // matcher, so this costs one length comparison on all but a handful of nodes.
-  // Six or seven, the seventh being our own sky.
+  //
+  // A container in the right size range that does NOT match is recorded, up to
+  // a few of them. "No arena in the scene" is the least actionable thing this
+  // feature can say, and the near misses are what turn it into an answer.
   function arenaConsiderNode(node) {
     const kids = node && node.children;
-    if (!kids || kids.length < 6 || kids.length > 7) return;
-    if (arenaLooksLikeArena(node)) arenaScan.found.push(node);
+    if (!kids || kids.length < ARENA_KIDS_MIN || kids.length > ARENA_KIDS_MAX) return;
+    const parts = arenaPartsOf(node);
+    if (parts) { arenaScan.found.push(node); return; }
+    if (arenaScan.nearMiss.length >= 4) return;
+    let texts = 0, hasWalls = false, hasBase = false;
+    for (let i = 0; i < kids.length; i++) {
+      const kid = kids[i];
+      if (!kid || kid.__lumiArenaSky) continue;
+      if (typeof kid.text === 'string') { texts++; continue; }
+      if (typeof kid.clear === 'function' && typeof kid.circle === 'function') hasWalls = true;
+      else if (kid.texture && Number.isFinite(Number(kid.width))) hasBase = true;
+    }
+    if (!hasWalls && texts < 2) return;   // not arena-ish at all; say nothing
+    arenaScan.nearMiss.push({
+      children: kids.length, texts, floor: hasBase, walls: hasWalls,
+      why: !hasBase ? 'no floor with a texture and a width'
+        : !hasWalls ? 'no Graphics that can draw a circle'
+        : 'only ' + texts + ' text labels, needs 4',
+    });
   }
 
   function arenaEndScan() {
@@ -14644,22 +14731,38 @@
   // animal we are locked to, a hidden name means an arena.
   //
   // container.children = [ body, name, arenaWins, resourceIndicator, HUD ]
-  const ARENA_NAME_CHILD = 1;
-  const ARENA_WINS_CHILD = 2;
-
   // null means "this is not a container I recognise", which is different from
   // "not duelling" and is treated differently below.
+  //
+  // 1.0.13: the pair is found BY SHAPE rather than at a fixed index. 1.18.1
+  // pinned it to children 1 and 2 deliberately — guessing is how the bug
+  // before it happened — and the fingerprint is kept exactly: two ADJACENT
+  // Text children, the first of which is the name. What is dropped is only the
+  // assumption about WHERE that pair sits, because a bigger animal carries
+  // extra art ahead of it and the pair simply shifts along. An animal whose
+  // name could not be found at index 1 used to return null, fall through to
+  // the arena memory, and — with no reading to hand inside a culled duel —
+  // take every arena feature down with it.
+  //
+  // Bounded so this cannot become a walk: the pair is within the first few
+  // children on every animal mope builds.
+  const ARENA_NAME_SEARCH_MAX = 8;
+  let arenaNameIndex = -1;   // where the pair was found, for the debug hook
+
   function arenaNameHidden(container) {
     const kids = container && container.children;
-    if (!kids || kids.length < 5) return null;
-    const name = kids[ARENA_NAME_CHILD];
-    const wins = kids[ARENA_WINS_CHILD];
-    if (!name || !wins) return null;
-    // Both are Text, which is what pins the shape: an animal container whose
-    // second and third children are not both text is not the one this was
-    // written against, and guessing at it would be how the last bug happened.
-    if (typeof name.text !== 'string' || typeof wins.text !== 'string') return null;
-    return name.visible === false;
+    if (!kids || kids.length < 3) { arenaNameIndex = -1; return null; }
+    const last = Math.min(kids.length - 1, ARENA_NAME_SEARCH_MAX);
+    for (let i = 0; i < last; i++) {
+      const name = kids[i];
+      const wins = kids[i + 1];
+      if (!name || !wins) continue;
+      if (typeof name.text !== 'string' || typeof wins.text !== 'string') continue;
+      arenaNameIndex = i;
+      return name.visible === false;
+    }
+    arenaNameIndex = -1;
+    return null;
   }
   // Whether the animal the HP feature locked onto is actually ours.
   //
@@ -14731,8 +14834,11 @@
     // against — and reported either way, so the two can be compared.
     const hidden = arenaNameHidden(player);
     arenaSky.nameSays = hidden;
+    arenaSky.nameAt = arenaNameIndex;
+    // The memory is asked of the ANIMAL as well as of the reading, because
+    // inside a culled duel there is routinely no reading — see hpArenaSeen.
     arenaSky.duelling = (hidden === null
-      ? hpInArena(entry, now)
+      ? (hpInArena(entry, now) || hpEntityInArena(player, now))
       : hidden) && arenaSkyLockIsSelf(player, now);
     if (!arenaSky.duelling) return null;
 
@@ -14746,10 +14852,13 @@
     let bestDist = Infinity;
     for (const node of arenaScan.found) {
       if (!node.parent) continue;
-      const kids = node.children;
-      const base = kids && arenaPart(kids, 0);
+      // Resolved by shape, once, and carried on `mine` — so the sky's Graphics
+      // lookup and the bite indicator's score labels stop counting children
+      // for themselves. An extra child used to shift both of those silently.
+      const parts = arenaPartsOf(node);
       const wt = node.worldTransform;
-      if (!base || !wt) continue;
+      if (!parts || !wt) continue;
+      const base = parts.base;
       // The world-to-screen scale, taken off the transform itself rather than
       // assumed, so camera zoom and the renderer's resolution are both already
       // in it.
@@ -14762,7 +14871,7 @@
       if (!(dist <= worldRadius * scale)) continue;
       if (dist >= bestDist) continue;
       bestDist = dist;
-      best = {node, base, scale, worldRadius};
+      best = {node, base, walls: parts.walls, labels: parts.labels, scale, worldRadius};
     }
     return best;
   }
@@ -15025,12 +15134,9 @@
 
     // Built from the arena's own Graphics rather than from an engine import,
     // which a userscript has no way to reach: its constructor is the class.
-    // The lookup is kept in its own variable deliberately — written inline as
-    // `new arenaPart(kids, 1).constructor()` it parses as
-    // `(new arenaPart(kids, 1)).constructor()`, which calls arenaPart as a
-    // constructor and then calls the class WITHOUT new. That returns undefined
-    // and reads exactly like the engine refusing to build one.
-    const wallsPart = arenaPart(mine.node.children, 1);
+    // Taken from the parts resolved by shape (1.0.13) rather than from child
+    // index 1, which an extra child would have shifted.
+    const wallsPart = mine.walls;
     const Graphics = wallsPart && wallsPart.constructor;
     let node = null;
     try { if (typeof Graphics === 'function') node = new Graphics(); }
@@ -15323,6 +15429,17 @@
         : hpState.player
           ? 'HELD — your animal is known; its bar is not in the scan right now'
           : 'none' + (hpLockRefusedWhy ? ' (' + hpLockRefusedWhy + ')' : ''),
+      // 1.0.13. "No arena in the scene" was the least actionable sentence this
+      // feature could produce, and it is what an over-strict matcher says. The
+      // containers that ALMOST matched are listed with the test each one
+      // failed, so a duel that comes up empty says why rather than just no.
+      arenasFound: arenaScan.found.length,
+      arenasAlmost: arenaScan.nearMiss.length
+        ? arenaScan.nearMiss.map(function (m) {
+            return m.children + ' children, ' + m.texts + ' labels, floor=' +
+              m.floor + ' walls=' + m.walls + ' — ' + m.why;
+          })
+        : '(none — nothing arena-shaped was rejected)',
       arenaCulling: mopeCullingValue() === MOPE_CULL_HIDE ? 'HIDE — world culled'
         : mopeCullingValue() === MOPE_CULL_SHOW ? 'SHOW — world drawn'
         : 'could not be read',
@@ -15354,13 +15471,25 @@
         : entry ? 'no — not marked as a fighter (walking past does not count)'
         : 'unknown — the HP feature has not locked onto your animal',
       nameSignal: arenaSky.nameSays === null
-        ? 'container not recognised — falling back to the outline tint'
+        ? 'container not recognised — falling back to the arena memory'
         : arenaSky.nameSays ? 'your name is HIDDEN, so you are in an arena'
         : 'your name is shown, so you are not',
-      outlineSignal: !entry ? '(no player lock)'
+      // 1.0.13. WHERE the name/wins pair was found. It used to be required at
+      // index 1 exactly; a bigger animal carries extra art ahead of it, and an
+      // animal whose pair had shifted read as "not recognised" and fell
+      // through to a memory that a culled duel had already emptied.
+      nameFoundAt: arenaSky.nameAt >= 0
+        ? 'children[' + arenaSky.nameAt + '] and [' + (arenaSky.nameAt + 1) + ']'
+        : 'NOT FOUND — no adjacent pair of Text children on your animal',
+      outlineSignal: !entry ? '(no player lock reading)'
         : (hpInArena(entry, performance.now()) ? 'cyan/yellow seen within 30s' : 'no duellist tint') +
           (arenaSky.nameSays === null ? ' — IN USE, the container was not recognised'
             : ' — not used, the name signal above decides'),
+      // The same memory asked of the ANIMAL, which is the copy that survives
+      // the bar reading being dropped (1.0.13).
+      arenaMemory: hpEntityInArena(hpState.player, performance.now())
+        ? 'your animal wore a duellist outline within the last 30s'
+        : 'no duellist outline remembered for your animal',
       lockIsYou: arenaSky.identOk
         ? 'the locked animal matches your ability icon'
         : 'MISMATCH — locked onto somebody else, so participation is refused',
@@ -15553,8 +15682,7 @@
   }
 
   // "Bites: 12" off one of the arena's own labels.
-  function biteScoreOf(kids, index) {
-    const label = arenaPart(kids, index);
+  function biteScoreOf(label) {
     const text = label && typeof label.text === 'string' ? label.text : '';
     const m = /Bites:\s*(\d+)/.exec(text);
     if (!m) return -1;
@@ -15629,8 +15757,13 @@
     if (bite.node !== mine.node) biteEnterDuel(mine, now);
     bite.node = mine.node;
 
-    const s1 = biteScoreOf(kids, 2);
-    const s2 = biteScoreOf(kids, 3);
+    // The two score labels, resolved by shape on the arena. Falling back to
+    // resolving them here keeps this working for any caller that hands over a
+    // bare {node} — the labels are a convenience carried on `mine`, not a
+    // precondition, and a silent -1 here would stop the indicator dead.
+    const labels = mine.labels || (arenaPartsOf(mine.node) || {}).labels || [];
+    const s1 = biteScoreOf(labels[0]);
+    const s2 = biteScoreOf(labels[1]);
     // A label that cannot be parsed is not a zero. Leaving the baseline alone
     // means one unreadable frame costs nothing, rather than manufacturing a
     // bump on the frame after it.
