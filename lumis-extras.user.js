@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.18
+// @version      1.0.19
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -29,6 +29,19 @@
  *      Lumi's — if you are working on this and think a change earns it, ask.
  *      Default to leaving it alone.
  *   y  everything else: features, fixes, extra gradients, copy tweaks.
+ *
+ * 1.0.19 BREAKS THE FAILURE CHAIN between the player lock and the arena
+ * features. Arena ownership now comes straight from mope's `$.player.arena`
+ * model on every arena read, whether or not the HP scanner has produced a
+ * bar entry yet. The boost counter resolves its anchor by matching the
+ * authoritative `$.player.container` against the current bar readings rather
+ * than trusting a possibly stale shared entry. The old inference remains only
+ * when the game singleton or player shape is genuinely unavailable.
+ *
+ * The renderer wrapper also isolates and records every feature failure. A
+ * throw in HP, party, layout, boost, or scene discovery can no longer skip the
+ * arena theme later in the same frame; __lumiPerfDebug().featureErrors names
+ * the failing stage and count instead of the outer wrapper swallowing it.
  *
  * 1.0.13 is the rest of the culled-duel bug, reported as "the background
  * fails in Black Dragon arenas, or in the volcano". Those are one report:
@@ -2968,7 +2981,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.18';
+    return '1.0.19';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -5560,6 +5573,33 @@
   let framePerfCalls = 0;      // render() calls seen
   let framePerfRuns = 0;       // of those, ones that did work
   let framePerfSince = 0;
+  const frameFailures = Object.create(null);
+
+  // A userscript must never throw through mope's render loop, but "silent"
+  // must not mean "unknowable". Each feature boundary below records its own
+  // failure and lets the rest of the frame continue. Logging is throttled so
+  // a per-frame fault cannot flood the console at 240 Hz.
+  function frameFailed(feature, error) {
+    const now = performance.now();
+    let row = frameFailures[feature];
+    if (!row) row = frameFailures[feature] = {count: 0, lastAt: 0, lastLoggedAt: -Infinity, message: ''};
+    row.count++;
+    row.lastAt = now;
+    row.message = String(error && error.message || error || 'unknown error');
+    if (row.count === 1 || now - row.lastLoggedAt >= 10000) {
+      row.lastLoggedAt = now;
+      try { console.warn(TAG, feature + ' failed; later frame features still ran:', error); } catch (e) {}
+    }
+  }
+
+  function frameFailureReport() {
+    const report = {};
+    for (const feature of Object.keys(frameFailures)) {
+      const row = frameFailures[feature];
+      report[feature] = {count: row.count, lastAt: Math.round(row.lastAt), message: row.message};
+    }
+    return report;
+  }
 
   function sceneSweepNeeded() {
     return hpReadingNeeded() || arenaNeeded() ||
@@ -5628,52 +5668,69 @@
         // as lag, it reads as vibration. It is affordable because it is not a
         // scan: two property reads and one transform write, and it returns on
         // the first line whenever the counter is not on screen.
-        boostPlace(this);
+        try { boostPlace(this); } catch (e) { frameFailed('boost placement', e); }
         if (now - lastFrameWork >= FRAME_WORK_MIN_MS) {
           lastFrameWork = now;
           framePerfRuns++;
           const stage = (arg && arg.container) ? arg.container : arg;
           if (stage && sceneSweepNeeded() && now - lastSweep >= SCENE_SWEEP_MIN_MS) {
-            lastSweep = now;
-            hpBeginScan();
-            arenaBeginScan();
-            sweep(stage);
-            arenaEndScan();
-            hpEndScan();
+            let hpScanStarted = false;
+            let arenaScanStarted = false;
+            try {
+              lastSweep = now;
+              hpBeginScan();
+              hpScanStarted = true;
+              arenaBeginScan();
+              arenaScanStarted = true;
+              sweep(stage);
+            } catch (e) {
+              frameFailed('scene discovery', e);
+            } finally {
+              if (arenaScanStarted) {
+                try { arenaEndScan(); } catch (e) { frameFailed('arena scan finalise', e); }
+              }
+              if (hpScanStarted) {
+                try { hpEndScan(); } catch (e) { frameFailed('HP scan finalise', e); }
+              }
+            }
           }
           if (stage && hpWorkNeeded() && now - lastHpWork >= HP_WORK_MIN_MS) {
             lastHpWork = now;
             hpLastStage = stage;
-            hpTick(this, now);
+            try { hpTick(this, now); } catch (e) { frameFailed('HP', e); }
             // Draw order, on the HP budget: it reorders the same animals the
             // HP scan is already holding, and has its own 250ms throttle.
-            zorderApply(now, false);
+            try { zorderApply(now, false); } catch (e) { frameFailed('draw order', e); }
           }
           // Party dots still update before Pixi draws; redundant intervening
           // renders are skipped because peers publish at only 10 Hz.
           if (stage && partyWorkNeeded() && now - lastPartyWork >= PARTY_WORK_MIN_MS) {
             lastPartyWork = now;
-            partyTick(stage, this, now);
+            try { partyTick(stage, this, now); } catch (e) { frameFailed('party', e); }
           }
           // The minimap is drawn into the canvas, so its placement needs a
           // renderer and cannot ride the DOM pacer the rest of the layout
           // registry uses. Free unless the map has actually been dragged.
-          if (stage) layoutPixiTick(stage, this, now);
+          if (stage) {
+            try { layoutPixiTick(stage, this, now); } catch (e) { frameFailed('layout', e); }
+          }
           // Which duel is yours, before anything that depends on the answer.
           // Shares the sky's budget deliberately: it reads the same things,
           // through the same function, and nothing it feeds changes faster.
           if (now - lastArenaWork >= ARENA_SKY_WORK_MIN_MS) {
             lastArenaWork = now;
-            arenaDuelTick(this, now);
+            try { arenaDuelTick(this, now); } catch (e) { frameFailed('arena duel', e); }
             // The boost counter rides the same budget, and for the same
             // reason the duel tick does: it reads the duel state that call
             // just filled in, and the meter behind it changes a couple of
             // times a second at most.
-            boostTick(this, now);
+            try { boostTick(this, now); } catch (e) { frameFailed('boost counter', e); }
             // The arena sky. Nothing it reads changes faster than the camera
             // moves, and the work is a handful of transform reads plus, very
             // occasionally, a repaint.
-            if (arenaSkyWorkNeeded()) arenaSkyTick(this, now);
+            if (arenaSkyWorkNeeded()) {
+              try { arenaSkyTick(this, now); } catch (e) { frameFailed('arena theme', e); }
+            }
           }
           // keep gradient overlays glued to the (possibly animating) name node
           // at a smooth visual rate, independent of high-refresh render spam.
@@ -5686,13 +5743,15 @@
               if (!n.parent) continue;
               const m = overlays.get(n);
               if (!m) continue;
-              syncOverlayLayout(n, m);
-              syncOverlayVisibility(n, m);
-              animateOverlayTints(m, now);
+              try {
+                syncOverlayLayout(n, m);
+                syncOverlayVisibility(n, m);
+                animateOverlayTints(m, now);
+              } catch (e) { frameFailed('name overlay', e); }
             }
           }
         }
-      } catch (e) { /* never break the game loop */ }
+      } catch (e) { frameFailed('frame wrapper', e); }
       // Rest + spread allocated two arrays on EVERY frame. Every Pixi v8 path
       // calls render() with a single argument; the apply() branch exists only
       // so an unusual caller cannot silently lose one.
@@ -6022,6 +6081,7 @@
       overlaysLive: overlays ? overlays.size : 0,
       hpBarsTracked: hpState && hpState.bars ? hpState.bars.size : 0,
       partyPeers: party && party.peers ? party.peers.size : 0,
+      featureErrors: frameFailureReport(),
     };
     console.table ? console.table(report) : console.log(report);
     framePerfCalls = 0;
@@ -6911,8 +6971,8 @@
   // percent, so a send happens only when the whole number changes, which is
   // bounded by how fast health can actually drop rather than by the frame rate.
   function partySelfHealth() {
-    const entry = hpState.playerEntry;
-    if (!entry || !hpState.player || entry.entity !== hpState.player) return -1;
+    const entry = hpSelfEntry();
+    if (!entry) return -1;
     const live = entry.raw;
     const value = typeof live === 'number' && Number.isFinite(live) ? live : entry.settled;
     if (typeof value !== 'number' || !Number.isFinite(value)) return -1;
@@ -8963,10 +9023,11 @@
       // live or frozen; a large number while you are taking damage means the
       // bar never held still long enough to be believed.
       selfHealthWhy: (() => {
-        const entry = hpState.playerEntry;
-        if (!hpState.player) return 'no animal is locked as you';
+        const entry = hpSelfEntry();
+        const player = hpGamePlayer() || hpState.player;
+        if (!player) return 'no animal is locked as you';
         if (!entry) return 'an animal is locked but it carries no health-bar entry';
-        if (entry.entity !== hpState.player) {
+        if (entry.entity !== player) {
           return 'MISMATCH — the locked animal and the locked entry are different ' +
             'objects, so partySelfHealth() is refusing to publish';
         }
@@ -13128,6 +13189,26 @@
     return 'UNRECOGNISED — keys: ' + Object.keys(m).slice(0, 14).join(', ');
   }
 
+  // The current reading for the authoritative player. Most callers arrive
+  // just after hpTick has filled playerEntry, but arena entry reparents bars
+  // and a failed earlier feature used to leave a stale opponent entry behind.
+  // Match the game-owned container every time; use the heuristic entry only
+  // when that authoritative shape genuinely cannot be resolved.
+  function hpSelfEntry() {
+    const me = hpGamePlayer();
+    if (me) {
+      const current = hpState.playerEntry;
+      if (current && current.entity === me && current.bar && current.bar.parent) return current;
+      for (const entry of hpState.bars.values()) {
+        if (entry && entry.entity === me && entry.bar && entry.bar.parent) return entry;
+      }
+      return null;
+    }
+    // A captured game with no player is an authoritative menu/death answer.
+    if (gameCapture.game && !hpGameModel()) return null;
+    return hpState.playerEntry || null;
+  }
+
   function hpLockPlayer(scr, now) {
     // 1.0.17: THE GAME'S OWN ANSWER COMES FIRST. 1.0.18: and it can only ever
     // REFUSE when the game positively says you have no animal. A player the
@@ -15037,8 +15118,16 @@
   }
 
   function arenaSkyPick(scr, now) {
-    const entry = hpState.playerEntry;
-    const player = hpState.player;
+    // Arena ownership is game state, not a side effect of the HP scanner.
+    // Prefer the singleton's player/container directly even if hpTick has not
+    // produced a lock or bar reading yet. That breaks the historical chain in
+    // which one missed health reading took the theme, bite and boost state
+    // down together.
+    const gameKnown = !!gameCapture.game;
+    const model = hpGameModel();
+    const gamePlayer = hpGamePlayer();
+    const player = gamePlayer || hpState.player;
+    const entry = hpSelfEntry();
     const lock = player && player.worldTransform;
     const haveLock = !!(lock && Number.isFinite(lock.tx) && Number.isFinite(lock.ty));
     arenaSky.lockUsed = haveLock;
@@ -15054,16 +15143,17 @@
     // match is against `arena.container`. The name test and the outline
     // memory below are the fallback for a page where the singleton was never
     // captured, and are still reported beside it.
-    const model = hpState.lockedBy === 'game' ? hpGameModel() : null;
     const gameArena = model && model.arena && typeof model.arena === 'object' ? model.arena : null;
     const gameArenaNode = !gameArena ? null
       : (gameArena.container && typeof gameArena.container === 'object') ? gameArena.container
       : gameArena;
-    arenaSky.gameSays = model ? (gameArena ? 'duelling' : 'not duelling') : 'n/a';
+    arenaSky.gameSays = gameKnown
+      ? (model ? (gameArena ? 'duelling' : 'not duelling') : 'no player')
+      : 'n/a';
     const hidden = arenaNameHidden(player);
     arenaSky.nameSays = hidden;
     arenaSky.nameAt = arenaNameIndex;
-    if (model) {
+    if (gameKnown) {
       arenaSky.duelling = !!gameArena;
     } else {
       // The memory is asked of the ANIMAL as well as of the reading, because
@@ -15488,6 +15578,7 @@
       arenaHudApply(true);
     } catch (e) {
       arenaSky.why = 'threw: ' + e;
+      frameFailed('arena theme', e);
       dbg('arena starfield: tick failed —', e);
     }
   }
@@ -15625,7 +15716,7 @@
     const renderer = renderers[0] || null;
     const scr = renderer ? viewportOf(renderer) : {w: innerWidth, h: innerHeight};
     const mine = arenaScan.found.length ? arenaSkyPick(scr, performance.now()) : null;
-    const entry = hpState.playerEntry;
+    const entry = hpSelfEntry();
     const report = {
       version: VERSION,
       masterEnabled: settings.masterEnabled,
@@ -16506,7 +16597,7 @@
   // freezes under continuous damage, and a frozen health figure beside a
   // moving water figure would quietly mark every contaminated sample clean.
   function waterHealth() {
-    const entry = hpState.playerEntry;
+    const entry = hpSelfEntry();
     if (!entry) return null;
     const value = entry.raw != null ? entry.raw : entry.settled;
     return typeof value === 'number' ? Math.round(value) : null;
@@ -17311,7 +17402,7 @@
     // asked for 25 or less, so this is one point wider than mope's class by
     // design — see WATER_LOW_PCT.
     if (water.pct == null || water.pct > WATER_LOW_PCT) { boostHide(); return; }
-    const entry = hpState.playerEntry;
+    const entry = hpSelfEntry();
     const bar = entry && entry.bar;
     const at = bar && bar.parent ? hpScreenPos(bar) : null;
     if (!at) { boostHide(); return; }
@@ -17428,8 +17519,11 @@
         return c == null ? null : Number(c.toFixed(4));
       })(),
       // Why it is not on screen, if it is not.
-      anchor: hpState.playerEntry && hpState.playerEntry.bar
-        ? 'your health bar' : 'NONE — the HP feature has not locked onto you',
+      anchor: (() => {
+        const entry = hpSelfEntry();
+        return entry && entry.bar
+          ? 'your health bar' : 'NONE — the HP feature has not locked onto you';
+      })(),
       drawn: boostUI.shown,
     };
     console.log(TAG, 'boost counter', report);
