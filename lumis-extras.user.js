@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.13
+// @version      1.0.14
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -2914,7 +2914,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.13';
+    return '1.0.14';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -14646,8 +14646,22 @@
   // ORDER MATTERS. Text is tested first, because a Text node also carries a
   // texture and a finite width and would otherwise be taken for the floor.
   // Our own sky is skipped, the same trick as `__lumiPartyDot`.
+  // BOUNDS, NOT A FINGERPRINT — and every number here is a guess until it is
+  // read off a live duel (1.0.14).
+  //
+  // mope's arena is six children today. But a Black Dragon or King Dragon duel
+  // visibly rebuilds the arena: both fighters are scaled up to match the big
+  // animal, and the arena changes with them. So "how many children does an
+  // arena have" is not something to bet three features on. 1.0.13 replaced an
+  // exact six with a ceiling of twelve, which is the same mistake with more
+  // headroom — and it is the shape of arena the bug was reported in.
+  //
+  // MAX is now generous enough that exceeding it means the shape really did
+  // change, and LOOK keeps the near-miss reporting going well past it, so the
+  // ceiling can never hide the fact that it was the ceiling.
   const ARENA_KIDS_MIN = 6;
-  const ARENA_KIDS_MAX = 12;   // a bound, so this can never become a walk
+  const ARENA_KIDS_MAX = 24;    // matched up to here
+  const ARENA_KIDS_LOOK = 64;   // still REPORTED up to here, even when refused
 
   function arenaPartsOf(node) {
     const kids = node && node.children;
@@ -14677,13 +14691,19 @@
   // matcher, so this costs one length comparison on all but a handful of nodes.
   //
   // A container in the right size range that does NOT match is recorded, up to
-  // a few of them. "No arena in the scene" is the least actionable thing this
-  // feature can say, and the near misses are what turn it into an answer.
+  // a few of them — INCLUDING one refused purely for being too big. The first
+  // cut returned on the size gate before recording anything, so a container
+  // with more children than the ceiling was invisible AND the debug hook said
+  // nothing had been rejected: the bug, plus a diagnostic denying it. A
+  // ceiling that can hide is worse than no ceiling.
   function arenaConsiderNode(node) {
     const kids = node && node.children;
-    if (!kids || kids.length < ARENA_KIDS_MIN || kids.length > ARENA_KIDS_MAX) return;
-    const parts = arenaPartsOf(node);
-    if (parts) { arenaScan.found.push(node); return; }
+    if (!kids || kids.length < ARENA_KIDS_MIN) return;
+    if (kids.length <= ARENA_KIDS_MAX) {
+      const parts = arenaPartsOf(node);
+      if (parts) { arenaScan.found.push(node); return; }
+    }
+    if (kids.length > ARENA_KIDS_LOOK) return;
     if (arenaScan.nearMiss.length >= 4) return;
     let texts = 0, hasWalls = false, hasBase = false;
     for (let i = 0; i < kids.length; i++) {
@@ -14696,7 +14716,9 @@
     if (!hasWalls && texts < 2) return;   // not arena-ish at all; say nothing
     arenaScan.nearMiss.push({
       children: kids.length, texts, floor: hasBase, walls: hasWalls,
-      why: !hasBase ? 'no floor with a texture and a width'
+      why: kids.length > ARENA_KIDS_MAX
+        ? 'MORE THAN ' + ARENA_KIDS_MAX + ' children — the matcher never looked at it'
+        : !hasBase ? 'no floor with a texture and a width'
         : !hasWalls ? 'no Graphics that can draw a circle'
         : 'only ' + texts + ' text labels, needs 4',
     });
@@ -14746,7 +14768,10 @@
   //
   // Bounded so this cannot become a walk: the pair is within the first few
   // children on every animal mope builds.
-  const ARENA_NAME_SEARCH_MAX = 8;
+  // A Black Dragon or King Dragon carries more art than a tier-15 animal, and
+  // in their arenas every fighter is scaled up to match — so the pair can sit
+  // further along than a normal animal's. Bounded, but generously (1.0.14).
+  const ARENA_NAME_SEARCH_MAX = 16;
   let arenaNameIndex = -1;   // where the pair was found, for the debug hook
 
   function arenaNameHidden(container) {
@@ -15434,6 +15459,17 @@
       // containers that ALMOST matched are listed with the test each one
       // failed, so a duel that comes up empty says why rather than just no.
       arenasFound: arenaScan.found.length,
+      // THE REAL NUMBERS. Every ceiling in the matcher above is a guess until
+      // somebody reads one off a live duel, and a Black Dragon or King Dragon
+      // arena is the case that scales everything up. These two rows are what a
+      // paste from such a duel should be checked against first.
+      arenaChildren: mine && mine.node && mine.node.children
+        ? mine.node.children.length + ' (matched up to ' + ARENA_KIDS_MAX + ')'
+        : '(no arena picked)',
+      yourAnimalChildren: hpState.player && hpState.player.children
+        ? hpState.player.children.length + ' (nameplate searched up to ' +
+          ARENA_NAME_SEARCH_MAX + ')'
+        : '(no lock)',
       arenasAlmost: arenaScan.nearMiss.length
         ? arenaScan.nearMiss.map(function (m) {
             return m.children + ' children, ' + m.texts + ' labels, floor=' +
