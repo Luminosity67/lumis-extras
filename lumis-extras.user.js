@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.11
+// @version      1.0.12
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -29,6 +29,21 @@
  *      Lumi's — if you are working on this and think a change earns it, ask.
  *      Default to leaving it alone.
  *   y  everything else: features, fixes, extra gradients, copy tweaks.
+ *
+ * 1.0.12 fixes the arena features dying together inside a CULLED duel — the
+ * starfield, the bite indicator and the boost counter, reported as one bug
+ * because it was one. 1.0.10 stood the player lock down whenever the ability
+ * cards were gone, to stop the death screen adopting a stranger; but Arena
+ * Culling takes the whole ability wheel out of the document for the length of
+ * a duel, and hpHudCluster() cannot tell that from dying. So the first bar
+ * hiccup inside a culled duel sent the lock through that gate, the gate
+ * cleared hpState.player, the relock had nothing to re-find, and a null lock
+ * reads as "not your duel" to arenaSkyPick() — one gate, three features. The
+ * lock now HOLDS an animal still standing in the scene (hpPlayerAlive) and
+ * refuses only when it is gone, which is what the death screen looks like;
+ * arenaSkyLockIsSelf() takes the entity rather than a reading; and the Arena
+ * Culling switch has a second way in — mope's own game object, captured by
+ * the 1.36.0 loop route, carries the settings proxy the Proxy hook races for.
  *
  * 1.0.9 fixes the mis-hook properly. The boost counter following the opponent
  * and the draw-order keys working backwards in an arena were ONE bug: the
@@ -2871,7 +2886,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.11';
+    return '1.0.12';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -3427,7 +3442,7 @@
     // cannot see mope's bind list at all", and every BOUND check above is
     // therefore silently answering no.
     console.log(TAG, 'mope bind list readable:',
-      mopeSettings.proxy ? 'yes' : 'NO - bound-key clashes cannot be detected');
+      mopeSettingsProxy() ? 'yes' : 'NO - bound-key clashes cannot be detected');
     return rows;
   }
   try { PAGE.__lumiKeybindDebug = kbDebug; }
@@ -12906,15 +12921,59 @@
     return hpHudGoneAt !== 0 && now - hpHudGoneAt > HP_NO_HUD_GRACE_MS;
   }
 
+  // Whether the animal the lock is holding is still IN the scene. This is what
+  // separates the two states hpHudDown() cannot tell apart on its own:
+  //
+  //   death screen  the HUD is gone AND your animal was torn down with it —
+  //                 mope destroys the container, children and all.
+  //   culled duel   the HUD is gone because Arena Culling took the ability
+  //                 wheel out of the document, and your animal is alive in the
+  //                 arena a few pixels from the one trying to kill you.
+  //
+  // 1.0.10 gated the lock on the HUD alone, which is right for the first and
+  // fatal for the second. The first bar hiccup inside a culled duel — a rescan
+  // miss, mope re-parenting the duellists on entry — sent hpLockPlayer through
+  // that gate, the gate refused, and refusing cleared hpState.player, so the
+  // relock had nothing to re-find for the rest of the fight. And a null lock
+  // reads as "not your duel" to arenaSkyPick(), which is how one gate took the
+  // starfield, the bite indicator and the boost counter down together.
+  //
+  // `parent` is the liveness signal this file already trusts: hpEndScan()
+  // drops a bar whose parent is gone, and mope tears a dead animal down with
+  // destroy({children: true}), which detaches it and marks it destroyed.
+  function hpPlayerAlive() {
+    const player = hpState.player;
+    return !!(player && player.destroyed !== true && player.parent);
+  }
+
   function hpLockPlayer(scr, now) {
     const kept = hpRelock();
     if (kept && !hpLockGoneBad(hpState.playerEntry, now)) return kept;
 
-    // No HUD, no lock. Above the searches rather than inside them: with the
-    // cards gone there is no identity to be had, so every pass below is
+    // No HUD, no NEW lock. Above the searches rather than inside them: with
+    // the cards gone there is no identity to be had, so every pass below is
     // position guessing among strangers, and the honest answer is no answer.
+    //
+    // 1.0.12: no NEW lock — but an animal already known to be yours, and still
+    // standing in the scene, is HELD. The HUD is down in two states and only
+    // one of them is the death screen: Arena Culling takes the whole ability
+    // wheel out of the document for the length of a duel, and hpHudCluster()
+    // cannot tell that from dying. Refusing here cleared hpState.player, so
+    // the relock had nothing to re-find for the rest of the fight, and every
+    // feature that reads the lock — the starfield, the bite indicator, the
+    // boost counter — went dark together. See hpPlayerAlive().
+    //
+    // Holding is safe on the death screen: your animal is destroyed there, so
+    // hpPlayerAlive() says no and this refuses exactly as 1.0.10 did. What is
+    // held is the ENTITY, not a reading — playerEntry stays null until the bar
+    // is back in the scan, so nothing stale is published in the meantime.
     if (hpHudDown(now)) {
       hpLockRefusedAt = now;
+      if (hpPlayerAlive()) {
+        hpLockRefusedWhy = 'the in-game HUD is down but your animal is still in ' +
+          'the scene (a culled duel) — lock held, waiting for its bar';
+        return hpState.player;
+      }
       hpLockRefusedWhy = 'the in-game HUD is down (death screen or menu)';
       return hpAdoptPlayer(null);
     }
@@ -13622,6 +13681,9 @@
                 // The gate that stands the lock down on the death screen. When
                 // this is true a null lock is correct and not a fault.
                 hudIsDown: hpHudDown(performance.now()),
+                // 1.0.12. True through a culled duel whenever the bar drops out
+                // of a scan: the entity is kept, the reading is not.
+                heldWithoutReading: !!(hpState.player && !hpState.playerEntry),
                 barsAndHowFarOffCentre: [...hpState.bars.values()].map((e) => {
                   const at = hpScreenPos(e.entity);
                   const ident = hpIdentify(e.entity);
@@ -13793,7 +13855,7 @@
   // twenty seconds after load, and only on a path where something has already
   // gone wrong. That is a different cost from reading a target at frame rate.
   function mopeRendererName() {
-    const p = mopeSettings.proxy;
+    const p = mopeSettingsProxy();
     if (!p) return null;
     try {
       const r = p.rendering && p.rendering.renderer;
@@ -13881,9 +13943,40 @@
   // until a reload.
   mopeSettingsInstall();
 
+  // The settings object, from whichever route reached it.
+  //
+  // 1.0.12. The Proxy hook above is a RACE: it has to be armed before mope's
+  // bundle builds the settings proxy, and a script injected a beat late misses
+  // it and is told 'mope built no settings object within 20s' — which is the
+  // "Arena Culling unavailable" toast. But 1.36.0's game-loop route captures
+  // mope's own singleton, and `settings` on that singleton IS the proxy the
+  // hook was waiting for. So the second route backs up the first, exactly as
+  // it already does for the renderer — and the handoff's "the $ capture is
+  // used for one thing only" stops being true here.
+  //
+  // Lazy and cached rather than done inside the trap, so it works in either
+  // capture order and costs nothing until something asks. The shape check
+  // reads two keys THROUGH the proxy, once — the cost mopeRendererName()
+  // already accepts, and nothing like a per-frame read of a Svelte signal.
+  function mopeSettingsProxy() {
+    if (mopeSettings.proxy) return mopeSettings.proxy;
+    const game = gameCapture.game;
+    const candidate = game && game.settings;
+    if (!candidate || typeof candidate !== 'object') return null;
+    try {
+      const play = candidate.gameplay;
+      const arena = play && play.arena;
+      if (!arena || typeof arena !== 'object' || !('outsideWorld' in arena)) return null;
+    } catch (e) { return null; }
+    mopeSettings.proxy = candidate;
+    mopeSettings.why = 'captured from the game object (the Proxy hook missed: ' +
+      mopeSettings.why + ')';
+    return candidate;
+  }
+
   // -1 for "could not be read", so it can never be confused with SHOW.
   function mopeCullingValue() {
-    const settingsProxy = mopeSettings.proxy;
+    const settingsProxy = mopeSettingsProxy();
     if (!settingsProxy) return -1;
     try {
       const play = settingsProxy.gameplay;
@@ -13903,7 +13996,7 @@
   // proxy can be swallowed in more than one way, and reporting a culled arena
   // that is not culled would send someone hunting the wrong thing.
   function mopeSetCulling(hide) {
-    const settingsProxy = mopeSettings.proxy;
+    const settingsProxy = mopeSettingsProxy();
     if (!settingsProxy) return false;
     const want = hide ? MOPE_CULL_HIDE : MOPE_CULL_SHOW;
     try {
@@ -13932,7 +14025,7 @@
   // is not evidence of a conflict, and refusing the hotkey on it would break
   // the feature for everyone the capture ever misses.
   function mopeBindFor(code) {
-    const settingsProxy = mopeSettings.proxy;
+    const settingsProxy = mopeSettingsProxy();
     if (!settingsProxy) return null;
     try {
       const binds = settingsProxy.binds;
@@ -14100,6 +14193,7 @@
     nameSays: null,   // the name-visibility reading, or null if unrecognised
     identAt: -Infinity,
     identOk: true,
+    identFor: null,   // which entity that verdict was for (1.0.12)
     why: 'off',       // why there is nothing on screen, for the debug hook
     lockUsed: false,  // whether the player's own position was available
     arenas: 0,
@@ -14577,15 +14671,27 @@
   //
   // Throttled, because identifying an animal means walking its textures. An
   // animal that cannot be named is not evidence of anything and passes.
+  //
+  // 1.0.12: takes the ENTITY, not the bar reading. The lock can be held with
+  // no reading to hand — hpLockPlayer() does exactly that through a culled
+  // duel, where the ability wheel is gone and the bar can drop out of a scan
+  // for a frame — and this used to answer "not you" the moment the reading was
+  // missing: the same question answered the same wrong way that 1.0.4 had to
+  // revert. The identity was always on the entity; the entry never had it.
+  // The cached verdict is keyed on WHICH entity it was for, since the lock can
+  // change animals on arena entry inside one throttle window.
   const ARENA_SKY_IDENT_MS = 1500;
 
-  function arenaSkyLockIsSelf(entry, now) {
-    if (!entry || !entry.entity) return false;
-    if (now - arenaSky.identAt < ARENA_SKY_IDENT_MS) return arenaSky.identOk;
+  function arenaSkyLockIsSelf(player, now) {
+    if (!player) return false;
+    if (arenaSky.identFor === player && now - arenaSky.identAt < ARENA_SKY_IDENT_MS) {
+      return arenaSky.identOk;
+    }
     arenaSky.identAt = now;
+    arenaSky.identFor = player;
     const self = hpIdentifySelfFromHud();
     if (!self) { arenaSky.identOk = true; return true; }
-    const ident = hpIdentify(entry.entity);
+    const ident = hpIdentify(player);
     if (!ident) { arenaSky.identOk = true; return true; }
     // A shop skin drops the rare variant out of the path at one end or the
     // other, so the variant only has to agree when both ends could see it.
@@ -14627,7 +14733,7 @@
     arenaSky.nameSays = hidden;
     arenaSky.duelling = (hidden === null
       ? hpInArena(entry, now)
-      : hidden) && arenaSkyLockIsSelf(entry, now);
+      : hidden) && arenaSkyLockIsSelf(player, now);
     if (!arenaSky.duelling) return null;
 
     // The screen centre is the fallback, and it is right whenever the camera is
@@ -15210,10 +15316,17 @@
       // mope's own Arena Culling, and whether this script can reach it at all.
       // "the sky is on but the world is still there" is answered entirely by
       // these two rows.
+      // 1.0.12. The lock, and the state that used to be invisible: an animal
+      // known to be yours with no bar reading to hand. That is the whole of a
+      // culled duel from the lock's point of view, and it is NOT a fault.
+      lockState: entry ? 'locked, with a reading'
+        : hpState.player
+          ? 'HELD — your animal is known; its bar is not in the scan right now'
+          : 'none' + (hpLockRefusedWhy ? ' (' + hpLockRefusedWhy + ')' : ''),
       arenaCulling: mopeCullingValue() === MOPE_CULL_HIDE ? 'HIDE — world culled'
         : mopeCullingValue() === MOPE_CULL_SHOW ? 'SHOW — world drawn'
         : 'could not be read',
-      settingsCapture: mopeSettings.proxy
+      settingsCapture: mopeSettingsProxy()
         ? mopeSettings.why
         : 'FAILED: ' + mopeSettings.why + ' (the sky still works; the culling ' +
           'switch does not, so set Arena Culling in mope\'s own settings)',
@@ -16330,7 +16443,7 @@
   // arrives as a mouse button rather than a key.
   function waterBoostBinds() {
     const out = {codes: [], values: [], pointers: []};
-    const proxy = mopeSettings.proxy;
+    const proxy = mopeSettingsProxy();
     try {
       const list = proxy && proxy.binds && proxy.binds.boost;
       if (Array.isArray(list)) {
@@ -16549,7 +16662,7 @@
       abilityWheelDrawn: !!water.dash,
       boostSeenBy: water.source || '(nothing yet)',
       boostBinds: waterBoostBinds(),
-      boostBindsRead: !!mopeSettings.proxy,
+      boostBindsRead: !!mopeSettingsProxy(),
       holdsInsideADuel: water.holds.filter((h) => h.arena).length,
       // THE NUMBER THIS RELEASE EXISTS TO FIND. Read the spread, not the mean:
       // a fixed cost of 1.5 shows up as a roughly even mix of 1s and 2s, and
@@ -16972,7 +17085,7 @@
   // is skipped rather than faked: a synthetic mouse event could not open it
   // anyway, since the pointer path is the one place mope checks isTrusted.
   function chatOpenCode() {
-    const proxy = mopeSettings.proxy;
+    const proxy = mopeSettingsProxy();
     try {
       const binds = proxy && proxy.binds && proxy.binds.chat;
       if (Array.isArray(binds)) {
@@ -17120,7 +17233,7 @@
       // Which key opens mope's chat, read from its own binds. 'Enter' here
       // with no settings capture means the default was assumed, not read.
       opensChatWith: chatOpenCode(),
-      settingsCaptured: !!mopeSettings.proxy,
+      settingsCaptured: !!mopeSettingsProxy(),
       lastPress: chatQuick.lastSlot >= 0
         ? 'key ' + (chatQuick.lastSlot + 1) + ' — ' + chatQuick.lastStandDown
         : '(nothing pressed yet)',
@@ -21434,7 +21547,7 @@
           ? 'A bind sits on a key mope uses itself. Underride yields to it; Override takes it.'
           : worst === 'bound'
             ? 'A bind sits on a key you have bound in mope. Underride yields to it; Override takes it.'
-            : mopeSettings.proxy
+            : mopeSettingsProxy()
               ? 'No conflicts. Press × to unbind a key, or Backspace while setting one.'
               : 'No conflicts found — but mope’s own bind list could not be read, so clashes with it cannot be seen.';
       kbNote.className = 'qolc-kb-note' + (worst ? ' is-' + worst : '');
