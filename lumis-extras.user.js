@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.14
+// @version      1.0.15
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -57,6 +57,21 @@
  * about where it sits is dropped. And __lumiArenaDebug() now reports the
  * containers that ALMOST matched, because "no arena in the scene" was the
  * least actionable sentence this feature could produce.
+ *
+ * 1.0.15 makes the boost counter divide by a CONSTANT. Filmed in a duel, the
+ * count read 6, 9, 10, 4, 2 while the lava meter only drifted down from 32% to
+ * 25% — a count that rises while the meter falls is not a reading of the
+ * meter, it is the divisor moving under it. The divisor was a least-squares
+ * fit, built when the cost per boost was unknown; it re-solved on every
+ * interval, and inside a culled duel — where there is routinely no health
+ * reading — it took enemy bites as boosts and swung by a factor of three.
+ * Lumi has confirmed the constant from the game: 1.5% per boost, and an
+ * enemy bite about the same. So it divides by 1.5 and the fit is reported as
+ * a tripwire, never used. Also corrected: King Dragon does NOT have "125%
+ * lava" — its meter reads 0–100% like every animal's; 125 is the raw-unit
+ * count behind that percent, which the counter has not used since 1.0.10.
+ * Black Dragon is 100. And the fit now admits only intervals whose damage
+ * state could actually be checked, so what it reports is not bite-polluted.
  *
  * 1.0.12 fixes the arena features dying together inside a CULLED duel — the
  * starfield, the bite indicator and the boost counter, reported as one bug
@@ -637,7 +652,7 @@
  * meter in the bottom centre, where the fill's own inline width IS the
  * percentage. Every animal that can be in a 1v1 divides that by 100, so in a
  * duel the number on screen is the server's own integer; the single exception
- * is King Dragon, which divides by 125.
+ * is King Dragon, whose percent is ceil(raw / 125 * 100) — still a 0–100 meter.
  *
  * The COST is not in the client anywhere. startBoost and stopBoost are bare
  * network messages and the server owns the whole resource economy — it has
@@ -2914,7 +2929,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.14';
+    return '1.0.15';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -12205,18 +12220,26 @@
   ]);
   const HP_DRY_PERCENT = 1.5;
 
-  // The maximum the percentage above was divided BY, per animal. Everything in
-  // the game is 100 except these four, read out of mope's own animal configs:
+  // THE RAW UNITS BEHIND THE PERCENT, per animal — and what that is NOT.
   //
-  //   camel                            125   water
+  // mope's meter shows `Math.ceil(value / max * 100)`, where `value` is the
+  // uint8 the server pushes and `max` comes from the animal's config. Every
+  // animal in the game has a max of 100 except four, read out of the bundle:
+  //
+  //   camel                               125   water
   //   eagle/harpy, eagle/greater_spotted  150   water
-  //   king_dragon                      125   lava
+  //   king_dragon                         125   lava
   //
-  // King Dragon is the one that matters here, because it is the only one of
-  // the four that can be in a 1v1 — everything else in a duel is tier 15+ and
-  // sits on 100, where the displayed percent and the server's own integer are
-  // the SAME NUMBER. It is also, separately, the animal hpMaxFor() refuses to
-  // give a health maximum for.
+  // 1.0.15 CORRECTS HOW THIS WAS DESCRIBED. Earlier comments and the handoff
+  // called King Dragon "125% lava". It is not: the METER never exceeds 100%.
+  // A King Dragon's lava reads 0–100 like everyone else's; it merely has 125
+  // raw units behind that percent, so one raw unit is 0.8 of a displayed
+  // point rather than 1. Lumi, who knows the game, flagged the phrasing as
+  // wrong, and it was. Black Dragon is not in the table: its max is 100.
+  //
+  // NOTHING IN THE COUNTER USES THIS. Since 1.0.10 boostsLeft() divides
+  // percent by percent, so the raw max never enters the arithmetic for any
+  // animal. It is kept for the debug reports and for the record.
   const WATER_MAX = new Map([
     ['camel', 125],
     ['king_dragon', 125],
@@ -16162,7 +16185,9 @@
   //
   //   - the meter's value is a uint8 the server pushes; see waterRead().
   //   - in a duel the displayed percent IS that integer, because every tier
-  //     15+ animal has a resource max of 100 — except King Dragon at 125.
+  //     15+ animal has a resource max of 100 — except King Dragon, whose
+  //     percent is ceil(raw / 125 * 100): still 0–100 on screen, 125 raw units
+  //     behind it. Black Dragon is 100.
   //   - `#dashButton` carries mope's OWN class `active`, bound to
   //     `ha.pressingDash`, which is set on the same line that sends
   //     `startBoost`. So "the player asked to boost" is a DOM class, correct
@@ -16449,7 +16474,11 @@
     // boost. A gain is drinking, a health drop is a bite, and a very long
     // interval is a tab that was in the background or a respawn — all three
     // would put the fit somewhere it should not go.
-    if (delta != null && delta < 0 && !drop && dt > 0.05 && dt < 30) {
+    // 1.0.15: and only when the damage state could be CHECKED. With no health
+    // reading — a culled duel, routinely — `drop` is 0 for every interval and
+    // a bite went in as if a boost had cost it; the fit then swung by a factor
+    // of three. The fit only reports now, but a report should not lie either.
+    if (delta != null && delta < 0 && water.hp != null && hp != null && !drop && dt > 0.05 && dt < 30) {
       waterFitAdd([dt, presses], -delta);
       // Held time is carried but not solved for — see waterFitReset. It is
       // reported as an average so a mechanic that becomes a rate is visible.
@@ -16804,7 +16833,7 @@
     const report = {
       animal: water.animal || '(not identified)',
       resource: water.kind || '(no meter found)',
-      max: water.max || 100,
+      rawUnitsBehindPercent: water.max || 100,   // NOT a percent ceiling; the meter tops out at 100
       percentIsTheServersInteger: (water.max || 100) === 100,
       boostCooldownMs: water.cooldown,
       now: water.pct,
@@ -16869,26 +16898,48 @@
   // ----------------------------------------------------- the boost counter
   //
   // 1.35.0, and the whole of it is one division: how many more boosts the
-  // meter will pay for. Two releases of measuring went into the divisor.
+  // meter will pay for. Two releases of measuring went into the divisor, and
+  // 1.0.15 takes the measurement back OUT of it. Both were right at the time.
   //
   // WHAT THE MEASUREMENT SETTLED. Boost is a FIXED CHARGE PER PRESS, not a
-  // rate while held. That was the open question and the data answered it
-  // without ambiguity: across 21 clean presses on one dragon, the holds that
+  // rate while held: across 21 clean presses on one dragon, the holds that
   // cost 1 point averaged 210ms and the holds that cost 2 averaged 180ms —
   // the longer holds cost LESS — over a range from 41ms to 492ms. A rate
   // cannot look like that. So the counter divides, and does not integrate.
   //
-  // WHAT IT DID NOT SETTLE is the exact figure, because natural drain is the
-  // same size as the thing being measured — around 0.3 points a second
-  // against a boost of about 1.5. So the divisor is not a constant here: it
-  // is whatever the least-squares fit has worked out for the animal you are
-  // on, and BOOST_COST_SEED only stands in until the fit has enough to say.
-  // __lumiWaterDebug().boostCostSource says which of the two is in use.
-  const BOOST_COST_SEED = 1.5;
-  // Outside this the fit is not believed. A boost cannot cost a fifth of a
-  // point and cannot cost eight; a figure like that means the fit has been
-  // handed something it should not have been — a stretch of drinking, a
-  // respawn — and the seed is a better answer than a confident wrong one.
+  // WHY THE FIT NO LONGER DIVIDES (1.0.15). The instrument was built because
+  // the cost was not in the client and had to be measured; the least-squares
+  // fit then stood in for a constant nobody could confirm. Lumi has since
+  // confirmed it from the game itself: a boost in an arena costs a fixed 1.5%
+  // of the meter, and the only other thing that drains it in a duel is an
+  // enemy bite, at about the same 1.5%. The fit's own 21-press average was
+  // 1.619 including drain. So the constant is known, and a divisor that keeps
+  // re-deriving a known constant is not caution, it is noise:
+  //
+  //   - A fit re-solves every time an interval lands, and a count of
+  //     floor(usable / cost) re-scales with it. Filmed in a duel: the counter
+  //     read 6, then 9, then 10, then 4, then 2, while the meter only drifted
+  //     DOWN from 32% to 25%. A count that RISES while the meter falls is not
+  //     a reading of the meter at all; it is the divisor moving under it.
+  //   - Inside a culled duel there is routinely no health reading (the lock
+  //     is held without one — see hpPlayerAlive), so `drop` is 0 for every
+  //     interval and a bite's 1.5% is admitted to the fit as if a boost had
+  //     cost it. The estimate inflates, the count collapses, a clean stretch
+  //     pulls it back, and the count leaps. That is the "insane increments",
+  //     and it happens in exactly the fight the feature exists for.
+  //
+  // So the divisor is BOOST_COST_PCT, full stop. The fit still runs and is
+  // still REPORTED — __lumiBoostDebug().fitWouldSay beside costPerBoost — so a
+  // balance patch that changes the charge is visible the day it lands, which
+  // is the tripwire role __lumiBiteDebug() plays for the bite window. It just
+  // never touches what is drawn.
+  //
+  // Bites need no modelling of their own: the counter reads the LIVE meter, a
+  // bite takes 1.5% off it, and the count drops by one — which is true.
+  const BOOST_COST_PCT = 1.5;      // per boost, in meter percent. The game constant.
+  // The fit is believed as a REPORT only inside this range; outside it the
+  // instrument has been handed something it should not have been — a stretch
+  // of drinking, a respawn — and the number is not worth printing.
   const BOOST_COST_MIN = 0.4;
   const BOOST_COST_MAX = 6;
   const BOOST_FIT_MIN_INTERVALS = 40;
@@ -16910,29 +16961,35 @@
     return settings.masterEnabled && settings.boostCounter;
   }
 
+  // What the fit would say, or null when it has nothing believable to say.
+  // Diagnostic only since 1.0.15: it is printed beside the constant, never
+  // divided by. See the note at the top of this section.
   function boostFittedCost() {
     const solved = waterSolve();
     if (!solved || !water.fit || water.fit.n < BOOST_FIT_MIN_INTERVALS) return null;
     const perPress = solved[1];
     if (!Number.isFinite(perPress)) return null;
     if (perPress < BOOST_COST_MIN || perPress > BOOST_COST_MAX) return null;
-    // The drain term has to come out sane too. A negative drain means the fit
-    // has been handed a stretch it should not have been — the meter refilling
-    // faster than it emptied — and a cost derived beside it is not to be
-    // divided by.
+    // A negative drain means the meter refilled faster than it emptied across
+    // the sample — drinking, a respawn — and a cost derived beside it is not
+    // worth reporting either.
     if (!(solved[0] >= 0) || solved[0] > 5) return null;
     return perPress;
   }
 
+  // The divisor. A constant, and deliberately not a function of anything the
+  // instrument has measured — see the note at the top of this section for the
+  // two ways a live divisor put a rising count on a falling meter.
   function boostCost() {
-    const fitted = boostFittedCost();
-    return fitted == null ? BOOST_COST_SEED : fitted;
+    return BOOST_COST_PCT;
   }
 
   function boostCostSource() {
-    return boostFittedCost() == null
-      ? 'the 1.5 seed — the fit has not settled on this animal yet'
-      : 'measured on this animal, from ' + water.fit.n + ' intervals';
+    const fitted = boostFittedCost();
+    return 'a fixed ' + BOOST_COST_PCT + '% per boost — the game constant' +
+      (fitted == null
+        ? ' (the fit has nothing believable to compare it with yet)'
+        : ' (the fit on this animal says ' + fitted.toFixed(2) + ', reported, not used)');
   }
 
   // How many boosts the meter will still pay for.
@@ -17132,9 +17189,18 @@
       usableWater: water.pct == null ? null
         : Math.max(0, water.pct - BOOST_MIN_PCT) + '% of ' + water.pct + '%',
       animal: water.animal || '(not identified)',
-      resourceMax: water.max,
+      // The raw units behind mope's 0–100 percent. NOT a percentage ceiling —
+      // a King Dragon's meter still tops out at 100% — and not used by the
+      // count, which is percent over percent. Reported for the record.
+      rawUnitsBehindPercent: water.max,
       costPerBoost: boostCost(),
       costFrom: boostCostSource(),
+      // 1.0.15. The fit is a TRIPWIRE now, not the divisor: this is what it
+      // would have divided by. It drifting far from costPerBoost on a sample
+      // that is well conditioned is the signal that a balance patch changed
+      // the charge — and the day that happens, BOOST_COST_PCT is the one line
+      // to change.
+      fitWouldSay: boostFittedCost(),
       fitIntervals: water.fit ? water.fit.n : 0,
       fitPerPress: solved ? Number(solved[1].toFixed(3)) : null,
       fitDrainPerSecond: solved ? Number(solved[0].toFixed(3)) : null,
