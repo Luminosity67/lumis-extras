@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.16
+// @version      1.0.17
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -57,6 +57,19 @@
  * about where it sits is dropped. And __lumiArenaDebug() now reports the
  * containers that ALMOST matched, because "no arena in the scene" was the
  * least actionable sentence this feature could produce.
+ *
+ * 1.0.17 REPLACES HOW THE SCRIPT KNOWS WHICH ANIMAL IS YOURS. Every lock
+ * before it inferred that — ability icon, nameplate, outline tint, distance
+ * from the centre of the screen — and the handoff's §21 is five releases of
+ * the inference being wrong; it was wrong again on a bot standing next to a
+ * player with the same default name. mope's own singleton, captured by the
+ * 1.36.0 game-loop route, carries `player`: set the moment the server hands
+ * you an animal, nulled on death and disconnect, and it is the same container
+ * the health-bar scan sees above your bar. The lock is now the equality
+ * `entry.entity === $.player`, and "am I duelling" is `$.player.arena`, the
+ * field mope itself reads, which also hands over the arena BY REFERENCE. The
+ * inference survives only as the fallback for a page where the singleton was
+ * never captured, and __lumiHpDebug().lock.lockSource says which is in use.
  *
  * 1.0.16 makes the counter go down by EXACTLY one on every boost. The meter
  * shows an integer and a boost costs 1.5, so on screen a boost takes 1 point
@@ -2942,7 +2955,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.16';
+    return '1.0.17';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -11340,6 +11353,7 @@
     player: null,      // the entity container the camera is locked to
     playerEntry: null, // its reading state, kept to hand
     playerAt: 0,
+    lockedBy: '',      // 'game' (mope's own $.player) or 'heuristic' (the old inference) — 1.0.17
   };
 
   function hpActive() {
@@ -12888,6 +12902,7 @@
   // rather than every frame, and only when both readings are actually
   // available — an unreadable animal is not evidence of anything.
   function hpLockGoneBad(entry, now) {
+    if (hpState.lockedBy === 'game') return false;   // the game named it; an icon cannot overrule that (1.0.17)
     if (!entry || now - hpState.playerAt < HP_RELOCK_CHECK_MS) return false;
     hpState.playerAt = now;
     const self = hpIdentifySelfFromHud();
@@ -13041,7 +13056,65 @@
     return !!(player && player.destroyed !== true && player.parent);
   }
 
+  // THE NEW SYSTEM (1.0.17): mope's own answer to "which animal is mine".
+  //
+  // Every lock before this one INFERRED identity — from the ability icon, the
+  // nameplate, the outline tint, distance from the centre of the screen — and
+  // §21 of the handoff is five releases of that inference being wrong. It was
+  // wrong again with a bot named "mope.io's bot" a few pixels from a player
+  // named "mope.io": nothing about how two animals LOOK can tell them apart
+  // when they look the same, and in a tier-matched duel they usually do.
+  //
+  // The game does not infer it. mope's singleton — captured by the 1.36.0
+  // game-loop route, see gameCapture — carries `player`: assigned by
+  // setPlayer(e) the moment the server hands you an animal, read by mope
+  // itself for your position, health, name and arena, and set to null on
+  // death and on disconnect. It is the animal's own container, the same
+  // object the health-bar scan sees two levels above your bar. So "is this
+  // entry mine" is `entry.entity === $.player` — an equality, not a guess.
+  //
+  // Read every time, never cached: the game replaces it on respawn and nulls
+  // it on death, and both are exactly the moments a stale copy would lie.
+  // Null means one of two things, told apart by gameCapture.game: the route
+  // never captured the singleton (fall back to the inference below, and say
+  // so), or it did and you have no animal right now (refuse, and say that).
+  function hpGamePlayer() {
+    const game = gameCapture.game;
+    const me = game && game.player;
+    if (!me || typeof me !== 'object') return null;
+    if (me.destroyed === true) return null;
+    // A container, or it is not the thing the scan can match against.
+    if (!me.children || typeof me.children.length !== 'number') return null;
+    return me;
+  }
+
   function hpLockPlayer(scr, now) {
+    // 1.0.17: THE GAME'S OWN ANSWER COMES FIRST, and while the singleton is
+    // captured nothing below this block is consulted. See hpGamePlayer().
+    if (gameCapture.game) {
+      const me = hpGamePlayer();
+      hpState.lockedBy = 'game';
+      if (!me) {
+        hpLockRefusedAt = now;
+        hpLockRefusedWhy = 'mope says you have no animal right now (dead, or on the menu)';
+        return hpAdoptPlayer(null);
+      }
+      for (const entry of hpState.bars.values()) {
+        if (entry.entity === me) { hpLockRefusedAt = 0; return hpAdoptPlayer(entry); }
+      }
+      // Named by the game, bar not in the scan yet — not drawn yet, or this
+      // scan missed it. Hold the entity and wait for its bar. Never a stranger.
+      hpState.player = me;
+      hpState.playerEntry = null;
+      hpLockRefusedAt = now;
+      hpLockRefusedWhy = 'mope names your animal; its health bar is not in the scan yet';
+      return me;
+    }
+    // No singleton: the page loaded without the game-loop route firing. Every
+    // line from here down is the inference this file used before 1.0.17, kept
+    // as the fallback the handoff's rule for `$` asks for — and the debug hook
+    // says which of the two is in use.
+    hpState.lockedBy = 'heuristic';
     const kept = hpRelock();
     if (kept && !hpLockGoneBad(hpState.playerEntry, now)) return kept;
 
@@ -13773,6 +13846,13 @@
                 // quiet ON PURPOSE looked exactly like one that was broken.
                 refusedMsAgo,
                 refusedBecause: hpLockRefusedWhy || null,
+                // 1.0.17. WHICH system made the lock. 'game' is mope's own
+                // $.player and cannot be on the wrong animal; anything else is
+                // the old inference, running because the singleton was missed.
+                lockSource: hpState.lockedBy === 'game' ? "mope's own $.player"
+                  : gameCapture.game ? 'inference (unexpected: the game object exists)'
+                  : 'inference — the game object was never captured; see __lumiCaptureDebug()',
+                gameNamesAnimal: !!hpGamePlayer(),
                 // The gate that stands the lock down on the death screen. When
                 // this is true a null lock is correct and not a fault.
                 hudIsDown: hpHudDown(performance.now()),
@@ -14288,6 +14368,8 @@
     duelling: false,  // whether the game says we are one of the two fighters
     nameSays: null,   // the name-visibility reading, or null if unrecognised
     nameAt: -1,       // where the name/wins pair was found (1.0.13)
+    gameSays: 'n/a',  // mope's own duelling answer, when the lock is the game's (1.0.17)
+    arenaBy: '',      // how the arena was chosen: by reference, or by geometry
     identAt: -Infinity,
     identOk: true,
     identFor: null,   // which entity that verdict was for (1.0.12)
@@ -14847,6 +14929,11 @@
   const ARENA_SKY_IDENT_MS = 1500;
 
   function arenaSkyLockIsSelf(player, now) {
+    // 1.0.17: a lock the GAME named is yours by definition; the ability icon
+    // has nothing to add and has been wrong before. See hpGamePlayer().
+    if (player && hpState.lockedBy === 'game') {
+      arenaSky.identOk = true; arenaSky.identFor = player; return true;
+    }
     if (!player) return false;
     if (arenaSky.identFor === player && now - arenaSky.identAt < ARENA_SKY_IDENT_MS) {
       return arenaSky.identOk;
@@ -14883,6 +14970,20 @@
   //
   // The geometry still runs, but only to say WHICH arena is yours once the
   // outline has said that one of them is.
+  // `mine` — the record every arena feature works from — built from an arena
+  // container. Split out in 1.0.17 so the arena the game hands over by
+  // reference is described exactly the way the geometry pick describes one.
+  function arenaMineOf(node) {
+    if (!node || !node.parent) return null;
+    const parts = arenaPartsOf(node);
+    const wt = node.worldTransform;
+    if (!parts || !wt) return null;
+    const scale = Math.hypot(Number(wt.a) || 0, Number(wt.b) || 0);
+    const worldRadius = Number(parts.base.width) / 2;
+    if (!(scale > 0) || !(worldRadius > 0)) return null;
+    return {node, base: parts.base, walls: parts.walls, labels: parts.labels, scale, worldRadius};
+  }
+
   function arenaSkyPick(scr, now) {
     const entry = hpState.playerEntry;
     const player = hpState.player;
@@ -14893,15 +14994,39 @@
     // The name test is authoritative where the container is recognised. The
     // outline tint is kept only as a fallback for a build this was not written
     // against — and reported either way, so the two can be compared.
+    // 1.0.17: THE GAME'S OWN ANSWER FIRST. mope sets `player.arena` on the two
+    // fighters and on nobody else — it is what its own outline getter and
+    // isNameVisible read — so when the lock is the game's, "am I duelling" is
+    // a field read, and "which arena" is that field. The name test and the
+    // outline memory below are the fallback for a page where the singleton
+    // was never captured, and are still reported beside it.
+    const me = hpState.lockedBy === 'game' ? player : null;
+    const gameArena = me && me.arena && typeof me.arena === 'object' ? me.arena : null;
+    arenaSky.gameSays = me ? (gameArena ? 'duelling' : 'not duelling') : 'n/a';
     const hidden = arenaNameHidden(player);
     arenaSky.nameSays = hidden;
     arenaSky.nameAt = arenaNameIndex;
-    // The memory is asked of the ANIMAL as well as of the reading, because
-    // inside a culled duel there is routinely no reading — see hpArenaSeen.
-    arenaSky.duelling = (hidden === null
-      ? (hpInArena(entry, now) || hpEntityInArena(player, now))
-      : hidden) && arenaSkyLockIsSelf(player, now);
+    if (me) {
+      arenaSky.duelling = !!gameArena;
+    } else {
+      // The memory is asked of the ANIMAL as well as of the reading, because
+      // inside a culled duel there is routinely no reading — see hpArenaSeen.
+      arenaSky.duelling = (hidden === null
+        ? (hpInArena(entry, now) || hpEntityInArena(player, now))
+        : hidden) && arenaSkyLockIsSelf(player, now);
+    }
     if (!arenaSky.duelling) return null;
+    // The arena BY REFERENCE, when the game handed one over and the scan can
+    // see it in the scene — no geometry and no child-counting for the arena
+    // you are actually in. Geometry remains for a page without the singleton,
+    // and for an arena the game names but the scan did not recognise.
+    if (gameArena && gameArena.parent && arenaScan.found.indexOf(gameArena) !== -1) {
+      const byRef = arenaMineOf(gameArena);
+      arenaSky.arenaBy = byRef ? 'the game (player.arena)' : 'geometry (the game\'s arena could not be measured)';
+      if (byRef) return byRef;
+    } else {
+      arenaSky.arenaBy = gameArena ? 'geometry (the game\'s arena is not in the scan)' : 'geometry';
+    }
 
     // The screen centre is the fallback, and it is right whenever the camera is
     // following you — which is mope's default. It is wrong in an arena set to
@@ -15490,6 +15615,10 @@
         : hpState.player
           ? 'HELD — your animal is known; its bar is not in the scan right now'
           : 'none' + (hpLockRefusedWhy ? ' (' + hpLockRefusedWhy + ')' : ''),
+      // 1.0.17. mope's own answer, and how the arena was chosen. When these
+      // read 'n/a' / 'geometry' the singleton was never captured.
+      gameSaysDuelling: arenaSky.gameSays,
+      arenaPickedBy: arenaSky.arenaBy || '(none yet)',
       // 1.0.13. "No arena in the scene" was the least actionable sentence this
       // feature could produce, and it is what an over-strict matcher says. The
       // containers that ALMOST matched are listed with the test each one
