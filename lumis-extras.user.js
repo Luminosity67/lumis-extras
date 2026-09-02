@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.15
+// @version      1.0.16
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -57,6 +57,19 @@
  * about where it sits is dropped. And __lumiArenaDebug() now reports the
  * containers that ALMOST matched, because "no arena in the scene" was the
  * least actionable sentence this feature could produce.
+ *
+ * 1.0.16 makes the counter go down by EXACTLY one on every boost. The meter
+ * shows an integer and a boost costs 1.5, so on screen a boost takes 1 point
+ * or 2, alternating — and floor((pct - 15) / 1.5) could not see which it was
+ * standing before: at 25% it said 6, the boost took the meter to 24%, and it
+ * still said 6. Lumi reported exactly that, and it recurred at every third
+ * value of the meter. The count is now a walk down the meter using the next
+ * cost, which waterNote() reads off every drop (a drop of 1 means the next is
+ * 2, and the reverse; any drop, mod 3), and that holds under any rounding the
+ * server uses because two boosts are always exactly 3. A bite is the same 1.5
+ * and the same alternation, so it needs no attribution. And the walk counts
+ * the last, partial boost the game lets you take at 16%, which the division
+ * never did — 25% is seven boosts, not six.
  *
  * 1.0.15 makes the boost counter divide by a CONSTANT. Filmed in a duel, the
  * count read 6, 9, 10, 4, 2 while the lava meter only drifted down from 32% to
@@ -2929,7 +2942,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.15';
+    return '1.0.16';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -16235,6 +16248,9 @@
   // recorded so the counter can later use either without this having to be
   // measured again.
   const WATER_LOW_PCT = 25;
+  // Two boosts on an integer meter are always exactly 3 points, whichever way
+  // the server rounds — the fact the phase tracking in waterNote() rests on.
+  const BOOST_PAIR_PTS = 3;
 
   // Boost's cooldown, per animal, and it IS in the client — mope's own animal
   // configs carry it. 1.34.0 needs it because the first real measurement
@@ -16265,6 +16281,7 @@
     dash: null,        // #dashButton, when mope is drawing one
     dashObs: null,     // its class observer
     pct: null,         // last reading
+    phase: null,       // 1 or 2: what the next boost takes off the meter on screen (1.0.16)
     kind: '',
     at: 0,
     hp: null,          // your health at the last step, for the bite exclusion
@@ -16483,6 +16500,18 @@
       // Held time is carried but not solved for — see waterFitReset. It is
       // reported as an average so a mechanic that becomes a rate is visible.
       if (water.fit) { water.fit.heldMs += boostSec * 1000; water.fit.presses += presses; }
+    }
+    // THE PHASE (1.0.16): which of 1 and 2 the next boost will take off the
+    // meter on screen. Read off every drop rather than attributed to anything:
+    // a boost and a bite are the same 1.5 and obey the same alternation. Mod
+    // BOOST_PAIR_PTS because two steps are exactly 3 and change nothing; a
+    // gain forgets it. See boostCountFrom() for what this buys.
+    if (delta != null) {
+      if (delta > 0) water.phase = null;
+      else if (delta < 0) {
+        const r = Math.round(-delta) % BOOST_PAIR_PTS;
+        if (r) water.phase = BOOST_PAIR_PTS - r;
+      }
     }
     water.hp = hp;
     water.pct = pct;
@@ -16723,6 +16752,7 @@
         // Out of a game: the baseline is dropped rather than carried across a
         // respawn, where a full meter would read as an enormous gain.
         water.pct = null;
+        water.phase = null;
         water.hp = null;
         water.hold = null;
       }
@@ -16992,76 +17022,61 @@
         : ' (the fit on this animal says ' + fitted.toFixed(2) + ', reported, not used)');
   }
 
-  // How many boosts the meter will still pay for.
+  // How many boosts the meter will still pay for — a WALK down the meter, in
+  // phase with it, and not a division (1.0.16).
   //
-  // Only the water ABOVE the 15% floor counts, because none of the rest can be
-  // spent on boosting. That correction is most of what 1.35.1 is: at 25% water
-  // 1.35.0 said sixteen boosts and the true answer is six.
+  // The meter shows an integer. A boost costs 1.5. So on screen a boost takes
+  // 1 point or 2, and they ALTERNATE: two boosts are exactly 3, so whichever
+  // way the server rounds, a drop of 1 is followed by a drop of 2 and a drop
+  // of 2 by a drop of 1. floor((pct - 15) / 1.5) cannot see which of the two it
+  // is standing before, and it showed: at 25% it said 6, a boost took the
+  // meter to 24%, and it STILL said 6 — the boost was paid for and the counter
+  // never moved. Lumi reported exactly that, and it recurred at every third
+  // value of the meter. The division also never counted the last, partial
+  // boost: the game lets you boost at 16% (1.35.2), so 25% is SEVEN boosts,
+  // not six, and the "never zero above the floor" clamp was papering over the
+  // one place that showed.
   //
-  // BOTH SIDES OF THE DIVISION ARE PERCENTAGES (corrected in 1.0.10).
+  // So the count is: from the meter, subtract the next cost, then the other,
+  // then the next, until the meter would read below 16 — and "the next cost"
+  // is a fact the meter has been telling us all along. waterNote() reads it
+  // off every drop: 1 means the next is 2, 2 means the next is 1, 3 is two
+  // steps and changes nothing (any drop, mod 3). A bite is the same 1.5 and
+  // obeys the same alternation, so it needs no attribution; it is simply the
+  // next step. A GAIN — drinking — forgets the phase, and the count is the
+  // conservative one of the two until the next drop settles it.
   //
-  // This used to recover the raw resource value first — `(pct - 15) / 100 *
-  // max` — on the reasoning that the cost was in resource points. It is not:
-  // the fit is trained in waterNote() on `delta = pct - previous`, a
-  // difference of METER PERCENTAGES, so boostCost() comes back as percent per
-  // press. Dividing a raw amount by a percent cost is a unit mismatch that
-  // cancels out only while max is 100 — which is every duel animal except King
-  // Dragon, whose 125 made the counter read 25% high. That is the same
-  // over-read 1.35.1 was written to remove, surviving in the one animal nobody
-  // could easily check.
-  //
-  // Percent over percent is also the honest form for the seed: 1.5 was
-  // measured on max-100 animals, where the two units are the same number, so
-  // nothing about the seeded case changes for anybody else.
-  //
-  // It rounds DOWN and the last one is not counted as available until it is
-  // fully paid for, which is the honest direction to be wrong in: a counter
-  // that says 3 when there are 2 gets somebody killed, and one that says 2
-  // when there are 3 costs them a boost they could have had.
-  // ABOVE THE FLOOR THERE IS ALWAYS AT LEAST ONE, and 1.35.2 exists because
-  // 1.35.1 did not know it. Reported from a duel: at 16% the counter said
-  // "No boost" and the boost went through anyway, taking the meter to 15.
-  //
-  // The arithmetic says 16 - 15 = 1 point of usable water, 1 / 1.5 = 0, so
-  // nothing. The game says otherwise, and the game is the authority. What is
-  // now known from two observations is exactly this much: you can boost at
-  // 16% and you cannot at 15%. So the floor on the COUNT is stated as that
-  // and nothing more — while the meter is above BOOST_MIN_PCT the answer is
-  // never zero.
-  //
-  // It changes exactly one reading. With a cost near 1.5 the only percentage
-  // where the division rounds to zero while still being above the floor is
-  // 16, so this is not a fudge applied across the range: it is one observed
-  // fact, encoded where it happens. If the cost is ever measured much higher
-  // the clamp would cover more of the range, which is the right behaviour for
-  // the same reason — the game lets you take the boost.
-  function boostsLeft() {
-    if (water.pct == null) return null;
-    if (water.pct <= BOOST_MIN_PCT) return 0;
-    const usablePct = water.pct - BOOST_MIN_PCT;
-    const cost = boostCost();
-    if (!(cost > 0)) return null;
-    return Math.max(1, Math.floor(usablePct / cost + 1e-9));
+  // Every 1.5 the meter loses is therefore exactly one off the count, from the
+  // first drop observed onward, under any rounding the server uses.
+
+  // The count from a meter reading and the cost of the next boost on screen.
+  // `phase` is 1 or 2, or null for unknown; unknown walks with 2 first, which
+  // is the smaller answer and the one that cannot get somebody killed.
+  function boostCountFrom(pct, phase) {
+    if (pct == null || !(pct > BOOST_MIN_PCT)) return 0;
+    let count = 0;
+    let p = pct;
+    let c = phase === 1 ? 1 : 2;
+    while (p > BOOST_MIN_PCT && count < 200) {
+      count++;
+      p -= c;
+      c = BOOST_PAIR_PTS - c;
+    }
+    return count;
   }
 
-  // What the division ALONE says, with the clamp taken off. Reported by the
-  // debug hook beside the real answer: the two disagreeing is the signal that
-  // the clamp is carrying the reading rather than the measurement, and that
-  // the cost estimate is too high for the bottom of the meter.
-  function boostsLeftUnclamped() {
+  function boostsLeft() {
     if (water.pct == null) return null;
-    // Percent over percent, exactly as boostsLeft() — the two must agree about
-    // units or the debug hook's "is the clamp carrying the reading?" comparison
-    // is measuring the unit bug instead of the clamp.
-    const raw = Math.max(0, water.pct - BOOST_MIN_PCT);
-    const cost = boostCost();
-    if (!(cost > 0)) return null;
-    // The epsilon is not a fudge, it is a floating-point repair. A measured
-    // cost comes out of a division and lands on 1.5000000000000002 as easily
-    // as on 1.5, and 3 / 1.5000000000000002 floors to 1 instead of 2 — so the
-    // counter would drop a boost at exactly the round numbers, which is where
-    // somebody is most likely to be checking it against their own arithmetic.
-    return Math.max(0, Math.floor(raw / cost + 1e-9));
+    return boostCountFrom(water.pct, water.phase);
+  }
+
+  // The only other answer possible — the count under the phase we are NOT
+  // assuming. Reported beside the real one: the two differing by one is the
+  // whole of the uncertainty, and they only differ while the phase is unknown
+  // or at every third value of the meter.
+  function boostsLeftOtherPhase() {
+    if (water.pct == null) return null;
+    return boostCountFrom(water.pct, water.phase === 1 ? 2 : 1);
   }
 
   const boostUI = {
@@ -17205,11 +17220,15 @@
       fitPerPress: solved ? Number(solved[1].toFixed(3)) : null,
       fitDrainPerSecond: solved ? Number(solved[0].toFixed(3)) : null,
       boostsLeft: boostsLeft(),
-      // The division on its own. Lower than boostsLeft means the "always at
-      // least one above the floor" clamp is what is being shown, which is
-      // right at 16% and would mean the cost estimate is too high anywhere
-      // else.
-      boostsLeftBeforeTheClamp: boostsLeftUnclamped(),
+      // 1.0.16. The phase: what the NEXT boost will take off the meter on
+      // screen, read off the last drop. Unknown after a gain or before the
+      // first drop, and the count is then the conservative one until the next
+      // drop settles it. `ifOtherPhase` is the only other answer possible, so
+      // the two differing by one is the whole of the uncertainty.
+      nextBoostOnScreen: water.phase == null
+        ? 'unknown — no drop seen since the last gain; counting conservatively'
+        : water.phase + (water.phase === 1 ? ' point' : ' points'),
+      ifOtherPhase: boostsLeftOtherPhase(),
       // WHY THE FIT HAS NOT SETTLED, which "not settled" alone cannot say.
       // Read these three together: too few intervals is a matter of playing
       // more, but intervals that are ALL boosted or ALL idle can never
