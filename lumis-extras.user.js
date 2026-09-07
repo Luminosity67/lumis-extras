@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.19
+// @version      1.0.20
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -29,6 +29,15 @@
  *      Lumi's — if you are working on this and think a change earns it, ask.
  *      Default to leaving it alone.
  *   y  everything else: features, fixes, extra gradients, copy tweaks.
+ *
+ * 1.0.20 recovers a missed renderer capture. The startup-only game trap used
+ * to expire after 20 seconds, leaving Canvas users with working party chat
+ * and incoming peers but no frame work at all. A temporary bind probe now
+ * catches mope's running loop as it schedules its next animation frame. It
+ * restores the native method as soon as the renderer is attached. Slow loads
+ * and late userscript injection no longer depend on catching construction.
+ * Renderer ownership is local to this script, and a watchdog repairs a
+ * replaced render method without duplicating feature work in wrapper chains.
  *
  * 1.0.19 BREAKS THE FAILURE CHAIN between the player lock and the arena
  * features. Arena ownership now comes straight from mope's `$.player.arena`
@@ -2981,7 +2990,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.19';
+    return '1.0.20';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -5648,12 +5657,18 @@
     return arenaSkyNeeded() || !!arenaSky.node;
   }
 
+  const rendererHooks = new WeakMap();
+
   function hookRenderer(r) {
-    if (!r || r.__mncHooked || typeof r.render !== 'function') return;
-    r.__mncHooked = true;
-    renderers.push(r);
+    if (!r || typeof r.render !== 'function') return;
+    const previous = rendererHooks.get(r);
+    if (previous && r.render === previous.wrapper) return;
     const orig = r.render;
-    r.render = function (arg) {
+    const hook = {wrapper: null};
+    hook.wrapper = function (arg) {
+      // A later script may chain our old wrapper. Only the newest owner does
+      // feature work; every wrapper still forwards the game's call exactly.
+      if (rendererHooks.get(this) !== hook) return orig.apply(this, arguments);
       try {
         const now = performance.now();
         if (!framePerfSince) framePerfSince = now;
@@ -5757,6 +5772,12 @@
       // so an unusual caller cannot silently lose one.
       return arguments.length > 1 ? orig.apply(this, arguments) : orig.call(this, arg);
     };
+    // Commit ownership only after assignment succeeds. A foreign __mncHooked
+    // flag says nothing about whether THIS script is receiving frames.
+    r.render = hook.wrapper;
+    if (r.render !== hook.wrapper) return;
+    rendererHooks.set(r, hook);
+    if (!renderers.includes(r)) renderers.push(r);
   }
 
   // THE PIXI HOOK, AND WHY IT DEFENDS ITSELF.
@@ -5879,7 +5900,68 @@
     stoodDown: false,
     rendererVia: '',   // which route actually produced the renderer
     hookedAt: 0,
+    loopProbeInstalled: false,
+    loopProbeHits: 0,
+    repairs: 0,
   };
+
+  const gameLoopProbes = [];
+
+  function gameLooksLikeLoop(loop) {
+    if (!loop || typeof loop !== 'object') return false;
+    return !!(loop.canvas && loop.canvas.tagName === 'CANVAS' &&
+      loop.stage && Array.isArray(loop.stage.children) &&
+      loop.world && Array.isArray(loop.world.children) &&
+      loop.HUD && Array.isArray(loop.HUD.children) &&
+      typeof loop.render === 'function' && loop.renderer &&
+      typeof loop.renderer.render === 'function');
+  }
+
+  function gameStopLoopProbe() {
+    for (const probe of gameLoopProbes.splice(0)) {
+      try {
+        // Do not overwrite another extension's later wrapper.
+        if (probe.proto.bind === probe.wrapper) {
+          Object.defineProperty(probe.proto, 'bind', probe.descriptor);
+        }
+      } catch (e) { /* a sealed prototype is not ours to repair */ }
+    }
+    gameCapture.loopProbeInstalled = false;
+  }
+
+  function gameInstallLoopProbe() {
+    if (gameCapture.loopProbeInstalled) return;
+    // mope schedules every frame with this.render.bind(this). Unlike the
+    // constructor assignment and Pixi's devtools event, this is still available
+    // after slow loading, the 20s trap ceiling, or late userscript injection.
+    // No callback is executed by the probe: native bind creates it as usual.
+    for (const proto of new Set([Function.prototype,
+      PAGE.Function && PAGE.Function.prototype])) {
+      if (!proto) continue;
+      try {
+        const descriptor = Object.getOwnPropertyDescriptor(proto, 'bind');
+        if (!descriptor || typeof descriptor.value !== 'function') continue;
+        const original = descriptor.value;
+        const wrapper = function bind(receiver) {
+          const bound = Reflect.apply(original, this, arguments);
+          try {
+            if (gameCapture.loopProbeInstalled && receiver &&
+                this === receiver.render && gameLooksLikeLoop(receiver)) {
+              gameCapture.loopProbeHits++;
+              gameWatchLoop(receiver);
+              if (gameCapture.loop === receiver) {
+                gameCapture.rendererVia = 'running game loop (bind recovery)';
+              }
+            }
+          } catch (e) { /* never affect the game's native bind */ }
+          return bound;
+        };
+        Object.defineProperty(proto, 'bind', {...descriptor, value: wrapper});
+        gameLoopProbes.push({proto, descriptor, wrapper});
+      } catch (e) { /* devtools and construction remain independent routes */ }
+    }
+    gameCapture.loopProbeInstalled = gameLoopProbes.length > 0;
+  }
 
   // The key is taken only if nothing on the page has claimed it, and given
   // back the moment it has done its job — this is a page-wide accessor and it
@@ -5903,16 +5985,21 @@
   // than a poll: `renderer` has no own property until `loop.init()` awaits its
   // way to one, so there is nothing to collide with and nothing to wait for.
   function gameWatchLoop(loop) {
-    if (!loop || gameCapture.loop === loop) return;
-    gameCapture.loop = loop;
+    if (!loop) return;
     // Already built — we arrived late, which is the ordinary case if the
     // devtools hook fired first and this is only confirming.
     if (loop.renderer) {
       gameCapture.rendererVia = gameCapture.rendererVia || 'game loop (already built)';
       gameCapture.hookedAt = performance.now();
       hookRenderer(loop.renderer);
+      if (rendererHooks.has(loop.renderer)) {
+        gameCapture.loop = loop;
+        gameStopLoopProbe();
+      }
       return;
     }
+    if (gameCapture.loop === loop) return;
+    gameCapture.loop = loop;
     let held;
     try {
       Object.defineProperty(loop, 'renderer', {
@@ -5926,6 +6013,7 @@
               gameCapture.hookedAt = performance.now();
             }
             hookRenderer(value);
+            if (rendererHooks.has(value)) gameStopLoopProbe();
           } catch (e) { /* a capture must never break the page's own work */ }
         },
       });
@@ -5989,6 +6077,23 @@
     if (gameCapture.installed) setTimeout(gameStandDown, GAME_TRAP_CEILING_MS);
   })();
 
+  // The narrow constructor trap still retires after 20s. The loop probe
+  // survives that deadline and removes itself on successful capture.
+  gameInstallLoopProbe();
+
+  function gameRepairRenderer() {
+    const loop = gameCapture.loop;
+    if (!loop || !loop.renderer) return;
+    const renderer = loop.renderer;
+    const owned = rendererHooks.get(renderer);
+    if (owned && renderer.render === owned.wrapper) return;
+    try {
+      hookRenderer(renderer);
+      if (rendererHooks.get(renderer) !== owned) gameCapture.repairs++;
+    } catch (e) { frameFailed('renderer recovery', e); }
+  }
+  setInterval(gameRepairRenderer, 2000);
+
   // What Pixi ACTUALLY built, rather than what mope's settings asked for.
   // Those are two different questions and 1.20.1 could only answer the second:
   // __lumiArenaDebug().renderer reads the preference out of the settings
@@ -6021,6 +6126,10 @@
       trapStoodDown: gameCapture.stoodDown,
       loopCaptured: !!gameCapture.loop,
       stage: !!(gameCapture.loop && gameCapture.loop.stage),
+      loopProbeInstalled: gameCapture.loopProbeInstalled,
+      loopProbeHits: gameCapture.loopProbeHits,
+      rendererRepairs: gameCapture.repairs,
+      framesSeen: framePerfCalls,
     };
     console.log(TAG, 'capture', report);
     return report;
@@ -6043,8 +6152,9 @@
   setTimeout(() => {
     if (!renderers.length) {
       console.warn(TAG, 'no Pixi renderer was captured — in-world name colors, ' +
-        'party dots, the party list, HP numbers and the arena sky cannot draw, ' +
-        'and party chat messages will not time out on their own. ' +
+        'party dots, HP numbers and the arena sky cannot draw. ' +
+        'The running-loop recovery probe is ' +
+        (gameCapture.loopProbeInstalled ? 'waiting for a frame. ' : 'unavailable. ') +
         'Hook mode: ' + rendererHookMode + '/' + appHookMode + '. ' +
         'Game loop route: ' + (gameCapture.game ? 'captured the game but not a renderer'
           : gameCapture.installed ? 'installed, never fired (' + gameCapture.trapHits +
@@ -8741,6 +8851,14 @@
   }
 
   function partyListTick(now) {
+    // The DOM timer can run without partyTick: departed peers must still
+    // expire while renderer capture is pending.
+    for (const [id, peer] of party.peers) {
+      if (now - peer.at > PARTY_DROP_MS) {
+        partyDestroyPeer(peer);
+        party.peers.delete(id);
+      }
+    }
     // Hidden outside a game, and hidden while nobody else is in the party —
     // which since 1.16.1 is the same thing as the list being empty, because
     // you are not on it. The panel is where "is this connected?" is answered.
@@ -19814,6 +19932,10 @@
       const who = n
         ? n + ' member' + (n === 1 ? '' : 's') + ' on the map'
         : 'waiting for members';
+      if (prevMenuVisible === false && !partyLastStage) {
+        return 'Connected via ' + party.statusInfo +
+          ' — waiting for the game renderer; party list and chat remain available';
+      }
       if (!party.minimapSeen) return "Connected via " + party.statusInfo + " — join a game to see the map" + lead;
       return "Connected via " + party.statusInfo + " — " + who + lead;
     }
@@ -22410,6 +22532,11 @@
       // off mope's block is a querySelectorAll rather than anything on the
       // frame path.
       statsTick(now);
+      // The roster is DOM, and incoming peer messages already arrive without
+      // a renderer. Keep it usable even while renderer recovery is pending.
+      // partyListTick has its own throttle, shared with the render path.
+      try { if (partyWorkNeeded()) partyListTick(now); }
+      catch (e) { frameFailed('party list', e); }
       // The layout registry rides this pacer rather than the render hook: the
       // elements it moves are DOM, they only move when the window resizes or
       // somebody drags one, and putting it on the frame path would tie the
