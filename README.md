@@ -54,6 +54,29 @@ Open an [issue](../../issues). Useful things to include: the version shown in
 the panel, your browser, and whether you have any other mope.io scripts or
 extensions installed.
 
+If party chat works but minimap dots are missing, run
+`__lumiCaptureDebug()` and `__lumiPartyDebug()` in the browser console.
+`renderersHooked: 0` together with `stageSeen: false` means the script missed
+the game renderer, even if party messages are arriving. Version 1.0.20 adds
+recovery from the running game loop and keeps the party list updating while
+that recovery is pending. This can be triggered by startup timing without a
+userscript update; it does not mean your party code or relay changed.
+
+## Regression checks
+
+With Node.js 24 installed, run:
+
+```sh
+node --check lumis-extras.user.js
+node --test tests/renderer-recovery.test.cjs
+```
+
+GitHub Actions runs these checks on pushes and pull requests. Tests execute
+the userscript's actual capture/render functions with isolated game fixtures,
+including missed startup, late injection, renderer replacement, native bind
+behavior, and party-list updates without a renderer. They do not connect to
+public relays or replace checking the result in a live game.
+
 ## Licence
 
 MIT.
