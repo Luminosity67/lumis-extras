@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.20
+// @version      1.0.21
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -29,6 +29,11 @@
  *      Lumi's — if you are working on this and think a change earns it, ask.
  *      Default to leaving it alone.
  *   y  everything else: features, fixes, extra gradients, copy tweaks.
+ *
+ * 1.0.21 makes visual ownership explicit: arena model parts bypass discovery,
+ * name colours require verified name nodes and remote share tags, and self uses
+ * a dedicated render layer reconciled independently of health-bar work.
+ * Regression contracts and the release check command now live in the repository.
  *
  * 1.0.20 recovers a missed renderer capture. The startup-only game trap used
  * to expire after 20 seconds, leaving Canvas users with working party chat
@@ -2990,7 +2995,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.20';
+    return '1.0.21';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -5051,8 +5056,7 @@
   function ownStyle() {
     // A fresh object each time on purpose: registry styles are shared between
     // callers, so nothing here may ever hand back an object it does not own.
-    // `self` is what lets the scene sweep spot two nameplates both claiming to
-    // be you and settle it — see resolveSelfCandidates().
+    // Self is established by the owning game model or leaderboard main row.
     if (nameColorState.mode === 'grad') return {grad: nameColorState.grad, self: true};
     return {solid: colorInt(), self: true};
   }
@@ -5065,40 +5069,75 @@
   // straight through to the old path, so a player whose friends are still on an
   // older build loses nothing.
   function sharedStyleFor(text) {
-    const shared = nrLookup(baseKey(text));
-    if (shared) return shared;
-    return decodeSuffix(text);
+    // A retained name-keyed entry is a colour preference, never identity.
+    // Require an opt-in tag on this name before consulting that entry.
+    const tag = decodeSuffix(text);
+    if (!tag) return null;
+    return nrLookup(baseKey(text)) || tag;
   }
 
-  function styleFor(text, cachedOwnKey) {
+  function styleFor(text, isSelf = false) {
     if (!settings.masterEnabled || !nameColorState.enabled || typeof text !== 'string' || !text) return null;
-    // Scene and DOM sweeps ask this for many text nodes in one pass. Their own
-    // configured name cannot change inside that synchronous pass, so callers
-    // may calculate it once instead of stripping/lowercasing it per node.
-    const key = cachedOwnKey === undefined ? nameKey() : cachedOwnKey;
-    const base = baseKey(text);
-    // Never own-match the game's default name: with no name entered, EVERY
-    // nameless player displays "mope.io", and matching it would recolor all
-    // of them (real bug report). With sharing on, your own name still gets
-    // its color via the suffix decode below.
-    if (key && key !== 'mope.io' && base === key) {
-      // ...and matching on the visible letters ALONE was the same mistake one
-      // size down: a friend playing under your name had your colour painted
-      // over theirs. The share suffix is invisible but it is part of the text,
-      // and it belongs to exactly one player — so a name carrying somebody
-      // else's tag is somebody else, whatever the letters say. If this client
-      // is not emitting a tag at all, then a name carrying ANY tag is not
-      // yours either, because yours would be carrying none.
-      const emitted = nameColorState.emitted;
-      const mine = emitted ? text.endsWith(emitted) : !decodeSuffix(text);
-      // Two players with identical names and neither of them sharing cannot be
-      // told apart from the text at all. In the scene graph the sweep settles
-      // that by position; in the leaderboard there is nothing to settle it
-      // with, so the older behaviour stands there and both rows take your
-      // colour. Sharing your colour is what removes the ambiguity outright.
-      if (mine) return ownStyle();
+    return isSelf === true ? ownStyle() : sharedStyleFor(text);
+  }
+
+  // Adapter verified against mope's entity constructors, 2026-09-08.
+  // Empty is different from unavailable; neither licenses a guessed identity.
+  function gameModels(type) {
+    try {
+      const cls = gameCapture.game && gameCapture.game.classes && gameCapture.game.classes.global[type];
+      const list = cls && cls.list;
+      return list && typeof list.values === 'function' ? Array.from(list.values()) : [];
+    } catch (e) { return []; }
+  }
+
+  function nameOwners() {
+    const owners = new Map();
+    const models = gameModels('animal');
+    const me = hpGameModel();
+    if (me && models.indexOf(me) < 0) models.push(me);
+    for (const model of models) {
+      const node = model && model.name;
+      if (!model || model.spawned === false || !model.container || model.container.destroyed ||
+          !node || node.destroyed || node.__lumiNameOverlay ||
+          node.parent !== model.container || typeof node.text !== 'string') continue;
+      owners.set(node, model);
     }
-    return sharedStyleFor(text);
+    return owners;
+  }
+
+  function sceneNameStyle(node, owners) {
+    if (!node || node.__lumiNameOverlay || node.destroyed || !node.parent) return null;
+    const owner = owners.get(node);
+    if (owner) {
+      nameBindings.set(node, {owner, parent: node.parent, text: node.text, self: owner === hpGameModel()});
+      return styleFor(node.text, owner === hpGameModel());
+    }
+    // Late renderer capture can lack the singleton. Only a positive animal
+    // nameplate shape may use its own tag; never infer self from text/position.
+    if (gameCapture.game) return null;
+    const parent = node.parent;
+    if (!hpIdentify(parent)) return null;
+    const kids = parent.children || [];
+    const texts = kids.filter(k => k && !k.__lumiNameOverlay && typeof k.text === 'string');
+    if (texts.length !== 2 || texts[0] !== node) return null;
+    nameBindings.set(node, {owner: null, parent: node.parent, text: node.text, self: false});
+    return styleFor(node.text);
+  }
+
+  function nameReconcile() {
+    // Recycled text nodes can change between the 500ms discovery passes.
+    // Revoke old styling before the very next native render in that case.
+    const validate = node => {
+      const b = nameBindings.get(node);
+      const owner = b && b.owner;
+      if (!settings.masterEnabled || !nameColorState.enabled || !b || node.destroyed ||
+          node.parent !== b.parent || node.text !== b.text ||
+          (owner && (owner.spawned === false || owner.name !== node || owner.container !== node.parent)) ||
+          (b.self && owner !== hpGameModel())) applyNameStyle(node, null);
+    };
+    for (const node of tinted) validate(node);
+    for (const node of overlays.keys()) validate(node);
   }
 
   // How much room the nickname box actually has. The field's own maxlength is
@@ -5164,6 +5203,8 @@
 
   // ---------------- Pixi hook ----------------
   const renderers = [];
+  const nameOriginals = new WeakMap();
+  const nameBindings = new WeakMap();
   const tinted = new Set();        // nodes we solid-tinted (to restore)
   const overlays = new Map();      // node -> {key, clones, laidOut} for gradient overlays
   let lastSweep = -Infinity;   // discover immediately, then use the paced interval
@@ -5252,27 +5293,34 @@
     let m = overlays.get(node);
     if (m && m.key !== key) { destroyOverlay(node, m); m = null; }
     if (!m) {
+      const clones = [];
       try {
         const Ctor = node.constructor;
         const stops = st.grad !== undefined ? gradStopsOf(st.grad) : null;
         const chars = splitNameGraphemes(node.text);
         const emoji = chars.map(isEmojiGrapheme);
-        const clones = chars.map((ch, i) => {
+        chars.forEach((ch, i) => {
           const c = new Ctor({
             text: ch,
             style: node.style && node.style.clone ? node.style.clone()
                  : {fontFamily: node.style.fontFamily, fontSize: node.style.fontSize},
           });
+          c.__lumiNameOverlay = true;
+          clones.push(c);
           if (c.anchor) c.anchor.set(0, node.anchor ? node.anchor.y : 0.5);
           c.tint = emoji[i] ? NAME_WHITE
             : stops ? gradColorAt(stops, chars.length > 1 ? i / (chars.length - 1) : 0.5)
             : st.solid;
           node.parent.addChild(c);
-          return c;
         });
         m = {key, clones, chars, emoji, stops, laidOut: false};
         overlays.set(node, m);
-      } catch (e) { return false; } // graceful: the caller tints the real node
+      } catch (e) {
+        for (const c of clones) {
+          try { if (c.parent) c.parent.removeChild(c); c.destroy(); } catch (ignored) {}
+        }
+        return false; // graceful: the caller tints the real node
+      }
     }
     syncOverlayLayout(node, m);
     node.renderable = false;
@@ -5285,9 +5333,12 @@
     if (!st) {
       const m = overlays.get(node);
       if (m) destroyOverlay(node, m);
-      if (tinted.has(node)) { node.tint = NAME_WHITE; tinted.delete(node); }
+      const original = nameOriginals.get(node);
+      if (original) { node.tint = original.tint; node.renderable = original.renderable; nameOriginals.delete(node); }
+      tinted.delete(node);
       return;
     }
+    if (!nameOriginals.has(node)) nameOriginals.set(node, {tint: node.tint, renderable: node.renderable});
     if (overlayWanted(node, st) && ensureNameOverlay(node, st)) {
       if (node.tint !== NAME_WHITE) node.tint = NAME_WHITE; // clean slate under it
       tinted.delete(node);
@@ -5399,167 +5450,44 @@
   // stutter complaint turns out to be. sweep() is only ever called from the
   // render hook and never re-enters, so a single shared stack is safe.
   const sweepStack = [];
-  // Almost always empty or holding one node; only a duplicate name puts more
-  // than one in it, so it is reused rather than reallocated per sweep.
-  const sweepSelfCandidates = [];
-  // baseKey -> how many name nodes wore it in the last completed sweep.
-  const nameSeenCounts = new Map();
-  // The names that more than one player is demonstrably wearing right now.
   let ambiguousNames = new Set();
 
-  // Which of two same-named nameplates is actually yours.
-  //
-  // Until 1.14.0 the own-name branch matched on the NAME ALONE, so if a friend
-  // played under the same name as you, every nameplate reading it was painted
-  // with YOUR colour and their own choice was thrown away — and on their screen
-  // exactly the same thing happened in reverse. Only one of them can be you:
-  //
-  //   1. If this client put a share suffix in the name field, yours is the
-  //      nameplate whose text ends with that exact suffix. That is exact, and
-  //      it is why styleFor() below rejects a name carrying somebody else's
-  //      tag before it ever gets here.
-  //   2. Otherwise the camera is centred on your own animal, so yours is the
-  //      nameplate nearest the middle of the screen.
-  //
-  // The arena is the known exception to (2) — it does not pin the camera to
-  // you — but an arena holds two players with both nameplates on screen, so
-  // the worst case there is the same coin-flip as before rather than a new
-  // failure. Everyone who loses is re-styled as what they are: another player,
-  // coloured by the colour they share if they share one, and left alone if not.
-  function nodeDistanceFromCentre(node) {
-    try {
-      const t = node.worldTransform;
-      if (!t || !Number.isFinite(t.tx) || !Number.isFinite(t.ty)) return Infinity;
-      const canvas = document.querySelector('canvas');
-      const cx = (canvas && canvas.width ? canvas.width : innerWidth) / 2;
-      const cy = (canvas && canvas.height ? canvas.height : innerHeight) / 2;
-      const dx = t.tx - cx, dy = t.ty - cy;
-      return dx * dx + dy * dy;   // squared: only the ordering is used
-    } catch (e) { return Infinity; }
-  }
-
-  function resolveSelfCandidates(list) {
-    let winner = null;
-    const emitted = nameColorState.emitted;
-    if (emitted) {
-      for (const n of list) {
-        if (typeof n.text === 'string' && n.text.endsWith(emitted)) { winner = n; break; }
-      }
-    }
-    if (!winner) {
-      let best = Infinity;
-      for (const n of list) {
-        const d = nodeDistanceFromCentre(n);
-        if (d < best) { best = d; winner = n; }
-      }
-    }
-    for (const n of list) {
-      if (n === winner) continue;
-      applyNameStyle(n, sharedStyleFor(n.text));
-    }
-    dbg('name colors: ' + list.length + ' nameplates share your name; kept yours on ' +
-      (winner ? (emitted && winner.text.endsWith(emitted) ? 'the one carrying your tag'
-        : 'the one nearest the screen centre') : 'none'));
-  }
-
-  // IS THIS TEXT NODE A HEALTH-BAR READOUT RATHER THAN A NAMEPLATE?
-  //
-  // 1.0.8, and the actual fix for a bug 1.0.3 aimed at and missed.
-  //
-  // The report was a player called "67" and, hours later, a dragon's health
-  // reaching 67 and being drawn in that player's gradient. 1.0.3 scoped
-  // domSweep to the leaderboard, which was a real improvement and the wrong
-  // sweep: the numbers on a health bar are not HTML. They are Pixi text nodes
-  // in the game world, and the SCENE sweep colours every text node it walks,
-  // so "67" the name and "67" the health reading were the same eight bits of
-  // string with nothing to tell them apart.
-  //
-  // mope's own health number is a child of the bar container, so the bar
-  // matcher already knows how to recognise its parent — this is hpIsHealthBar
-  // asked of the text node's parent, and nothing more.
-  //
-  // CACHED IN TWO WeakSets because hpBarParts() measures children, which is
-  // far too much work to repeat for every text node of every sweep. A
-  // container's answer cannot change (a health bar does not stop being one),
-  // and a WeakSet lets the scene drop nodes without this holding them alive.
-  const nameBarYes = new WeakSet();
-  const nameBarNo = new WeakSet();
-
-  function textIsBarReadout(node) {
-    const p = node && node.parent;
-    if (!p) return false;
-    if (nameBarYes.has(p)) return true;
-    if (nameBarNo.has(p)) return false;
-    let is = false;
-    try { is = !!hpIsHealthBar(p); } catch (e) { is = false; }
-    try { (is ? nameBarYes : nameBarNo).add(p); } catch (e) { /* not an object */ }
-    return is;
-  }
   function sweep(root) {
     let visited = 0;
-    const ownKey = nameKey();
+    const owners = nameOwners();
+    const counts = new Map();
+    // Decide ambiguity before any lookup, not one sweep after colouring it.
+    for (const node of owners.keys()) {
+      const key = baseKey(node.text);
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    ambiguousNames = new Set([...counts].filter(([, n]) => n > 1).map(([key]) => key));
     sweepStack.length = 0;
     sweepStack.push(root);
-    const stack = sweepStack;
-    const selfCandidates = sweepSelfCandidates;
-    selfCandidates.length = 0;
-    nameSeenCounts.clear();
-    while (stack.length) {
-      const n = stack.pop();
+    const seen = new Set();
+    while (sweepStack.length) {
+      const n = sweepStack.pop();
       if (!n || ++visited > 60000) break;
-      // HP damage numbers ride along on this walk rather than paying for a
-      // second one; the check costs a boolean when the feature is off.
-      if (hpScan.active) hpConsiderNode(n);
-      // Same walk, same reasoning: the arena matcher rejects on one array
-      // length test for all but a handful of nodes.
-      if (arenaScan.active) arenaConsiderNode(n);
-      if (typeof n.text === 'string' && n.text) {
-        // A health bar's own number is not a name, however much it looks like
-        // one. See textIsBarReadout — this is the whole fix for the "67" bug.
-        // Cleared rather than skipped: a bar coloured by an earlier build, or
-        // by this one before the parent was classified, has to be put back.
-        if (textIsBarReadout(n)) {
-          applyNameStyle(n, null);
-        } else {
-          const st = styleFor(n.text, ownKey);
-          applyNameStyle(n, st);
-          if (st) {
-            // Only names this script actually recognised are counted, which
-            // keeps the tally to a handful of nodes rather than the whole walk.
-            const base = baseKey(n.text);
-            nameSeenCounts.set(base, (nameSeenCounts.get(base) || 0) + 1);
-            if (st.self) selfCandidates.push(n);
-          }
-        }
+      if (n.__lumiNameOverlay) continue;
+      // Each discovery consumer is isolated: a malformed text or HP node
+      // cannot prevent the arena scanner from completing the same walk.
+      if (hpScan.active) {
+        try { hpConsiderNode(n); } catch (e) { frameFailed('HP discovery', e); }
+      }
+      if (arenaScan.active) {
+        try { arenaConsiderNode(n); } catch (e) { frameFailed('arena discovery', e); }
+      }
+      if (typeof n.text === 'string') {
+        seen.add(n);
+        try { applyNameStyle(n, sceneNameStyle(n, owners)); }
+        catch (e) { frameFailed('name discovery', e); }
       }
       const ch = n.children;
-      if (ch) for (let i = 0; i < ch.length; i++) stack.push(ch[i]);
+      if (ch) for (let i = 0; i < ch.length; i++) sweepStack.push(ch[i]);
     }
-    // The walk normally drains the stack, but the 60,000-node cap can break out
-    // with entries still on it. Left there they would hold scene nodes alive
-    // until the next sweep, so drop them explicitly.
-    stack.length = 0;
-    if (selfCandidates.length > 1) resolveSelfCandidates(selfCandidates);
-    selfCandidates.length = 0;
-    // Names worn by more than one player at once. The online registry is keyed
-    // by the name alone, so those players share ONE entry between them and
-    // whoever published last wins it — which is the other half of the same
-    // bug. A name in here is one the registry has nothing trustworthy to say
-    // about, so it stands aside and each player's own suffix decides instead.
-    const next = new Set();
-    for (const [base, count] of nameSeenCounts) if (count > 1) next.add(base);
-    ambiguousNames = next;
-    // restore solid tints that no longer apply (disable/name change/despawn)
-    for (const n of tinted) {
-      if (!n.parent) { tinted.delete(n); continue; }
-      const st = styleFor(n.text, ownKey);
-      if (!st || overlayWanted(n, st)) { n.tint = NAME_WHITE; tinted.delete(n); }
-    }
-    // tear down overlays that no longer apply
-    for (const [n, m] of overlays) {
-      if (!n.parent) { overlays.delete(n); continue; } // container destroyed, clones went with it
-      const st = styleFor(n.text, ownKey);
-      if (!overlayWanted(n, st) || overlayKeyFor(n, st) !== m.key) destroyOverlay(n, m);
+    sweepStack.length = 0;
+    for (const n of new Set([...tinted, ...overlays.keys()])) {
+      if (!seen.has(n)) applyNameStyle(n, null);
     }
   }
 
@@ -5713,9 +5641,6 @@
             lastHpWork = now;
             hpLastStage = stage;
             try { hpTick(this, now); } catch (e) { frameFailed('HP', e); }
-            // Draw order, on the HP budget: it reorders the same animals the
-            // HP scan is already holding, and has its own 250ms throttle.
-            try { zorderApply(now, false); } catch (e) { frameFailed('draw order', e); }
           }
           // Party dots still update before Pixi draws; redundant intervening
           // renders are skipped because peers publish at only 10 Hz.
@@ -5767,6 +5692,9 @@
           }
         }
       } catch (e) { frameFailed('frame wrapper', e); }
+      // Reconcile after every game update, including frames skipped by HP budgets.
+      try { nameReconcile(); } catch (e) { frameFailed('name ownership', e); }
+      try { zorderApply(performance.now(), false); } catch (e) { frameFailed('draw order', e); }
       // Rest + spread allocated two arrays on EVERY frame. Every Pixi v8 path
       // calls render() with a single argument; the apply() branch exists only
       // so an unusual caller cannot silently lose one.
@@ -10227,41 +10155,10 @@
   // WHERE THIS SWEEP IS ALLOWED TO LOOK. 1.0.3, and the whole fix for a class
   // of bug rather than one instance of it.
   //
-  // The colourer matches a text node by its TEXT. That is the only thing it
-  // can do — a player called "67" and a health reading of "67" are the same
-  // eight bits of string, and nothing about the characters can tell them
-  // apart. So the text was never the problem: walking the whole document was.
-  // Given the entire page, a name-shaped string will eventually collide with
-  // something that is not a name, and the report that found this was exactly
-  // that — a friend playing as "67", and hours later this client's own health
-  // hitting 67 and turning up in their gradient.
-  //
-  // The feature's own setting says what it was always meant to cover: "also
-  // color name in leaderboard/menus (HTML)". In-world nameplates are Pixi and
-  // belong to the scene sweep, which matches entities and never came near
-  // this. So the DOM half only ever needed two places, and this gives it
-  // exactly those:
-  //
-  //   IN GAME  — the leaderboard, and nothing else. Every other number on the
-  //              screen while you are playing is the HUD talking about YOU:
-  //              health, XP, coins, the boost count, the stats block, the
-  //              timer. None of them are names and none of them can now be
-  //              mistaken for one, because the walk never reaches them.
-  //   IN MENU  — the whole document, which is where the profile, the account
-  //              panel and every other place a handle is printed live. There
-  //              is no live HUD in the menu, so there is nothing there for a
-  //              name to collide with.
-  //
-  // This is an ALLOW-list on purpose. The previous shape was a deny-list — our
-  // own panel, then SCRIPT and STYLE — and a deny-list can only ever exclude
-  // the collisions somebody has already hit. Every text node mope adds in a
-  // future build arrives excluded rather than included.
+  // Only semantically marked leaderboard name cells are eligible. Menu text,
+  // scores, ranks and server labels never enter colour lookup.
   function domSweepRoots() {
-    if (prevMenuVisible === false) {
-      const lb = document.getElementById('leaderboard');
-      return lb ? [lb] : [];
-    }
-    return document.body ? [document.body] : [];
+    return Array.from(document.querySelectorAll('#leaderboard .leaderboardEntry > .leaderboardName'));
   }
   // How many text nodes the last sweep actually looked at, reported by
   // __lumiNameDebug: a sweep that has been scoped away from where somebody
@@ -10271,7 +10168,6 @@
   function domSweep() {
     if (!document.body) return;
     const active = settings.masterEnabled && nameColorState.enabled && nameColorState.dom;
-    const ownKey = nameKey();
     domSweepScanned = 0;
     if (active) {
       for (const root of domSweepRoots()) {
@@ -10290,7 +10186,7 @@
         const el = t.parentElement;
         if (!el || el.closest(QOLC_OWN_UI) ||
             el.tagName === 'SCRIPT' || el.tagName === 'STYLE') continue;
-        const st = styleFor(v, ownKey);
+        const st = styleFor(v, !!el.closest('#leaderboard .leaderboardEntry.main'));
         if (!st) continue;
         if (!domTouched.has(el)) {
           domTouched.set(el, {
@@ -10306,7 +10202,9 @@
       }
     }
     for (const [el, orig] of domTouched) {
-      const st = active && el.isConnected ? styleFor(el.textContent || '', ownKey) : null;
+      const isName = el.matches('#leaderboard .leaderboardEntry > .leaderboardName');
+      const st = active && el.isConnected && isName
+        ? styleFor(el.textContent || '', !!el.closest('#leaderboard .leaderboardEntry.main')) : null;
       if (!st) {
         if (el.isConnected) restoreDomColor(el, orig);
         domTouched.delete(el);
@@ -14685,39 +14583,12 @@
     return settings.masterEnabled && settings.arenaFocus;
   }
 
-  /* ----- draw order override (1.0.6) -----
-   *
-   * mope decides which animal draws over which, and the answer is not stable:
-   * sometimes you are painted over a bigger player and sometimes under them.
-   * This is two keys that settle it — one that puts you on top of every other
-   * animal, one that puts you under them — and it works in the open world as
-   * well as in an arena, because the inconsistency does.
-   *
-   * HOW DRAW ORDER ACTUALLY WORKS HERE, since it is not the scene graph. mope
-   * builds its world out of about forty named RenderLayers in a fixed order,
-   * and a RenderLayer draws the objects attached to it in ATTACH ORDER. So the
-   * lever is not zIndex and not the child list — it is re-attaching, which
-   * moves an object to the end of its layer's list and therefore draws it last.
-   *
-   *   ABOVE  re-attach YOU, so you go to the end of your own layer.
-   *   BELOW  re-attach everyone else, so they all go after you.
-   *
-   * Below costs more than above and that asymmetry is unavoidable: a layer can
-   * be told to draw something last, and has no equivalent for first.
-   *
-   * NOTHING IS ASSUMED ABOUT THE ENGINE. Every call is feature-detected and a
-   * missing one turns the feature off rather than half-applying it — a
-   * duplicate attach would draw an animal twice, which is a far worse artefact
-   * than the inconsistency being fixed. detach-then-attach is preferred where
-   * detach exists, because attach alone on an object already in the layer is
-   * the one case that could duplicate.
-   *
-   * Re-applied on a throttle rather than every frame: mope re-attaches animals
-   * as they enter and leave view, so a single application at keypress would be
-   * undone within seconds. 250ms is well under noticing and well over doing
-   * this on the frame path.
+  /* ----- draw order override (1.0.21) -----
+   * Own one RenderLayer adjacent to the animal layers and attach only self.
+   * Reconcile each native frame; mutate only changed attachments/indices.
+   * Native model identity and layer restoration are independent of HP work.
+   * See docs/visual-contracts.md and tests/visual-contracts.test.cjs.
    */
-  const ZORDER_APPLY_MS = 250;
   const zorder = {
     // 1.0.10: seeded from the stored setting. It used to be a literal 0 while
     // zorderSet() faithfully wrote the mode to storage and the panel rows took
@@ -14735,6 +14606,8 @@
     // big-animal layer stays there for the rest of the session.
     home: null,
     homeFor: null,  // which entity that home belongs to
+    model: null,
+    layer: null,    // the sole render layer owned by this feature
     applied: 0,     // how many objects the last pass moved
   };
 
@@ -14764,109 +14637,93 @@
     } catch (e) { return -1; }
   }
 
-  // Every layer any animal on screen is currently drawn on, ranked. Built from
-  // the HP scan's set, which is every animal carrying a health bar — that is
-  // every animal that could be drawn over you, which is exactly the question.
+  // Native layers from the animal model registry, regardless of health-bar
+  // visibility. HP discovery is only a fallback for missing registry access.
   function zorderLayers(me) {
     const seen = [];
-    const add = (layer) => {
-      if (!layer || typeof layer.attach !== 'function') return;
-      for (const s of seen) if (s.layer === layer) return;
-      seen.push({layer, rank: zorderRank(layer)});
+    const add = layer => {
+      if (!layer || layer === zorder.layer || layer.destroyed || typeof layer.attach !== 'function') return;
+      if (!seen.some(row => row.layer === layer)) seen.push({layer, rank: zorderRank(layer)});
     };
-    add(me && me.parentRenderLayer);
-    for (const entry of hpState.bars.values()) {
-      if (entry.entity) add(entry.entity.parentRenderLayer);
+    add(zorder.homeFor === me ? zorder.home : me && me.parentRenderLayer);
+    const models = gameModels('animal');
+    if (models.length) {
+      for (const model of models) {
+        const node = model && model.container;
+        if (node && node.parent && !node.destroyed && model.spawned !== false) add(node.parentRenderLayer);
+      }
+    } else {
+      for (const entry of hpState.bars.values()) {
+        if (entry.entity && entry.entity.parent && !entry.entity.destroyed) add(entry.entity.parentRenderLayer);
+      }
     }
     return seen;
   }
 
-  function zorderMove(obj, layer) {
-    const to = layer || (obj && obj.parentRenderLayer);
-    if (!obj || !to || typeof to.attach !== 'function') return false;
+  function zorderMove(obj, to) {
+    if (!obj || obj.destroyed || !to || to.destroyed || typeof to.attach !== 'function') return false;
+    const from = obj.parentRenderLayer;
+    if (from === to) return true;
+    if (from && typeof from.detach !== 'function') return false;
     try {
-      // Detach first. attach() on an object some layer is already holding is
-      // the one call that can leave it in two draw lists, and an animal drawn
-      // twice is worse than one drawn under somebody.
-      //
-      // 1.0.10 CLOSES A HOLE THIS COMMENT ALREADY PROMISED WAS CLOSED. The old
-      // code fell through to a branch that merely RECORDED "attach only (no
-      // detach)" and then called to.attach() regardless. That was survivable
-      // while the target was always the object's own layer — the worst case was
-      // a re-attach that did not reorder. Since 1.0.8 the target can be a
-      // DIFFERENT layer, so the same fall-through attached the animal to a
-      // second layer while the first still held it: the exact double-draw the
-      // paragraph above forbids. The fallback predated the cross-layer move and
-      // was never revisited.
-      //
-      // An object that is on no layer yet cannot duplicate, so that case still
-      // attaches. Anything else without a working detach REFUSES, per the
-      // feature's own rule: a missing engine call turns the feature off rather
-      // than half-applying it.
-      const from = obj.parentRenderLayer;
-      if (from) {
-        if (typeof from.detach !== 'function') {
-          if (!zorder.api) {
-            zorder.api = 'no detach() on the current layer - refusing, ' +
-              'because attaching without it would draw the animal twice';
-          }
-          return false;
-        }
-        from.detach(obj);
-      }
+      if (from) from.detach(obj);
       to.attach(obj);
+      if (obj.parentRenderLayer !== to) throw Error('layer did not accept the animal');
       return true;
-    } catch (e) { return false; }
+    } catch (e) {
+      // Roll back partial attachment before returning to the native renderer.
+      try { if (typeof to.detach === 'function') to.detach(obj); } catch (ignored) {}
+      try { if (from && !from.destroyed) from.attach(obj); } catch (ignored) {}
+      frameFailed('draw order move', e);
+      return false;
+    }
   }
 
   function zorderApply(now, force) {
-    if (!zorderOn()) return;
-    if (!force && now - zorder.at < ZORDER_APPLY_MS) return;
-    zorder.at = now;
-    const me = hpState.playerEntry && hpState.playerEntry.entity;
-    if (!me) { zorder.api = 'no player locked - nothing to reorder'; zorder.applied = 0; return; }
-    if (!me.parentRenderLayer) {
-      zorder.api = 'your animal is not on a render layer - nothing to reorder';
-      zorder.applied = 0;
-      return;
+    if (!zorderOn()) { if (zorder.homeFor || zorder.layer) zorderRestore(); return; }
+    // A missing health bar, identical nickname or stale HP lock never changes self.
+    const me = hpGamePlayer();
+    if (zorder.homeFor && zorder.homeFor !== me) zorderRestore();
+    if (!me || me.destroyed || !me.parent) {
+      zorder.api = 'waiting for the game-owned player'; zorder.applied = 0; return;
     }
-    const layers = zorderLayers(me);
-    if (!layers.length) { zorder.api = 'no render layers found'; zorder.applied = 0; return; }
-    // Ranked, and only where the rank could actually be read. An unrankable
-    // layer is left out of the comparison rather than treated as depth -1,
-    // which would make it win "lowest" and put you under the map.
-    const ranked = layers.filter((l) => l.rank >= 0);
-    const pool = ranked.length ? ranked : layers;
+    if (me.parentRenderLayer !== zorder.layer) {
+      zorder.homeFor = me;
+      zorder.home = me.parentRenderLayer;
+      zorder.model = hpGameModel();
+    }
+    const home = zorder.home;
+    const parent = home && home.parent;
+    const pool = zorderLayers(me).filter(row => row.rank >= 0 && row.layer.parent === parent);
+    if (!parent || !pool.length || typeof parent.addChildAt !== 'function' ||
+        typeof parent.setChildIndex !== 'function') {
+      zorder.api = 'waiting for comparable animal render layers'; return;
+    }
     let target = pool[0];
-    for (const l of pool) {
-      if (zorder.mode > 0 ? l.rank > target.rank : l.rank < target.rank) target = l;
+    for (const row of pool) {
+      if (zorder.mode > 0 ? row.rank > target.rank : row.rank < target.rank) target = row;
     }
-    zorder.layers = pool.length;
-    zorder.movedTo = zorderRank(target.layer);
-    zorder.api = ranked.length
-      ? 'render layers ranked by scene order'
-      : 'render layers found but not rankable - falling back to your own layer';
-
-    // Remembered before the first move, and only for the animal it belongs
-    // to: respawning gives you a new entity and mope picks its layer afresh.
-    if (zorder.homeFor !== me) { zorder.homeFor = me; zorder.home = me.parentRenderLayer || null; }
-
-    let n = 0;
-    if (zorder.mode > 0) {
-      // Onto the highest layer anything is drawn on, and last within it.
-      if (zorderMove(me, target.layer)) n++;
-    } else {
-      // Onto the lowest layer, and then everyone who shares it goes after us.
-      // Animals on higher layers need no help: their layer already draws later.
-      if (zorderMove(me, target.layer)) n++;
-      for (const entry of hpState.bars.values()) {
-        const other = entry.entity;
-        if (!other || other === me) continue;
-        if (other.parentRenderLayer !== target.layer) continue;
-        if (zorderMove(other, target.layer)) n++;
+    if (zorder.layer && (zorder.layer.destroyed || zorder.layer.parent !== parent)) {
+      zorderRestore();
+      zorder.homeFor = me; zorder.home = me.parentRenderLayer; zorder.model = hpGameModel();
+    }
+    if (!zorder.layer) {
+      const layer = new home.constructor();
+      if (typeof layer.attach !== 'function' || typeof layer.detach !== 'function') {
+        if (typeof layer.destroy === 'function') layer.destroy();
+        zorder.api = 'render layer constructor unavailable'; return;
       }
+      layer.__lumiZOrder = true;
+      parent.addChildAt(layer, parent.children.indexOf(target.layer));
+      zorder.layer = layer;
     }
-    zorder.applied = n;
+    const layer = zorder.layer;
+    const without = parent.children.filter(child => child !== layer);
+    const index = without.indexOf(target.layer) + (zorder.mode > 0 ? 1 : 0);
+    if (parent.children.indexOf(layer) !== index) parent.setChildIndex(layer, index);
+    zorder.applied = zorderMove(me, layer) ? 1 : 0;
+    zorder.layers = pool.length; zorder.movedTo = zorderRank(layer); zorder.at = now;
+    zorder.api = zorder.applied ? 'dedicated layer beside the animal layers' : 'layer move failed; restored native layer';
   }
 
   // Setting a mode clears the other one: above and below are the same question
@@ -14897,14 +14754,22 @@
   // the new one's layer itself — so there is nothing to restore and nothing to
   // get wrong.
   function zorderRestore() {
-    const me = hpState.playerEntry && hpState.playerEntry.entity;
-    if (me && me === zorder.homeFor && zorder.home && me.parentRenderLayer !== zorder.home) {
-      zorderMove(me, zorder.home);
+    const me = zorder.homeFor;
+    const layer = zorder.layer;
+    if (me && !me.destroyed && me.parent && me.parentRenderLayer === layer) {
+      // Ask the model to restore today's layer (dive/fly/arena may have changed).
+      try {
+        if (zorder.model && typeof zorder.model.updateLayer === 'function') zorder.model.updateLayer();
+      } catch (e) { frameFailed('draw order restore', e); }
+      if (me.parentRenderLayer === layer && !zorderMove(me, zorder.home)) return;
     }
-    zorder.home = null;
-    zorder.homeFor = null;
-    zorder.movedTo = -1;
-    zorder.applied = 0;
+    if (layer && !layer.destroyed) {
+      try { if (layer.parent) layer.parent.removeChild(layer); layer.destroy(); }
+      catch (e) { frameFailed('draw order cleanup', e); return; }
+    }
+    zorder.layer = null; zorder.model = null;
+    zorder.home = null; zorder.homeFor = null;
+    zorder.movedTo = -1; zorder.applied = 0;
   }
 
   function zorderDebug() {
@@ -14914,7 +14779,7 @@
       movedLastPass: zorder.applied,
       animalLayersSeen: zorder.layers,
       movedOntoLayerRank: zorder.movedTo,
-      playerLocked: !!(hpState.playerEntry && hpState.playerEntry.entity),
+      playerLocked: !!hpGamePlayer(),
       animalsTracked: hpState.bars.size,
     };
     console.log(TAG, 'draw order', report);
@@ -15018,23 +14883,21 @@
   // BOUNDS, NOT A FINGERPRINT — and every number here is a guess until it is
   // read off a live duel (1.0.14).
   //
-  // mope's arena is six children today. But a Black Dragon or King Dragon duel
-  // visibly rebuilds the arena: both fighters are scaled up to match the big
-  // animal, and the arena changes with them. So "how many children does an
-  // arena have" is not something to bet three features on. 1.0.13 replaced an
-  // exact six with a ceiling of twelve, which is the same mistake with more
-  // headroom — and it is the shape of arena the bug was reported in.
-  //
-  // MAX is now generous enough that exceeding it means the shape really did
-  // change, and LOOK keeps the near-miss reporting going well past it, so the
-  // ceiling can never hide the fact that it was the ceiling.
+  // The authoritative model supplies its parts directly. The fallback scans
+  // by shape with no child-count ceiling; extensions and BD/KD rebuilds can
+  // add children. LOOK limits diagnostic work only, never arena acceptance.
   const ARENA_KIDS_MIN = 6;
-  const ARENA_KIDS_MAX = 24;    // matched up to here
   const ARENA_KIDS_LOOK = 64;   // still REPORTED up to here, even when refused
 
-  function arenaPartsOf(node) {
+  function arenaPartsOf(node, model) {
+    if (model && model.container === node && model.base && model.walls &&
+        model.base.parent === node && model.walls.parent === node &&
+        !model.base.destroyed && !model.walls.destroyed) {
+      return {base: model.base, walls: model.walls,
+        labels: [model.textPlayer1, model.textPlayer2, model.timer, model.message], extra: 0};
+    }
     const kids = node && node.children;
-    if (!kids || kids.length < ARENA_KIDS_MIN || kids.length > ARENA_KIDS_MAX) return null;
+    if (!kids || kids.length < ARENA_KIDS_MIN) return null;
     let base = null, walls = null, extra = 0;
     const labels = [];
     for (let i = 0; i < kids.length; i++) {
@@ -15056,22 +14919,13 @@
     if (arenaScan.active) { arenaScan.found.length = 0; arenaScan.nearMiss.length = 0; }
   }
 
-  // Called for every node the scene sweep walks past, alongside the health-bar
-  // matcher, so this costs one length comparison on all but a handful of nodes.
-  //
-  // A container in the right size range that does NOT match is recorded, up to
-  // a few of them — INCLUDING one refused purely for being too big. The first
-  // cut returned on the size gate before recording anything, so a container
-  // with more children than the ceiling was invisible AND the debug hook said
-  // nothing had been rejected: the bug, plus a diagnostic denying it. A
-  // ceiling that can hide is worse than no ceiling.
+  // Acceptance has no upper size gate. Bound diagnostic detail only after a
+  // shape failed, so extension children can never silently disable an arena.
   function arenaConsiderNode(node) {
     const kids = node && node.children;
     if (!kids || kids.length < ARENA_KIDS_MIN) return;
-    if (kids.length <= ARENA_KIDS_MAX) {
-      const parts = arenaPartsOf(node);
-      if (parts) { arenaScan.found.push(node); return; }
-    }
+    const parts = arenaPartsOf(node);
+    if (parts) { arenaScan.found.push(node); return; }
     if (kids.length > ARENA_KIDS_LOOK) return;
     if (arenaScan.nearMiss.length >= 4) return;
     let texts = 0, hasWalls = false, hasBase = false;
@@ -15085,9 +14939,7 @@
     if (!hasWalls && texts < 2) return;   // not arena-ish at all; say nothing
     arenaScan.nearMiss.push({
       children: kids.length, texts, floor: hasBase, walls: hasWalls,
-      why: kids.length > ARENA_KIDS_MAX
-        ? 'MORE THAN ' + ARENA_KIDS_MAX + ' children — the matcher never looked at it'
-        : !hasBase ? 'no floor with a texture and a width'
+      why: !hasBase ? 'no floor with a texture and a width'
         : !hasWalls ? 'no Graphics that can draw a circle'
         : 'only ' + texts + ' text labels, needs 4',
     });
@@ -15224,9 +15076,9 @@
   // `mine` — the record every arena feature works from — built from an arena
   // container. Split out in 1.0.17 so the arena the game hands over by
   // reference is described exactly the way the geometry pick describes one.
-  function arenaMineOf(node) {
-    if (!node || !node.parent) return null;
-    const parts = arenaPartsOf(node);
+  function arenaMineOf(node, model) {
+    if (!node || node.destroyed || !node.parent) return null;
+    const parts = arenaPartsOf(node, model);
     const wt = node.worldTransform;
     if (!parts || !wt) return null;
     const scale = Math.hypot(Number(wt.a) || 0, Number(wt.b) || 0);
@@ -15241,7 +15093,8 @@
     // produced a lock or bar reading yet. That breaks the historical chain in
     // which one missed health reading took the theme, bite and boost state
     // down together.
-    const gameKnown = !!gameCapture.game;
+    const gameKnown = !!gameCapture.game && 'player' in gameCapture.game &&
+      (gameCapture.game.player === null || !!(hpGameModel() && 'arena' in hpGameModel()));
     const model = hpGameModel();
     const gamePlayer = hpGamePlayer();
     const player = gamePlayer || hpState.player;
@@ -15286,13 +15139,13 @@
     // the arena you are actually in. Geometry remains for a page without the
     // singleton, and for an arena the game names but the scan did not
     // recognise.
-    if (gameArenaNode && gameArenaNode.parent && arenaScan.found.indexOf(gameArenaNode) !== -1) {
-      const byRef = arenaMineOf(gameArenaNode);
-      arenaSky.arenaBy = byRef ? 'the game (player.arena.container)' : 'geometry (the game\'s arena could not be measured)';
-      if (byRef) return byRef;
-    } else {
-      arenaSky.arenaBy = gameArena ? 'geometry (the game\'s arena is not in the scan)' : 'geometry';
+    if (gameArenaNode) {
+      const byRef = arenaMineOf(gameArenaNode, gameArena);
+      arenaSky.arenaBy = byRef ? 'the game (player.arena.container)'
+        : 'waiting for the game-owned arena geometry';
+      return byRef; // never substitute a nearby stranger's arena during rebuild
     }
+    arenaSky.arenaBy = 'geometry (game arena ownership unavailable)';
 
     // The screen centre is the fallback, and it is right whenever the camera is
     // following you — which is mope's default. It is wrong in an arena set to
@@ -15570,7 +15423,9 @@
   }
 
   function arenaSkyAttach(mine) {
-    if (arenaSky.node && arenaSky.host === mine.node && arenaSky.node.parent) {
+    if (arenaSky.node && !arenaSky.node.destroyed && arenaSky.host === mine.node &&
+        arenaSky.node.parent === mine.node && arenaSky.layer === mine.base.parentRenderLayer &&
+        arenaSky.node.parentRenderLayer === arenaSky.layer) {
       return arenaSky.node;
     }
     arenaSkyDetach('re-attaching');
@@ -15578,7 +15433,7 @@
     // The layer decision comes FIRST, because there is no acceptable way to
     // draw without it. See the note at the top of this section.
     const layer = mine.base.parentRenderLayer;
-    if (!layer || typeof layer.attach !== 'function') {
+    if (!layer || layer.destroyed || typeof layer.attach !== 'function' || typeof layer.detach !== 'function') {
       arenaSky.why = 'the arena floor is not on a render layer — refusing to ' +
         'draw, since the only other depth available is above the fighters';
       return null;
@@ -15602,6 +15457,7 @@
       layer.attach(node);         // for its depth
     } catch (e) {
       arenaSky.why = 'could not place the sky: ' + e;
+      try { layer.detach(node); } catch (e2) {}
       try { if (node.parent) node.parent.removeChild(node); } catch (e2) {}
       try { node.destroy(); } catch (e2) {}
       return null;
@@ -15896,7 +15752,7 @@
       // arena is the case that scales everything up. These two rows are what a
       // paste from such a duel should be checked against first.
       arenaChildren: mine && mine.node && mine.node.children
-        ? mine.node.children.length + ' (matched up to ' + ARENA_KIDS_MAX + ')'
+        ? mine.node.children.length + ' (no child-count ceiling)'
         : '(no arena picked)',
       yourAnimalChildren: hpState.player && hpState.player.children
         ? hpState.player.children.length + ' (nameplate searched up to ' +
@@ -19592,7 +19448,7 @@
     gradient: 'Gradient preset — the colours the name flows through. The strip below is the whole run.',
     animate: 'Animate gradient — flows the gradient across the name continuously.',
     share: 'Share with script users — sends your colour as a name tag, and to the registry if that is on.',
-    registry: 'Online color registry — carries your colour beside the name, so name length stops mattering.',
+    registry: 'Online color registry — refreshes shared colours for players carrying a color tag.',
     dom: 'Leaderboard and menus — also colours matching HTML name labels outside the game world.',
     party: 'Party — joins the party and connects to the relay. The map, chat and the party list are separate switches under it, and any of them works on its own.',
     code: 'Party code — everyone in the party holds the same one, and everything sent is encrypted with a key derived from it, so the relay cannot read any of it. Anyone with the code can, so treat it like a password and use a generated one.',
@@ -19857,28 +19713,18 @@
     refs.dom.classList.toggle('on', nameColorState.dom);
     nrStatusChanged();
 
-    // Warn when even the compact tag cannot fit. Without this, sharing just
-    // silently does nothing and the reason — decorative letters costing two
-    // units each — is invisible. With the registry on it is no longer a
-    // failure, only a note about which of the two routes is carrying the
-    // color, so it stops shouting: the name tag is the fallback for friends on
-    // older builds, and the registry does not care how long a name is.
+    // A name-only registry record cannot establish which player opted in.
+    // Leave room for the tag; never silently shorten the player's name.
     const shareBase = stripInvis(nameColorState.name);
     const shareLimit = nameFieldLimit(document.getElementById('name'));
     const shareTag = encodeSuffix(true);
     const shareOver = shareBase.length + shareTag.length - shareLimit;
     if (shareTag && shareBase.trim() && shareOver > 0) {
       refs.shareWarn.style.display = 'block';
-      refs.shareWarn.textContent = nameColorState.relay
-        ? 'Name is ' + shareOver + ' character' + (shareOver === 1 ? '' : 's') +
-          ' too long to carry a color tag (' + shareBase.length + ' of ' + shareLimit +
-          ' used), so it goes out through the registry only. Anyone on an ' +
-          'older version of the script will see it uncolored.'
-        : 'Name is ' + shareOver + ' character' + (shareOver === 1 ? '' : 's') +
-          ' too long to carry a color tag (' + shareBase.length + ' of ' + shareLimit +
-          ' used), so it is sent without one — other script users will see it ' +
-          'uncolored. Decorative letters cost 2 each. Turn on the online color ' +
-          'registry below and the length stops mattering.';
+      refs.shareWarn.textContent = 'Shorten your name by ' + shareOver +
+        ' character' + (shareOver === 1 ? '' : 's') + ' to share its colour. ' +
+        'The color tag needs that space; your own colour still works locally. ' +
+        'Decorative letters can use two spaces each.';
     } else {
       refs.shareWarn.style.display = 'none';
     }

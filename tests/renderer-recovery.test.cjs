@@ -28,7 +28,7 @@ function setup({separatePage = false} = {}) {
     SCENE_SWEEP_MIN_MS: 500, ARENA_SKY_WORK_MIN_MS: 60, OVERLAY_WORK_MIN_MS: 15,
     sceneSweepNeeded: () => false, hpWorkNeeded: () => true,
     partyWorkNeeded: () => true, arenaSkyWorkNeeded: () => false,
-    boostPlace() {}, hpTick: () => calls.push('hp'), zorderApply() {},
+    boostPlace() {}, hpTick: () => calls.push('hp'), zorderApply() {}, nameReconcile() {},
     partyTick: stage => calls.push(['party', stage]), layoutPixiTick() {},
     arenaDuelTick() {}, boostTick() {}, frameFailed: (...args) => failures.push(args),
     record: (...args) => calls.push(args),
@@ -189,6 +189,20 @@ test('render arguments, receiver, return value and native errors survive wrappin
   assert.equal(h.run('renderer.render(3, 4)'), 7);
   h.run('var broken = {render() { throw Error("native failure"); }}; hookRenderer(broken)');
   assert.throws(() => h.run('broken.render()'), /native failure/);
+});
+
+test('ownership and layer reconciliation run even between throttled feature frames', () => {
+  const h = setup();
+  let names = 0, layers = 0;
+  h.c.nameReconcile = () => names++;
+  h.c.zorderApply = () => layers++;
+  h.loop();
+  h.run('loop.render.bind(loop)()');
+  h.clock.now += 1;
+  h.run('loop.render()');
+  assert.equal(names, 2);
+  assert.equal(layers, 2);
+  assert.equal(h.run('framePerfRuns'), 1, 'the second frame skipped paced discovery');
 });
 
 test('DOM timer draws received party members with zero renderers, then expires them', () => {

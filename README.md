@@ -54,6 +54,13 @@ Open an [issue](../../issues). Useful things to include: the version shown in
 the panel, your browser, and whether you have any other mope.io scripts or
 extensions installed.
 
+## Development
+
+Run `node scripts/check.cjs` before releasing. The same regression suite runs in
+GitHub Actions on every push and pull request. See
+[visual ownership contracts](docs/visual-contracts.md) for the arena, name-colour
+and draw-order guarantees, compatibility changes and validation procedure.
+
 If party chat works but minimap dots are missing, run
 `__lumiCaptureDebug()` and `__lumiPartyDebug()` in the browser console.
 `renderersHooked: 0` together with `stageSeen: false` means the script missed
