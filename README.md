@@ -60,6 +60,9 @@ Run `node scripts/check.cjs` before releasing. The same regression suite runs in
 GitHub Actions on every push and pull request. See
 [visual ownership contracts](docs/visual-contracts.md) for the arena, name-colour
 and draw-order guarantees, compatibility changes and validation procedure.
+See [party health correction](docs/party-health.md) for the 1.0.22 fix and its
+sender-to-receiver regression coverage. Every party member needs the update
+because each client publishes its own HP.
 
 If party chat works but minimap dots are missing, run
 `__lumiCaptureDebug()` and `__lumiPartyDebug()` in the browser console.

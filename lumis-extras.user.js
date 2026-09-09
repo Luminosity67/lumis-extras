@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.21
+// @version      1.0.22
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -29,6 +29,10 @@
  *      Lumi's — if you are working on this and think a change earns it, ask.
  *      Default to leaving it alone.
  *   y  everything else: features, fixes, extra gradients, copy tweaks.
+ *
+ * 1.0.22 reads party health from the current player's server health value.
+ * The visual fallback accounts for the fill's local scale, including when
+ * native HP numbers are disabled. Stale HP samples are no longer published.
  *
  * 1.0.21 makes visual ownership explicit: arena model parts bypass discovery,
  * name colours require verified name nodes and remote share tags, and self uses
@@ -2995,7 +2999,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.21';
+    return '1.0.22';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -6980,39 +6984,31 @@
   // -1 means "not known", which is a row reading em-dash rather than a row
   // claiming zero.
   //
-  // 1.21.1: this publishes the LIVE reading, not the settled one. The settled
-  // figure was the wrong choice and the bug it caused is worth spelling out,
-  // because the settle logic is correct for its own purpose and must not be
-  // touched to fix this.
-  //
-  // hpTick settles a reading by waiting for it to stop moving: any reading that
-  // differs from the last by more than 0.05 resets `rawAt`, and only once a
-  // value has HELD for HP_SETTLE_MS does it become `settled`. That is exactly
-  // right for damage NUMBERS, which have to report one whole hit rather than a
-  // frame of the game's tween.
-  //
-  // It is exactly wrong for a live health readout, and not because 90ms is too
-  // long. The timer RESTARTS on every change — so a bar that never stops moving
-  // never settles at all, and `settled` keeps whatever value it had before the
-  // movement began, indefinitely. Reported from a real party: a member standing
-  // in LAVA, taking continuous damage, whose health sat at 100% on everyone
-  // else's list for the entire time. Not stale by a second — frozen, because
-  // continuous damage is precisely the input that can never satisfy "has this
-  // held still?".
-  //
-  // So `raw` is preferred, which is the freshest reading hpTick took, and
-  // `settled` is the fallback for the moment after a brief blind spell nulls
-  // `raw` while the baseline is still good. Damage numbers keep reading
-  // `settled` and are untouched.
-  //
-  // This does not make the pacer chatty: the stamp compares the ROUNDED
-  // percent, so a send happens only when the whole number changes, which is
-  // bounded by how fast health can actually drop rather than by the frame rate.
+  // 1.0.22: publish the server value, with a fresh visual read as compatibility
+  // fallback. 1.21.1 stopped using settled damage samples, but even raw samples
+  // depended on the HP scan running, and unscaled fill geometry read as 100%.
+  // The existing pacer sends changed whole percentages at most every 100ms.
   function partySelfHealth() {
+    // The same server percent mope prints above the animal. Read the current
+    // model on every send: HP display settings, interpolation, HUD culling and
+    // the damage-number scanner cannot freeze this value or choose a neighbour.
+    const model = hpGameModel();
+    if (gameCapture.game && !model) return -1;
+    if (model) {
+      if (model.spawned === false || model.destroyed === true ||
+          (model.container && model.container.destroyed === true)) return -1;
+      const target = model.target;
+      if (target && typeof target === 'object' && 'health' in target) {
+        const value = target.health;
+        return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100
+          ? Math.round(value) : -1;
+      }
+    }
+    // Compatibility when the game/model shape has not been captured. Re-read
+    // the bar; raw/settled can survive skipped HP ticks and are not live data.
     const entry = hpSelfEntry();
-    if (!entry) return -1;
-    const live = entry.raw;
-    const value = typeof live === 'number' && Number.isFinite(live) ? live : entry.settled;
+    if (!entry || !entry.bar || !entry.bar.parent) return -1;
+    const value = hpPercentOf(entry.bar, entry);
     if (typeof value !== 'number' || !Number.isFinite(value)) return -1;
     return Math.max(0, Math.min(100, Math.round(value)));
   }
@@ -9047,7 +9043,7 @@
       // from one paste of this.
       selfHealth: partyNeedsSelfHealth()
         ? (partySelfHealth() >= 0 ? partySelfHealth() + '%'
-           : 'not readable — the HP scan has not locked onto your health bar')
+           : 'not readable — no valid current player health or live bar')
         : 'not sent — ' + (partyActive() ? 'not in a game' : 'party is off'),
       selfAnimal: partySelfArtKey() || '(not identified from the ability icon)',
       selfAnimalArt: partyArtUrl(partySelfArtKey()) || '(none)',
@@ -9069,6 +9065,17 @@
       // live or frozen; a large number while you are taking damage means the
       // bar never held still long enough to be believed.
       selfHealthWhy: (() => {
+        const model = hpGameModel();
+        if (gameCapture.game && !model) return 'mope says you have no animal right now';
+        if (model && (model.spawned === false || model.destroyed === true ||
+            (model.container && model.container.destroyed === true))) return 'your animal has despawned';
+        if (model && model.target && typeof model.target === 'object' && 'health' in model.target) {
+          return {
+            source: "mope's current player target.health (server percent)",
+            serverPercent: model.target.health,
+            publishedPercent: partySelfHealth(),
+          };
+        }
         const entry = hpSelfEntry();
         const player = hpGamePlayer() || hpState.player;
         if (!player) return 'no animal is locked as you';
@@ -9086,9 +9093,9 @@
             : 'measured from the drawn fill (an estimate)',
           printedLabel: printed != null ? printed + '%' : '(not on screen)',
           liveReading: hpPercentOf(entry.bar, entry),
-          // 1.21.1 publishes `raw`, not `settled` — these two disagreeing while
-          // you take continuous damage is the bug that change fixed, so both
-          // are reported side by side.
+          publishedPercent: partySelfHealth(),
+          // Damage samples are diagnostic only; party publication re-reads
+          // the live bar when the native server value is unavailable.
           raw: entry.raw,
           settled: entry.settled,
           settledAgeMs: entry.rawAt ? Math.round(now - entry.rawAt) : null,
@@ -11731,11 +11738,17 @@
   function hpDrawnWidth(shape) {
     let w = hpWidthFromContext(shape);
     if (w == null) w = hpWidthFromGeometry(shape);
-    if (w == null) {
-      const measured = Number(shape && shape.width);
-      if (Number.isFinite(measured) && measured >= 0) w = measured;
+    if (w != null) {
+      // Graphics instructions/geometry are unscaled. Mope draws a permanent
+      // 30-unit rectangle and changes bar.scale.x to health.value / 100.
+      // The siblings' local scales matter; their shared parent scale cancels.
+      const scale = shape && shape.scale ? shape.scale.x : 1;
+      return typeof scale === 'number' && Number.isFinite(scale) ? w * Math.abs(scale) : null;
     }
-    return w;
+    // Pixi width already includes local scale. Multiplying it again would
+    // report 1.69% for a 13% fill on the bounds-only compatibility path.
+    const measured = Number(shape && shape.width);
+    return Number.isFinite(measured) && measured >= 0 ? measured : null;
   }
 
   // Health percent 0-100, or null while it cannot be read at all. The game
@@ -11760,13 +11773,9 @@
     // be measured at all in that case.
     const printed = hpPercentFromLabel(parts.label);
     if (printed != null) return printed;
-    // The backing plate is drawn once and never changes, so keep the first
-    // good measurement of it as the reference width.
-    let plate = entry && entry.plateWidth;
-    if (!(plate > 0)) {
-      plate = hpDrawnWidth(parts.plate);
-      if (entry && plate > 0) entry.plateWidth = plate;
-    }
+    // Read both siblings in the same local coordinate space. Do not retain a
+    // width across rebuilt graphics or changes to the reference's local scale.
+    const plate = hpDrawnWidth(parts.plate);
     const fill = hpDrawnWidth(parts.fill);
     if (!(plate > 0) || fill == null || !(fill >= 0)) return null;
     const pct = (fill / plate) * 100;
