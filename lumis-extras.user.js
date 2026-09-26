@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.22
+// @version      1.0.23
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -29,6 +29,14 @@
  *      Lumi's — if you are working on this and think a change earns it, ask.
  *      Default to leaving it alone.
  *   y  everything else: features, fixes, extra gradients, copy tweaks.
+ *
+ * 1.0.23 removes the Customization category. mope is adding HUD customization
+ * of its own, and two systems moving the same elements would fight, so the
+ * drag-to-position preview, the "Show on screen" switches and the separate
+ * game stats are gone, along with everything they stored. The script no
+ * longer moves or hides any of mope's HUD; the party list and the HP bar
+ * still sit at their usual anchors. __lumiLayoutDebug() and
+ * __lumiStatsDebug() went with them.
  *
  * 1.0.22 reads party health from the current player's server health value.
  * The visual fallback accounts for the fill's local scale, including when
@@ -2999,7 +3007,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.22';
+    return '1.0.23';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -3096,6 +3104,14 @@
         if (typeof GM_setValue === 'function') GM_setValue(key, value);
       } catch (e) { /* ignore */ }
       try { localStorage.setItem('maut:' + key, JSON.stringify(value)); } catch (e) { /* ignore */ }
+    },
+    // For settings that no longer exist. Both stores again, for the same
+    // reason as set(): a key left behind in either one is still a leftover.
+    remove(key) {
+      try {
+        if (typeof GM_deleteValue === 'function') GM_deleteValue(key);
+      } catch (e) { /* ignore */ }
+      try { localStorage.removeItem('maut:' + key); } catch (e) { /* ignore */ }
     },
   };
 
@@ -3222,14 +3238,6 @@
     // duel of your own, so neither costs anything in an ordinary game.
     arenaFocus: !!store.get('arenaFocus', false),
     biteIndicator: !!store.get('biteIndicator', false),
-    // 1.30.0. mope's FPS/ping/players block, redrawn as three independent
-    // figures. Off by default: it replaces something the game already draws,
-    // which is a bigger thing to do to somebody than adding an overlay.
-    gameStats: !!store.get('gameStats', false),
-    statsHidden: (typeof store.get('statsHidden', null) === 'object' && store.get('statsHidden', null)) || {},
-    statsColor: (typeof store.get('statsColor', null) === 'object' && store.get('statsColor', null)) || {},
-    // 1.30.0. id -> true for HUD pieces the player has hidden.
-    layoutHidden: (typeof store.get('layoutHidden', null) === 'object' && store.get('layoutHidden', null)) || {},
     // Stored as the raw rate rather than a step index, for the same reason the
     // zoom level is: changing TURN_STEP later must not reinterpret it.
     turnSpeedValue: normalizeTurnSpeed(store.get('turnSpeedValue', TURN_NEUTRAL)),
@@ -3563,1206 +3571,54 @@
 
   function dbg(...args) { if (settings.debug) console.log(TAG, ...args); }
 
-  // ------------------------------------------------------- the layout registry
+  // ------------------------------------------------------- overlay placement
   //
-  // Where every movable thing on screen lives, and the one place that decides
-  // where it goes.
+  // Where the party list and the HP bar are put on screen. Each works out its
+  // own anchor — the list hangs under #leaderboard, the bar sits above the
+  // ability cards — and these three helpers are the part they share.
   //
-  // Before this, seven positioning systems were written out longhand in seven
-  // places: find a host, make a layer, measure an anchor, refuse if the anchor
-  // is not real yet, compute a gap in dvmin, round to whole pixels, and write
-  // the result without dirtying layout for nothing. Three of them tracked a
-  // mope element (party list -> #leaderboard, HP bar -> the ability cards,
-  // cooldown badges -> each button), two sat at a fixed point on the viewport
-  // (party chat, the extras button), and two moved mope's OWN elements. The
-  // three that track were the same function written three times, with three
-  // different literals for "this box has not laid out yet" (> 0, > 8, < 8).
+  // 1.0.23 removed the Customization category and everything behind it: the
+  // drag-to-position preview, the "Show on screen" switches that hid mope's
+  // own HUD pieces, and the separate game stats. mope is adding HUD
+  // customization of its own, and two systems moving the same elements would
+  // fight. So nothing here moves or hides anything of mope's any more; it only
+  // places what this script draws, at the anchor each feature chose.
   //
-  // Unifying them saves almost nothing on its own - about fifteen lines. It is
-  // worth doing because of what comes NEXT: drag-to-position needs pointer
-  // handling, clamping, a unit conversion, persistence and a reset, and
-  // written once here rather than once per overlay that is the difference
-  // between roughly 280 lines and roughly 900.
-  //
-  // Two things are deliberately NOT in here:
-  //
-  // - The ability cooldown badges. They are glued to the centre of a button
-  //   that mope itself positions on a transform arc, so the only thing a user
-  //   could customise is an OFFSET from that button, which is not a position
-  //   on a screen and does not belong in a layout preview. They still route
-  //   their style writes through layoutStyle() below.
-  // - The extras button. It only ever shows on the MENU, and this is an
-  //   in-game HUD layout.
-  //
-  // Positions are stored in dvmin - hundredths of the shorter viewport axis -
-  // which is the unit mope sizes its own HUD in. Pixels would be a position
-  // that is only correct on the monitor it was dragged on, and would move
-  // relative to everything around it the moment the window was resized.
-
-  const LAYOUT_POS_KEY = 'layoutPos';     // id -> {x, y} in dvmin, user-chosen
-  const LAYOUT_SEEN_KEY = 'layoutSeen';   // id -> {x, y, w, h} in dvmin, measured
+  // Sizes are in dvmin — hundredths of the shorter viewport axis — which is
+  // the unit mope sizes its own HUD in.
 
   function layoutVmin() {
     return Math.max(1, Math.min(innerWidth, innerHeight) / 100);
   }
 
-  const layout = {
-    // id -> descriptor. Registration order is the order the preview draws them.
-    entries: new Map(),
-    order: [],
-    // Where the user put things. No entry for an id means "leave it alone".
-    pos: {},
-    // Where things naturally sit, measured in a real game and remembered so
-    // the preview is honest on the MENU too, where none of these elements
-    // exist to be measured. Persisted, because it is per screen and per player.
-    seen: {},
-    // Measuring costs a layout flush, so it only happens while somebody is
-    // actually looking at the preview.
-    watching: false,
-    // Set when a mope-owned element's rule needs re-writing.
-    mopeDirty: true,
-  };
-
-  function layoutLoad() {
-    const pos = store.get(LAYOUT_POS_KEY, null);
-    if (pos && typeof pos === 'object') {
-      for (const [id, p] of Object.entries(pos)) {
-        if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) {
-          layout.pos[id] = {x: p.x, y: p.y};
-        }
-      }
-    }
-    const seen = store.get(LAYOUT_SEEN_KEY, null);
-    if (seen && typeof seen === 'object') {
-      for (const [id, r] of Object.entries(seen)) {
-        if (r && Number.isFinite(r.x) && Number.isFinite(r.y)) {
-          layout.seen[id] = {x: r.x, y: r.y, w: r.w || 0, h: r.h || 0};
-        }
-      }
-    }
-    // 1.29.0. Anything 1.27/1.28 measured for the minimap was measured off
-    // `#mapContainer`, which is the settings buttons and an empty placeholder
-    // rather than the map — the bug this release fixes. The stored number is
-    // not stale, it is wrong about a different element, so it is dropped
-    // rather than kept and slowly corrected. A saved POSITION is left alone:
-    // that is still where the player asked for the map to go.
-    if (layout.seen.map && !store.get('layoutMapFixed', false)) {
-      delete layout.seen.map;
-      store.set(LAYOUT_SEEN_KEY, layout.seen);
-      store.set('layoutMapFixed', true);
-    }
-    // 1.30.0. Party chat is no longer movable, so a position stored for it by
-    // 1.27-1.29 has nothing left to read it and would sit in storage for ever.
-    // Dropped rather than ignored: the entry is gone, so this is not a setting
-    // any more, it is a leftover.
-    if (layout.pos.partyChat) {
-      delete layout.pos.partyChat;
-      layoutSave();
-    }
-  }
-  layoutLoad();
-
-  // A movable thing.
-  //
-  //   id        stable key; it is what gets persisted, so it must not change
-  //   label     what the preview calls it
-  //   hint      key into QOLC_HINTS for the panel's description bar
-  //   kind      'ours' - an overlay this script draws and positions
-  //             'mope' - one of the game's own elements, moved by a rule in
-  //                      our stylesheet reading a custom property
-  //   sel       (mope) the selector that rule matches
-  //   fallback  {x, y, w, h} in dvmin, used by the preview only until the real
-  //             thing has been measured once
-  //   on()      whether the feature that draws it is switched on; a chip for
-  //             something switched off is still draggable, drawn faded
-  function layoutRegister(desc) {
-    layout.entries.set(desc.id, desc);
-    layout.order.push(desc.id);
-  }
-
-  function layoutPosOf(id) {
-    const p = layout.pos[id];
-    return p && Number.isFinite(p.x) && Number.isFinite(p.y) ? p : null;
-  }
-
-  function layoutSave() {
-    store.set(LAYOUT_POS_KEY, layout.pos);
-  }
-
-  // Apply a position without committing it. A drag emits one of these per
-  // pointermove — up to a hundred a second — and layoutSave() is a synchronous
-  // GM_setValue PLUS a JSON.stringify and a localStorage write, which is not
-  // something to do at pointer rate on a slow disk or a phone. The commit
-  // happens once, when the pointer is let go.
-  function layoutSetPosLive(id, x, y) {
-    layout.pos[id] = {x, y};
-    layout.mopeDirty = true;
-  }
-
-  function layoutSetPos(id, x, y) {
-    layoutSetPosLive(id, x, y);
-    layoutSave();
-  }
-
-  function layoutClearPos(id) {
-    if (!(id in layout.pos)) return;
-    delete layout.pos[id];
-    layout.mopeDirty = true;
-    layoutSave();
-    // A mope element that is no longer being moved has to have its override
-    // taken off, or it stays where it was dragged with nothing driving it.
-    layoutSyncMope();
-  }
-
-  function layoutResetAll() {
-    layout.pos = {};
-    layout.mopeDirty = true;
-    layoutSave();
-    layoutSyncMope();
-  }
-
   // Style writes are compared against the current value first: these run
-  // several times a second but the boxes only move when the HUD is resized or
-  // somebody drags one, and a redundant style write dirties layout for free.
-  //
-  // This is cdSetStyle() from the cooldown feature, generalised - that one was
-  // right, and the other four sites each wrote the same comparison out longhand.
+  // several times a second but the boxes only move when the HUD is resized,
+  // and a redundant style write dirties layout for free.
   function layoutStyle(el, prop, value) {
     if (el.style[prop] !== value) el.style[prop] = value;
   }
 
-  // What a `position: fixed` element on THIS page actually answers to.
-  //
-  // 1.30.0, and it is the fix for the bug that made the four ability buttons
-  // vanish the moment they were dragged.
-  //
-  // `fixed` is only relative to the viewport while no ancestor carries a
-  // transform, filter, perspective, containment or a will-change promising
-  // one. mope's ability wheel carries `transform: scale(var(--ability-scale))`,
-  // so a fixed child of it is positioned inside the WHEEL — a box roughly
-  // 17dvmin square in the corner — and a coordinate of 600px put the button a
-  // long way outside it. Nothing was broken; it was exactly where it had been
-  // told to go, which was off the screen.
-  //
-  // This walks up for the real containing block and returns its screen origin
-  // and its scale, so a viewport coordinate can be converted into the space
-  // the element is actually laid out in. Returns null for the ordinary case,
-  // where the viewport IS the containing block and nothing needs converting.
-  //
-  // The scale is measured — rendered box against layout box — rather than
-  // parsed out of the transform matrix, so a rotation or a nested pair of
-  // scales does not have to be understood to be handled.
-  function layoutFixedFrame(el) {
-    let node = el && el.parentElement;
-    while (node && node !== document.documentElement) {
-      let cs = null;
-      try { cs = getComputedStyle(node); } catch (e) { return null; }
-      const holds = cs && (
-        (cs.transform && cs.transform !== 'none') ||
-        (cs.filter && cs.filter !== 'none') ||
-        (cs.perspective && cs.perspective !== 'none') ||
-        (cs.willChange && /transform|filter|perspective/.test(cs.willChange)) ||
-        (cs.contain && /paint|layout|strict|content/.test(cs.contain)));
-      if (holds) {
-        const rect = node.getBoundingClientRect();
-        const sx = node.offsetWidth > 0 ? rect.width / node.offsetWidth : 1;
-        const sy = node.offsetHeight > 0 ? rect.height / node.offsetHeight : 1;
-        return {
-          left: rect.left, top: rect.top,
-          sx: sx > 0.01 ? sx : 1,
-          sy: sy > 0.01 ? sy : 1,
-          by: node,
-        };
-      }
-      node = node.parentElement;
-    }
-    return null;
-  }
-
-  // Keep a box on the screen, in px. A position saved on a wide monitor and
-  // reopened on a narrow one would otherwise put something off the edge with
-  // no way to reach it except the reset button.
-  function layoutClamp(px, size, extent) {
-    const room = Math.max(0, extent - size);
-    return Math.max(0, Math.min(px, room));
-  }
-
-  // Remember where something naturally sits, so the preview can draw it on the
-  // menu, where none of these elements exist to be measured.
-  function layoutNoteRect(id, rect, force) {
-    if ((!force && !layout.watching) || !rect) return;
-    if (!(rect.width > 0) || !(rect.height > 0)) return;
-    const vmin = layoutVmin();
-    const next = {
-      x: rect.left / vmin, y: rect.top / vmin,
-      w: rect.width / vmin, h: rect.height / vmin,
-    };
-    const prev = layout.seen[id];
-    // Half-dvmin changes only. These are measured from a live game where a
-    // sub-pixel wobble is normal, and writing to GM storage on every frame of
-    // it would be absurd.
-    if (prev && Math.abs(prev.x - next.x) < 0.5 && Math.abs(prev.y - next.y) < 0.5 &&
-        Math.abs(prev.w - next.w) < 0.5 && Math.abs(prev.h - next.h) < 0.5) return;
-    layout.seen[id] = next;
-    store.set(LAYOUT_SEEN_KEY, layout.seen);
-  }
-
-  // What the preview should draw for one entry, in dvmin: the position the
-  // user chose if there is one, otherwise the last real measurement, otherwise
-  // the rough default the entry was registered with.
-  function layoutPreviewRect(id) {
-    const desc = layout.entries.get(id);
-    if (!desc) return null;
-    const seen = layout.seen[id];
-    const base = seen || desc.fallback;
-    if (!base) return null;
-    const pos = layoutPosOf(id);
-    return {
-      x: pos ? pos.x : base.x,
-      y: pos ? pos.y : base.y,
-      w: base.w || 10,
-      h: base.h || 4,
-      moved: !!pos,
-    };
-  }
-
-  // Place one of OUR overlays.
-  //
-  // `anchored` is the placement the feature worked out for itself - the same
-  // {left, top} it used to write directly - and it is what gets used until the
-  // user drags that overlay somewhere. Returns the placement actually used, or
-  // null when there is nothing to place against, which is the feature's signal
-  // to hide rather than to guess.
-  function layoutPlace(id, el, anchored) {
-    const free = layoutPosOf(id);
-    let left, top;
-    if (free) {
-      const vmin = layoutVmin();
-      // offsetWidth/Height rather than a rect: this is our own overlay, it
-      // carries no transform, and the layout box is the thing being clamped.
-      left = layoutClamp(free.x * vmin, el.offsetWidth || 0, innerWidth);
-      top = layoutClamp(free.y * vmin, el.offsetHeight || 0, innerHeight);
-    } else {
-      if (!anchored) return null;
-      left = anchored.left;
-      top = anchored.top;
-    }
-    left = Math.round(left);
-    top = Math.round(top);
+  // Place one of OUR overlays at the {left, top} its feature worked out.
+  // Returns the placement used, or null when there is nothing to place
+  // against, which is the feature's signal to hide rather than to guess.
+  function layoutPlace(el, anchored) {
+    if (!anchored) return null;
+    const left = Math.round(anchored.left);
+    const top = Math.round(anchored.top);
     layoutStyle(el, 'left', left + 'px');
     layoutStyle(el, 'top', top + 'px');
     return {left, top};
   }
 
-  // Measure everything that is currently on screen.
-  //
-  // The preview has to be able to draw a HUD that is not in front of it — the
-  // panel is usually opened from the MENU, where none of these elements exist
-  // — so the real geometry is measured in a game and remembered. This is the
-  // one place that costs a layout flush, so it runs in exactly two situations:
-  // once a few seconds into each game, and continuously while somebody has the
-  // preview open and is dragging things around it.
-  function layoutSampleAll() {
-    for (const id of layout.order) {
-      const desc = layout.entries.get(id);
-      if (!desc || typeof desc.node !== 'function') continue;
-      let el = null;
-      try { el = desc.node(); } catch (e) { /* feature not built yet */ }
-      if (!el || !el.isConnected) continue;
-      const rect = el.getBoundingClientRect();
-      // A hidden overlay measures zero, and zero is not where it lives - the
-      // last real reading is a better answer than an origin-corner box.
-      if (!(rect.width > 0) || !(rect.height > 0)) continue;
-      layoutNoteRect(id, rect, true);
-    }
+  // Everything Customization stored. Nothing reads these any more, so they
+  // are dropped rather than left in storage for ever — the same treatment
+  // 1.30.0 gave the party-chat position when that stopped being movable.
+  // Removing a key that is already gone costs nothing, so this simply runs on
+  // every load rather than keeping a flag to say it has run.
+  for (const key of ['layoutPos', 'layoutSeen', 'layoutHidden', 'layoutMapFixed',
+    'gameStats', 'statsHidden', 'statsColor']) {
+    store.remove(key);
   }
-
-  // ------------------------------------------------- mope's own elements
-  //
-  // The original assessment of item 7 put these in a group that "cannot join
-  // and should not", on the grounds that Svelte rebuilds the nodes. That is
-  // true of the NODES and irrelevant to the RULE: the rule lives in our own
-  // stylesheet and matches whatever element is there, and the coordinates live
-  // as custom properties on <html>, which Svelte never touches. Rebuilding
-  // #leaderboard hands the new node the same rule and the same numbers, with
-  // nothing to re-apply and no rebuild to race.
-  //
-  // What genuinely cannot join is anything mope positions from JS every frame
-  // - the ability buttons on their transform arc - and anything drawn into the
-  // canvas rather than laid out in the DOM.
-  //
-  // One trap survives from the arena HUD move, and it is the same trap:
-  // `fixed` answers to a transformed ancestor rather than to the viewport.
-  // Where each element actually landed is measured back by __lumiLayoutDebug()
-  // rather than assumed.
-  function layoutSyncMope() {
-    const root = document.documentElement;
-    if (!root) return;
-    const vmin = layoutVmin();
-    for (const id of layout.order) {
-      const desc = layout.entries.get(id);
-      if (!desc || desc.kind !== 'mope') continue;
-      const pos = layoutPosOf(id);
-      const cls = 'qolc-lay-' + id;
-      if (!pos || !settings.masterEnabled) {
-        root.classList.remove(cls);
-        continue;
-      }
-      const el = document.querySelector(desc.sel);
-      const left = Math.round(layoutClamp(pos.x * vmin, el ? el.offsetWidth : 0, innerWidth));
-      const top = Math.round(layoutClamp(pos.y * vmin, el ? el.offsetHeight : 0, innerHeight));
-      // Converted into whatever space this element's `fixed` actually answers
-      // to. For everything hanging off the viewport that is the identity and
-      // costs one null check; for the ability buttons, whose wheel is scaled,
-      // it is the difference between landing where you dropped them and
-      // landing outside the screen. Rounded AFTER the conversion, so a scale
-      // of 0.85 does not accumulate a rounding error into the division.
-      const frame = el ? layoutFixedFrame(el) : null;
-      const localX = frame ? Math.round((left - frame.left) / frame.sx) : left;
-      const localY = frame ? Math.round((top - frame.top) / frame.sy) : top;
-      root.style.setProperty('--qolc-lay-' + id + '-x', localX + 'px');
-      root.style.setProperty('--qolc-lay-' + id + '-y', localY + 'px');
-      root.classList.add(cls);
-    }
-    layout.mopeDirty = false;
-  }
-
-  // A VIEWPORT CHANGE INVALIDATES EVERY MOPE OVERRIDE (1.0.10).
-  //
-  // Stored positions are dvmin, but what is written onto mope's elements is
-  // PIXELS, resolved once and then left alone until something marks the
-  // registry dirty. Only three things ever did — a drag, a reset, and the
-  // menu/game transition — so resizing the window mid-game (or going
-  // fullscreen, or changing browser zoom) left every dragged element at the
-  // old viewport's pixels until the player next died back to the menu. After a
-  // shrink that includes sitting outside the window entirely, which is the
-  // exact case layoutClamp() exists to prevent and could not, because nothing
-  // asked it to run again.
-  //
-  // A listener rather than a per-tick size comparison: it fires only when the
-  // answer actually changed, and the handler is one boolean assignment, so a
-  // continuous drag-resize costs nothing measurable. The 250ms pacer does the
-  // work on its next tick, which also coalesces a burst of resize events into
-  // one re-place. `resize` covers fullscreen and orientation changes too.
-  PAGE.addEventListener('resize', () => { layout.mopeDirty = true; }, {passive: true});
-
-  // The HUD is not finished laying itself out the instant a game starts, so
-  // the one-shot sample waits for it. Long enough that the ability cards have
-  // arrived and the leaderboard has names in it; short enough that opening the
-  // panel a few seconds in already has real numbers behind the preview.
-  const LAYOUT_SAMPLE_DELAY_MS = 2500;
-
-  // Runs on the script's 250ms pacer. Free when nothing has moved and nobody
-  // is looking: the class and the two custom properties are already right, so
-  // the whole cost is a loop over six ids, and even that is skipped unless
-  // something is dirty.
-  function layoutTick(now) {
-    // Cheap enough to keep honest: twelve class comparisons, and a write only
-    // when something actually changed. Runs unconditionally so the master
-    // switch putting everything back does not wait for the panel to be opened.
-    layoutApplyHidden();
-    // "Somebody is looking at the preview" is worked out here rather than
-    // pushed in from the panel, because there are several ways for the panel
-    // to go away — the close button, returning to the menu, the N hotkey — and
-    // one of them forgetting to say so would leave this measuring forever.
-    layout.watching = !!(extras && extras.current === 'layout' &&
-      extras.panel && extras.panel.style.display === 'block');
-    if (layout.mopeDirty || layout.watching) layoutSyncMope();
-    if (layout.watching) {
-      layoutSampleAll();
-      // 1.30.0: layoutSizeStage() is NOT called here any more.
-      //
-      // It collapses the stage to measure the pane, and doing that four times
-      // a second while somebody is scrolling the category is what produced the
-      // stutter and the scroll snapping backwards. Nothing it depends on
-      // changes on a timer: it is called when the category opens, when Expand
-      // is pressed, and on a window resize. That is the complete list of
-      // things that can change the answer.
-      layoutRefreshPreview();
-      return;
-    }
-    // One measurement pass per game, and none at all on the menu — where there
-    // would be nothing to measure anyway.
-    if (prevMenuVisible !== false) {
-      layout.sampleAt = 0;
-      layout.sampled = false;
-      return;
-    }
-    if (!layout.sampleAt) { layout.sampleAt = now; return; }
-    if (layout.sampled || now - layout.sampleAt < LAYOUT_SAMPLE_DELAY_MS) return;
-    layout.sampled = true;
-    layoutSampleAll();
-  }
-
-
-
-  // ------------------------------------------------------- the three stats
-  //
-  // mope draws FPS, ping and the server's player count inside one `#gameStats`
-  // block, as bare divs in `.gameStatsRow` wrappers. 1.29.0 registered that
-  // whole block as a single movable thing, which is why the Customization chip
-  // said "FPS & ping" and could only ever move all three together.
-  //
-  // WHY THESE ARE OUR OWN ELEMENTS RATHER THAN MOPE'S.
-  //
-  // The obvious implementation is to take mope's three divs and position each
-  // one. It was rejected for three reasons, in order of how much they matter:
-  //
-  //   1. There is nothing stable to hold on to. The divs carry no id, no
-  //      class of their own and no attribute saying which figure they hold —
-  //      they are `<div>` inside `<div class="gameStatsRow">`, and which is
-  //      which is only knowable from the text inside them.
-  //   2. Svelte rebuilds them. The whole block is re-rendered when the HUD
-  //      changes, so a reference kept to "the second div" is a reference to a
-  //      node that will be replaced, and inline styles written onto it go with
-  //      it. That is the same trap the layout registry's CSS-variable route
-  //      exists to avoid, but a variable route needs a selector, and see (1).
-  //   3. Colour is per-element. Recolouring one figure and not the others
-  //      means a rule per figure, which again needs a selector per figure.
-  //
-  // So mope's block is hidden and three of our own are drawn instead. They are
-  // ordinary overlays this script owns: they can be positioned by the registry
-  // like anything else it owns, coloured individually, and hidden individually,
-  // with no dependence on mope's DOM beyond READING three numbers out of it.
-  //
-  // The reading is by text, and the user has accepted that this makes the
-  // feature English-only for now: a translated build prints "Bilder/s" or
-  // similar and the labels stop matching. It fails SAFE — an unrecognised
-  // figure leaves that stat blank rather than putting the wrong number in it,
-  // and __lumiStatsDebug() says which of the three were recognised.
-
-  const STAT_IDS = ['fps', 'ping', 'players'];
-
-  // Five presets and a free choice. Picked to be legible on grass, sand, snow
-  // and lava rather than to be pretty in the panel: white and black are the
-  // two that never fail, and the three colours are the ones mope's own HUD
-  // already uses for good news, caution and information.
-  // Six common colours and a free choice. 1.30.0 replaced the first set, which
-  // was five tints borrowed from this script's own palette — teal, mint,
-  // amber — and read as "shades of the panel" rather than as a colour picker.
-  // These are the six a person names when asked to name a colour, which is the
-  // right vocabulary for a control whose whole job is "make it the colour I
-  // want". Anything else is one click away on the swatch beside them.
-  const STAT_COLORS = [
-    ['#ffffff', 'White'],
-    ['#000000', 'Black'],
-    ['#ff3b30', 'Red'],
-    ['#ffcc00', 'Yellow'],
-    ['#34c759', 'Green'],
-    ['#3b9dff', 'Blue'],
-  ];
-  const STAT_DEFAULT_COLOR = '#ffffff';
-
-  // `hint` is carried here so the panel row and the preview chip for the same
-  // figure cannot drift onto two different descriptions.
-  //
-  // The matchers look for the WORD and require a number somewhere in the same
-  // div, in either order. The first version required the number FIRST —
-  // `/(\d[\d.]*)\s*fps/` — which is how "Ping: 28ms" matched and "FPS: 144"
-  // did not, and why FPS was the one figure that never appeared. mope renders
-  // these as `${label}: ${value}`:
-  //
-  //     B(m, `${fpsLabel}: ${Io.fps}`)                    ->  "FPS: 144"
-  //     B(g, `${pingLabel}: ${Io.ping}${msLabel}`)        ->  "Ping: 28ms"
-  //
-  // Order within the array matters: a div is offered to each in turn and taken
-  // by the first that claims it, so `player` is tested before the ping matcher
-  // — "ms" is a short token and this is the cheapest way to keep it from
-  // claiming something that merely contains it.
-  const STAT_DEFS = [
-    {id: 'fps', label: 'FPS', hint: 'layStatFps', match: /fps/i},
-    {id: 'players', label: 'Players', hint: 'layStatPlayers', match: /player/i},
-    {id: 'ping', label: 'Ping', hint: 'layStatPing', match: /ping|\bms\b|\dms/i},
-  ];
-  // Every figure must also contain a number. A label with no value is mope
-  // mid-render, not a reading.
-  const STAT_HAS_NUMBER = /\d/;
-
-  const stats = {
-    layer: null,
-    // id -> {el, shownText, shownColor}
-    parts: new Map(),
-    read: {fps: '', ping: '', players: ''},
-    seen: {fps: false, ping: false, players: false},
-    at: 0,
-  };
-
-  function statsOn() {
-    return settings.masterEnabled && settings.gameStats;
-  }
-
-  function statShown(id) {
-    const off = settings.statsHidden || {};
-    return !off[id];
-  }
-
-  function statColor(id) {
-    const map = settings.statsColor || {};
-    const c = map[id];
-    return typeof c === 'string' && /^#[0-9a-f]{3,8}$/i.test(c) ? c : STAT_DEFAULT_COLOR;
-  }
-
-  function statsSetHidden(id, hidden) {
-    const off = Object.assign({}, settings.statsHidden || {});
-    if (hidden) off[id] = true; else delete off[id];
-    settings.statsHidden = off;
-    store.set('statsHidden', off);
-  }
-
-  function statsSetColor(id, color) {
-    const map = Object.assign({}, settings.statsColor || {});
-    map[id] = color;
-    settings.statsColor = map;
-    store.set('statsColor', map);
-    const part = stats.parts.get(id);
-    if (part) { part.el.style.color = color; part.shownColor = color; }
-  }
-
-  // Read the three figures out of mope's block.
-  //
-  // Every leaf div under #gameStats is offered to every pattern, rather than
-  // position being trusted. mope's own markup is two rows, one of which holds
-  // two figures and one of which holds one, and which row holds what has
-  // already changed once between the templates in the bundle. Matching on the
-  // UNIT — fps, ms, player — is the part that is actually stable, and a div
-  // that matches nothing is simply not one of ours.
-  function statsRead() {
-    const host = document.getElementById('gameStats');
-    stats.seen.fps = stats.seen.ping = stats.seen.players = false;
-    if (!host) return false;
-    const kids = host.querySelectorAll('div');
-    for (const kid of kids) {
-      if (kid.children.length) continue;         // rows, not figures
-      const text = (kid.textContent || '').trim();
-      if (!text || !STAT_HAS_NUMBER.test(text)) continue;
-      for (const def of STAT_DEFS) {
-        if (stats.seen[def.id]) continue;
-        if (!def.match.test(text)) continue;
-        stats.seen[def.id] = true;
-        stats.read[def.id] = text;
-        break;
-      }
-    }
-    return stats.seen.fps || stats.seen.ping || stats.seen.players;
-  }
-
-  function statsLayer() {
-    let layer = stats.layer;
-    if (layer && layer.isConnected) return layer;
-    const host = document.body || document.documentElement;
-    if (!host) return null;
-    layer = document.getElementById('qolc-stats');
-    if (!layer) {
-      layer = document.createElement('div');
-      layer.id = 'qolc-stats';
-      host.appendChild(layer);
-    }
-    stats.layer = layer;
-    stats.parts.clear();
-    return layer;
-  }
-
-  function statsPart(id) {
-    let part = stats.parts.get(id);
-    if (part && part.el.isConnected) return part;
-    const layer = statsLayer();
-    if (!layer) return null;
-    const el = document.createElement('div');
-    el.className = 'qolc-stat';
-    el.dataset.stat = id;
-    layer.appendChild(el);
-    part = {el, shownText: null, shownColor: null};
-    stats.parts.set(id, part);
-    return part;
-  }
-
-  function statsHideAll() {
-    for (const part of stats.parts.values()) {
-      if (part.el.style.display !== 'none') part.el.style.display = 'none';
-    }
-    document.documentElement.classList.remove('qolc-stats-on');
-  }
-
-  const STATS_TICK_MS = 250;
-
-  function statsTick(now) {
-    if (!statsOn() || prevMenuVisible !== false || document.hidden) {
-      statsHideAll();
-      return;
-    }
-    if (now - stats.at < STATS_TICK_MS) return;
-    stats.at = now;
-    if (!statsRead()) { statsHideAll(); return; }
-    // mope's own block comes off only once at least one figure has been read
-    // out of it. Hiding it first and failing to read would leave the player
-    // with no figures at all rather than with mope's.
-    document.documentElement.classList.add('qolc-stats-on');
-
-    // Where mope has its own block right now, which is where ours goes. Read
-    // before the placement loop so all three figures agree within a frame.
-    statsMeasureHome();
-
-    for (const def of STAT_DEFS) {
-      const part = statsPart(def.id);
-      if (!part) continue;
-      const live = stats.seen[def.id] && statShown(def.id);
-      if (!live) {
-        if (part.el.style.display !== 'none') part.el.style.display = 'none';
-        continue;
-      }
-      if (part.el.style.display !== 'block') part.el.style.display = 'block';
-      const text = stats.read[def.id];
-      if (part.shownText !== text) { part.shownText = text; part.el.textContent = text; }
-      const colour = statColor(def.id);
-      if (part.shownColor !== colour) { part.shownColor = colour; part.el.style.color = colour; }
-      // Placed through the registry like every other overlay this script owns,
-      // so it is dragged, clamped, stored in dvmin and reset by exactly the
-      // same code as the party list and the HP bar.
-      layoutPlace('stat' + def.id, part.el, statsAnchor(def.id));
-    }
-  }
-
-  // Where a stat sits before anybody moves it.
-  //
-  // 1.0.0 moves the home position out of the top-left corner. Stacked there it
-  // sat straight on top of mope's own leaderboard, which is unreadable and was
-  // the first thing anybody saw on turning the feature on.
-  //
-  // 1.0.1 stops describing that position and MEASURES it instead. The home is
-  // now wherever mope's own #gameStats block currently is, so the three
-  // figures sit where the player already expects to find them and, crucially,
-  // FOLLOW that block when it moves. The arena is the case that forced this:
-  // the sky rearranges mope's HUD corner and the bundled block travels with
-  // it, while three figures pinned to constants stayed behind under a minimap
-  // that is not being drawn any more.
-  //
-  // Measuring rather than mirroring the arena rule is deliberate. The rule is
-  // ours and the block is mope's, and only one of those is guaranteed to still
-  // be true next release — whereas "wherever that element actually is" cannot
-  // go out of date, and is right whether the corner was moved by us, by mope,
-  // or by nobody.
-  //
-  // The block stays MEASURABLE while it is replaced: statsSync hides it with
-  // `visibility: hidden`, which keeps it laid out. `display: none` would have
-  // made this impossible, which is worth knowing before anyone "tidies" that
-  // rule up. Anchored on its RIGHT edge, because mope right-aligns these rows
-  // and the readings change width as the numbers do.
-  //
-  // Throttled to STATS_HOME_MS: getBoundingClientRect forces a layout flush,
-  // and this runs inside the per-frame stats pass. Half a second is far below
-  // anything a person notices a HUD taking to settle, and the arena transition
-  // is not a thing that happens twice in a second.
-  //
-  // The constants below are the FALLBACK, used before the first successful
-  // measurement and any time the block cannot be found: mope's minimap is 23
-  // by 21dvmin about 1dvmin in from the top-right, so this hangs the figures
-  // just under it. Positions are returned in PIXELS — layoutPlace uses an
-  // anchor verbatim — which is what lets both paths measure back from the
-  // right edge. A stored position still wins over all of it.
-  const STATS_MAP_RIGHT  = 1;      // minimap's inset from the right, dvmin
-  const STATS_MAP_BOTTOM = 22.1;   // its top (1.1) plus its height (21)
-  const STATS_BLOCK_W    = 17.8;   // widest of the two lines, dvmin
-  const STATS_PING_DX    = 8;      // FPS -> Ping on line one, dvmin
-  const STATS_LINE_DY    = 3.2;    // line one -> line two, dvmin
-  const STATS_HOME_MS    = 500;    // how often mope's block is re-measured
-
-  const statsHome = {at: 0, right: -1, top: -1};
-
-  function statsMeasureHome() {
-    const now = performance.now();
-    if (statsHome.at && now - statsHome.at < STATS_HOME_MS) return;
-    statsHome.at = now;
-    const el = document.getElementById('gameStats');
-    if (!el) { statsHome.right = -1; return; }
-    try {
-      const r = el.getBoundingClientRect();
-      // A zero box is mope mid-render, or the block genuinely gone. Either way
-      // it is not an answer, and the previous one is not kept: a stale corner
-      // is worse than the fallback, which is at least where the map is.
-      if (r.width > 0 && r.height > 0) { statsHome.right = r.right; statsHome.top = r.top; }
-      else statsHome.right = -1;
-    } catch (e) { statsHome.right = -1; }
-  }
-
-  function statsAnchor(id) {
-    const vmin = layoutVmin();
-    let right, top;
-    if (statsHome.right >= 0) {
-      right = statsHome.right;
-      top = statsHome.top;
-    } else {
-      right = innerWidth - STATS_MAP_RIGHT * vmin;
-      top = (STATS_MAP_BOTTOM + 2.4) * vmin;
-    }
-    const left = right - STATS_BLOCK_W * vmin;
-    if (id === 'ping')    return {left: Math.round(left + STATS_PING_DX * vmin), top: Math.round(top)};
-    if (id === 'players') return {left: Math.round(left), top: Math.round(top + STATS_LINE_DY * vmin)};
-    return {left: Math.round(left), top: Math.round(top)};
-  }
-
-  function statsDebug() {
-    const report = {
-      enabled: statsOn(),
-      mopeBlockHidden: document.documentElement.classList.contains('qolc-stats-on'),
-      // Where mope's own block was last measured, and so where ours is
-      // anchored. "fallback" means the block could not be found or had a
-      // zero box, and the figures are hanging off the minimap constants.
-      home: statsHome.right >= 0
-        ? {right: Math.round(statsHome.right), top: Math.round(statsHome.top)}
-        : "fallback (mope block not measurable)",
-    };
-    for (const def of STAT_DEFS) {
-      report[def.id] = (stats.seen[def.id] ? 'read: "' + stats.read[def.id] + '"' : 'NOT RECOGNISED') +
-        (statShown(def.id) ? '' : ' (hidden)') + ' ' + statColor(def.id);
-    }
-    console.log(TAG, 'game stats', report);
-    if (!stats.seen.fps && !stats.seen.ping && !stats.seen.players) {
-      console.log(TAG, 'None of the three were recognised. They are matched on ' +
-        'their UNITS — fps, ms, player — so a mope build in another language ' +
-        'will not match. mope\'s own block is left alone when that happens.');
-    }
-    return report;
-  }
-  try { PAGE.__lumiStatsDebug = statsDebug; }
-  catch (e) { window.__lumiStatsDebug = statsDebug; }
-
-  // ------------------------------------------------------ hiding HUD pieces
-  //
-  // 1.30.0. The registry already knows what every movable thing IS and how to
-  // reach it, so "hide it" is a second verb on the same nouns rather than a
-  // second feature. One class on <html> per hidden id, one rule each.
-  //
-  // Only mope's own elements are offered. Ours already have their own
-  // switches in the panel — a second way to turn off the party list, sitting
-  // next to the first and disagreeing with it, is worse than none.
-  //
-  // `visibility: hidden` rather than `display: none`, deliberately and for the
-  // same reason the game-stats block uses it: the element keeps contributing
-  // its size, so hiding the leaderboard does not make the things laid out
-  // around it jump into the space where it was. Hiding is meant to be a way to
-  // clean up the screen, not to rearrange it.
-  const HIDEABLE = [
-    ['leaderboard', 'Leaderboard'],
-    ['map',         'Minimap'],
-    ['stats',       'FPS & ping block'],
-    ['settingsBtn', 'Settings button'],
-    ['coins',       'Coins'],
-    ['arenaBtn',    '1v1 button'],
-    ['btnDash',     'Dash button'],
-    ['btnAbility1', 'Ability 1 button'],
-    ['btnAbility2', 'Ability 2 button'],
-    ['btnDive',     'Dive button'],
-    ['btnClimb',    'Climb button'],
-    ['btnDrop',     'Drop button'],
-  ];
-
-  function layoutHidden(id) {
-    const map = settings.layoutHidden || {};
-    return !!map[id];
-  }
-
-  function layoutSetHidden(id, hidden) {
-    const map = Object.assign({}, settings.layoutHidden || {});
-    if (hidden) map[id] = true; else delete map[id];
-    settings.layoutHidden = map;
-    store.set('layoutHidden', map);
-    layoutApplyHidden();
-    layoutRefreshPreview();
-  }
-
-  // The minimap is the odd one out: it is drawn into the canvas, so there is
-  // no element for a CSS rule to reach. Its container's own `visible` flag is
-  // the equivalent, and it is re-applied on the same tick that re-applies its
-  // position, because mope sets it too — `update()` writes
-  // `container.visible` from whether the HUD is showing.
-  function layoutApplyHidden() {
-    const root = document.documentElement;
-    if (!root) return;
-    for (const [id] of HIDEABLE) {
-      const cls = 'qolc-hide-' + id;
-      const want = settings.masterEnabled && layoutHidden(id);
-      if (root.classList.contains(cls) !== want) root.classList.toggle(cls, want);
-    }
-  }
-  // ------------------------------------------- things drawn into the canvas
-  //
-  // 1.29.0. A third kind of movable thing, and the reason it exists is a bug
-  // 1.27.0 shipped: dragging the "Minimap" chip moved the settings gear and
-  // left the map exactly where it was.
-  //
-  // `#minimap` looks like the map and is not. It is an empty div that reserves
-  // 23 by 21dvmin of layout so the HUD lays out around the map — the map
-  // itself is a Pixi container drawn into the canvas, and no DOM rule can
-  // touch it. Moving `#mapContainer` moved the real DOM inside it (the gear,
-  // the chat and zoom buttons) and the placeholder, which is precisely the
-  // half of the corner the user did not mean.
-  //
-  // So a 'pixi' entry positions a scene node instead. Three things make it
-  // different from a DOM one, and all three are why it is a separate kind
-  // rather than a flag on the existing path:
-  //
-  //   - Its coordinates are CANVAS pixels in its parent's local space, not CSS
-  //     pixels on the viewport. The conversion is the inverse of the one
-  //     partyPlaceTag() already does for name tags, and it is taken from the
-  //     same cached canvas rect so the two cannot disagree.
-  //   - Its origin is not its top-left. mope positions the minimap by its
-  //     top-RIGHT corner (`worldToMinimapPosition` returns x - sprite.width),
-  //     so the offset between the node's origin and its visible corner is
-  //     MEASURED off its own bounds rather than assumed.
-  //   - mope reasserts the position itself, inside the minimap's generate() —
-  //     on connect, on resize, on any FOV change. So unlike a CSS rule, this
-  //     has to be re-applied rather than set once.
-  const layoutPixi = {
-    // Where mope had the minimap before we moved it, so Reset all can put it
-    // back rather than leaving it adrift until the next resize.
-    home: null,
-    // The scan that finds the minimap belongs to the party feature and only
-    // runs while the party is on. A player who moved their map and never
-    // joins a party still expects it to move, so the layout path asks for the
-    // same cached container on its own account.
-    at: 0,
-    // Whether WE are the ones holding the minimap invisible. Un-hiding used to
-    // be left to mope rewriting `visible` from its own update(), which is a
-    // promise about somebody else's code; this makes the undo ours, and it is
-    // only ever true while the player has the map switched off.
-    hidMap: false,
-  };
-
-  const LAYOUT_PIXI_SCAN_MS = 500;
-
-  // Where a canvas-drawn node should sit, applied and re-applied.
-  //
-  // Runs on the frame path because that is the only place a renderer is in
-  // hand, and does nothing at all — one map lookup — unless the user has
-  // actually dragged something drawn into the canvas.
-  function layoutSyncPixi(stage, renderer, now) {
-    if (!stage || !renderer) return;
-
-    // HIDING IS DECIDED BEFORE PLACEMENT, AND INDEPENDENTLY OF IT (1.0.10).
-    //
-    // It used to be decided after, below the "no position" early return — so
-    // "Show on screen: Minimap" did nothing whatsoever unless the player had
-    // ALSO dragged the map at some point. Turning a thing off and turning a
-    // thing's position off are different questions, and the second one was
-    // answering the first. The DOM half of the hide feature has no entry for
-    // the map either (it is drawn into the canvas, so there is no element for
-    // a CSS rule to reach), which is why nothing else covered the gap.
-    //
-    // A hidden map needs no placing, so this returns rather than falling
-    // through: the only work while it is off is one comparison.
-    const hidden = settings.masterEnabled && layoutHidden('map');
-    if (hidden || layoutPixi.hidMap) {
-      const container = partyCachedMinimap(stage, now);
-      if (container && container.parent) {
-        if (hidden) {
-          if (container.visible !== false) container.visible = false;
-          layoutPixi.hidMap = true;
-        } else {
-          // Ours to undo, so undone here rather than waiting for mope's next
-          // update() to happen to rewrite the flag.
-          if (container.visible === false) container.visible = true;
-          layoutPixi.hidMap = false;
-        }
-      } else if (!hidden) {
-        layoutPixi.hidMap = false;
-      }
-      if (hidden) return;
-    }
-
-    // The master switch counts as "not placed"; it falls into the restore
-    // branch below rather than leaving the map where it was dragged.
-    const pos = settings.masterEnabled ? layoutPosOf('map') : null;
-    // 1.30.0. Putting it BACK, which 1.29.0 never did.
-    //
-    // Reset all clears the position and calls layoutSyncMope(), which skips
-    // every 'pixi' entry by definition — and this function used to return here
-    // the moment there was no position, so the minimap simply stayed where it
-    // had been dragged with nothing left driving it. mope would have fixed it
-    // eventually, on its next generate(), which means on the next resize or
-    // reconnect: not a reset, an accident waiting for one.
-    //
-    // So the position mope chose is remembered the first time it is overridden
-    // and written back the first time it is not needed.
-    if (!pos) {
-      const home = layoutPixi.home;
-      if (!home) return;
-      layoutPixi.home = null;
-      const container = partyCachedMinimap(stage, now);
-      if (container && container.parent) {
-        try { container.position.set(home.x, home.y); } catch (e) {}
-      }
-      return;
-    }
-    // Kept on the party feature's cache deliberately: two independent scans
-    // for the same container, with two independent ideas of which one it is,
-    // is exactly the kind of duplication the layout registry exists to stop.
-    const container = partyCachedMinimap(stage, now);
-    if (!container || !container.parent) return;
-    // The hide decision was made at the top of this function and returned
-    // there if it applied, so anything reaching here is a map that should be
-    // both visible and placed.
-    const screen = partyTagScreenOf(renderer, now);
-    if (!screen || !screen.rect.width || !screen.rect.height) return;
-
-    const vmin = layoutVmin();
-    // The inverse of partyPlaceTag()'s mapping: CSS pixels on the viewport
-    // back into the canvas space Pixi lays out in.
-    const toCanvasX = (css) => (css - 0) * (screen.view.w / screen.rect.width);
-    const toCanvasY = (css) => (css - 0) * (screen.view.h / screen.rect.height);
-
-    let bounds = null;
-    try { bounds = container.getBounds(); } catch (e) { return; }
-    if (!bounds || !(bounds.width > 0)) return;
-    const wt = container.worldTransform;
-    if (!wt) return;
-    // How far the node's ORIGIN is from its visible top-left corner, measured
-    // rather than assumed. For the minimap this comes out around one map width
-    // to the left, because mope hangs it off its top-right.
-    const offX = Number(bounds.x) - Number(wt.tx);
-    const offY = Number(bounds.y) - Number(wt.ty);
-    if (!Number.isFinite(offX) || !Number.isFinite(offY)) return;
-
-    // Clamped in CSS space, against the size the node actually occupies on
-    // screen, so the same reasoning as every other entry applies.
-    const cssW = bounds.width * (screen.rect.width / screen.view.w);
-    const cssH = bounds.height * (screen.rect.height / screen.view.h);
-    const left = layoutClamp(pos.x * vmin, cssW, innerWidth);
-    const top = layoutClamp(pos.y * vmin, cssH, innerHeight);
-
-    const wantX = toCanvasX(left) - offX;
-    const wantY = toCanvasY(top) - offY;
-    if (!Number.isFinite(wantX) || !Number.isFinite(wantY)) return;
-
-    let local = {x: wantX, y: wantY};
-    const parent = container.parent;
-    if (parent && typeof parent.toLocal === 'function') {
-      try { local = parent.toLocal({x: wantX, y: wantY}); } catch (e) { /* stage space */ }
-    }
-    if (!Number.isFinite(local.x) || !Number.isFinite(local.y)) return;
-    // Compared before writing, like every other placement here. mope only
-    // rewrites this inside generate(), so on an ordinary frame this is one
-    // comparison and no assignment.
-    if (Math.abs(container.position.x - local.x) > 0.5 ||
-        Math.abs(container.position.y - local.y) > 0.5) {
-      // Remembered before the first override and not after, so a later tick
-      // cannot record our own placement as the one to go back to.
-      if (!layoutPixi.home) {
-        layoutPixi.home = {x: container.position.x, y: container.position.y};
-      }
-      container.position.set(local.x, local.y);
-    }
-    if (layout.watching) {
-      layoutNoteRect('map', {left, top, width: cssW, height: cssH}, true);
-    }
-  }
-
-  // What the preview should measure for a canvas-drawn node while it is NOT
-  // being moved, so its chip starts in the right place. Same conversion, read
-  // only — this is the one thing layoutSampleAll() cannot do for a 'pixi'
-  // entry, because getBoundingClientRect() means nothing on a scene node.
-  function layoutSamplePixi(stage, renderer, now) {
-    if (!layout.watching || layoutPosOf('map')) return;
-    if (!stage || !renderer) return;
-    const container = partyCachedMinimap(stage, now);
-    if (!container || !container.parent) return;
-    const screen = partyTagScreenOf(renderer, now);
-    if (!screen || !screen.rect.width) return;
-    let bounds = null;
-    try { bounds = container.getBounds(); } catch (e) { return; }
-    if (!bounds || !(bounds.width > 0)) return;
-    const sx = screen.rect.width / screen.view.w;
-    const sy = screen.rect.height / screen.view.h;
-    layoutNoteRect('map', {
-      left: Number(bounds.x) * sx,
-      top: Number(bounds.y) * sy,
-      width: Number(bounds.width) * sx,
-      height: Number(bounds.height) * sy,
-    }, true);
-  }
-
-  function layoutPixiTick(stage, renderer, now) {
-    if (now - layoutPixi.at < LAYOUT_PIXI_SCAN_MS && !layout.watching) return;
-    layoutPixi.at = now;
-    try {
-      layoutSyncPixi(stage, renderer, now);
-      layoutSamplePixi(stage, renderer, now);
-    } catch (e) { dbg('layout: canvas placement failed —', e); }
-  }
-  // Whether an ability button is on screen AND usable.
-  //
-  // Two different "no" answers, deliberately collapsed into one: the animal
-  // does not have this ability at all (no element, or a zero-sized one), or it
-  // has it and the server has switched it off (`ha.cooldowns.<slot>.disabled`,
-  // which reaches the DOM as the button's own disabled state). Both mean "you
-  // cannot press this", which is the only thing the preview is saying.
-  function layoutButtonUsable(id) {
-    const el = document.getElementById(id);
-    if (!el) return false;
-    if (el.disabled === true || el.getAttribute('aria-disabled') === 'true') return false;
-    // A button for an ability this animal does not have is rendered but
-    // collapsed, so a zero box is the other half of the same answer.
-    return el.offsetWidth > 8 && el.offsetHeight > 8;
-  }
-
-  // ------------------------------------------------------- what is movable
-  //
-  // Registration order is preview order, and the ids are persisted, so neither
-  // an id nor its meaning can be changed later without stranding somebody's
-  // saved layout. Adding to the end is always safe.
-  //
-  // The fallbacks are ROUGH — a first-run sketch of mope's HUD so the preview
-  // has something to draw before the player has ever been in a game with this
-  // version installed. They are replaced by real measurements by
-  // layoutSampleAll() a couple of seconds into the first game, and the preview
-  // says which of the two it is showing rather than pretending the sketch is a
-  // measurement.
-  layoutRegister({
-    id: 'leaderboard', label: 'Leaderboard', hint: 'layLeaderboard', kind: 'mope',
-    sel: '#leaderboard',
-    node: () => document.getElementById('leaderboard'),
-    fallback: {x: 76, y: 2, w: 22, h: 26},
-  });
-  layoutRegister({
-    id: 'map', label: 'Minimap', hint: 'layMap', kind: 'pixi',
-    // No selector and no DOM node on purpose. 1.27.0 registered this as
-    // '#mapContainer' and the chip moved the settings gear instead of the map,
-    // because `#minimap` is an empty placeholder div and the map itself is
-    // drawn into the canvas. See layoutSyncPixi().
-    //
-    // node() is left off entirely so layoutSampleAll(), which measures with
-    // getBoundingClientRect(), skips this one — a scene node has no client
-    // rect and measuring the placeholder is what caused the bug.
-    fallback: {x: 76, y: 2, w: 23, h: 21},
-  });
-  layoutRegister({
-    // mope's block, movable as a whole — for anyone who has NOT switched the
-    // three separate figures on. The two are mutually exclusive by
-    // construction: with the feature on, this element is hidden, so its chip
-    // reads as unavailable and there is nothing to move.
-    id: 'stats', label: 'FPS & ping', hint: 'layStats', kind: 'mope',
-    sel: '#gameStats',
-    node: () => document.getElementById('gameStats'),
-    on: () => !statsOn(),
-    fallback: {x: 1.5, y: 1.5, w: 20, h: 9},
-  });
-  // The three separate figures, each an overlay of our own. Registered
-  // unconditionally so their positions persist whether or not the feature is
-  // switched on at the moment — somebody who turns it off and back on gets
-  // their layout back rather than a reset.
-  layoutRegister({
-    id: 'statfps', label: 'FPS', hint: 'layStatFps', kind: 'ours',
-    node: () => { const p = stats.parts.get('fps'); return p && p.el; },
-    on: () => statsOn() && statShown('fps'),
-    fallback: {x: 1.5, y: 1.5, w: 9, h: 3},
-  });
-  layoutRegister({
-    id: 'statping', label: 'Ping', hint: 'layStatPing', kind: 'ours',
-    node: () => { const p = stats.parts.get('ping'); return p && p.el; },
-    on: () => statsOn() && statShown('ping'),
-    fallback: {x: 1.5, y: 4.7, w: 9, h: 3},
-  });
-  layoutRegister({
-    id: 'statplayers', label: 'Players', hint: 'layStatPlayers', kind: 'ours',
-    node: () => { const p = stats.parts.get('players'); return p && p.el; },
-    on: () => statsOn() && statShown('players'),
-    fallback: {x: 1.5, y: 7.9, w: 11, h: 3},
-  });
-  layoutRegister({
-    id: 'partyList', label: 'Party list', hint: 'layPartyList', kind: 'ours',
-    node: () => party.listLayer,
-    on: () => partyListOn(),
-    fallback: {x: 76, y: 29, w: 22, h: 14},
-  });
-  layoutRegister({
-    id: 'hpBar', label: 'HP bar', hint: 'layHpBar', kind: 'ours',
-    node: () => hpBarUI.root,
-    on: () => settings.hpBar,
-    fallback: {x: 33, y: 78, w: 26, h: 5},
-  });
-  layoutRegister({
-    // The four slots of #abilityButtonsWheel, registered one at a time so each
-    // can be placed on its own. mope lays the wheel out as an arc, so dragging
-    // one out of it reflows the three left behind — that is the honest
-    // consequence of taking a button out of a layout, and it is what the
-    // player asked for.
-    //
-    // The fourth slot is SHARED: mope puts dive there for most animals, climb
-    // for tree-climbers and drop for the ones that carry. All three are
-    // registered; whichever is not on screen simply never measures, and its
-    // chip stays on the sketch and reads as unavailable.
-    id: 'btnDash', label: 'Dash', hint: 'layAbility', kind: 'mope',
-    sel: '#dashButton', node: () => document.getElementById('dashButton'),
-    on: () => layoutButtonUsable('dashButton'), redWhenOff: true,
-    fallback: {x: 62, y: 78, w: 12, h: 12},
-  });
-  layoutRegister({
-    id: 'btnAbility1', label: 'Ability 1', hint: 'layAbility', kind: 'mope',
-    sel: '#ability1Button', node: () => document.getElementById('ability1Button'),
-    on: () => layoutButtonUsable('ability1Button'), redWhenOff: true,
-    fallback: {x: 74, y: 74, w: 12, h: 12},
-  });
-  layoutRegister({
-    id: 'btnAbility2', label: 'Ability 2', hint: 'layAbility', kind: 'mope',
-    sel: '#ability2Button', node: () => document.getElementById('ability2Button'),
-    on: () => layoutButtonUsable('ability2Button'), redWhenOff: true,
-    fallback: {x: 86, y: 74, w: 12, h: 12},
-  });
-  layoutRegister({
-    // 1.29.0 registered dive, climb and drop as ONE entry, on the reasoning
-    // that they share the wheel's fourth slot. They share a slot and nothing
-    // else: they are three different buttons, an animal can have more than one
-    // of them, and tying them together meant moving dive moved climb. Three
-    // entries now, each with its own position.
-    id: 'btnDive', label: 'Dive', hint: 'layAbility', kind: 'mope',
-    sel: '#diveButton', node: () => document.getElementById('diveButton'),
-    on: () => layoutButtonUsable('diveButton'), redWhenOff: true,
-    fallback: {x: 86, y: 86, w: 12, h: 12},
-  });
-  layoutRegister({
-    id: 'btnClimb', label: 'Climb', hint: 'layAbility', kind: 'mope',
-    sel: '#climbButton', node: () => document.getElementById('climbButton'),
-    on: () => layoutButtonUsable('climbButton'), redWhenOff: true,
-    fallback: {x: 74, y: 86, w: 12, h: 12},
-  });
-  layoutRegister({
-    id: 'btnDrop', label: 'Drop', hint: 'layAbility', kind: 'mope',
-    sel: '#dropButton', node: () => document.getElementById('dropButton'),
-    on: () => layoutButtonUsable('dropButton'), redWhenOff: true,
-    fallback: {x: 62, y: 86, w: 12, h: 12},
-  });
-  layoutRegister({
-    id: 'settingsBtn', label: 'Settings', hint: 'laySettings', kind: 'mope',
-    sel: '#settingsButton2',
-    node: () => document.getElementById('settingsButton2'),
-    fallback: {x: 92, y: 24, w: 6, h: 6},
-  });
-  layoutRegister({
-    id: 'arenaBtn', label: '1v1 button', hint: 'layArenaBtn', kind: 'mope',
-    sel: '#arenaRequest',
-    node: () => document.getElementById('arenaRequest'),
-    // Only exists from tier 15, which is also when the 1v1 button appears at
-    // all. Its chip is drawn from the sketch until then, like any other
-    // element that has not been on screen yet.
-    fallback: {x: 44, y: 2, w: 12, h: 6},
-  });
-  layoutRegister({
-    id: 'coins', label: 'Coins', hint: 'layCoins', kind: 'mope',
-    // A class rather than an id — mope gives this one no id, and the wrapper
-    // is the HUDBox around the counter rather than the counter itself, so the
-    // box moves with its own background instead of leaving it behind.
-    sel: '.coinsCounterWrap',
-    node: () => document.querySelector('.coinsCounterWrap'),
-    fallback: {x: 40, y: 88, w: 14, h: 5},
-  });
-  // Party chat was registered in 1.27.0 and is deliberately NOT any more.
-  //
-  // It was the one overlay whose default position is a decision rather than an
-  // accident: the stack grows UPWARD from a fixed line above the middle of the
-  // screen, so the newest message is always nearest your own animal and the
-  // older ones stack away from it. A dragged stack loses that — it becomes a
-  // box in a corner that happens to contain chat — and there was nothing to be
-  // gained for it. partyChatPlace() stays, because a player who moved it in
-  // 1.27-1.29 has a stored position that has to be undone; see there.
 
   // ------------------------------------------------ cosmetic name-color engine
 
@@ -5651,12 +4507,6 @@
           if (stage && partyWorkNeeded() && now - lastPartyWork >= PARTY_WORK_MIN_MS) {
             lastPartyWork = now;
             try { partyTick(stage, this, now); } catch (e) { frameFailed('party', e); }
-          }
-          // The minimap is drawn into the canvas, so its placement needs a
-          // renderer and cannot ride the DOM pacer the rest of the layout
-          // registry uses. Free unless the map has actually been dragged.
-          if (stage) {
-            try { layoutPixiTick(stage, this, now); } catch (e) { frameFailed('layout', e); }
           }
           // Which duel is yours, before anything that depends on the answer.
           // Shares the sky's budget deliberately: it reads the same things,
@@ -8175,38 +7025,6 @@
 
   // CSS owns the stack's coordinates. The per-frame path only handles lifetime
   // and focus; it never reads or writes position, size, Pixi bounds or zoom.
-  // Where the stack sits.
-  //
-  // Left alone, this is the one overlay in the set with no JS placement at all
-  // — the stylesheet puts it above the middle of the screen with
-  // `translate(-50%, -100%)`, so it grows UPWARD from a fixed line and the
-  // newest message always ends up nearest your animal. That is worth keeping
-  // exactly as it is, so the default path here writes nothing whatsoever.
-  //
-  // A stack the user has dragged cannot keep that transform: every other
-  // registry position means "the top-left corner goes here", and a stack still
-  // carrying translate(-50%, -100%) would land a box-width up and to the left
-  // of wherever it was dropped. So the transform comes OFF for a placed stack
-  // and goes back on the moment it is reset, which is why both branches write
-  // it rather than only the one that needs it.
-  // 1.30.0: the chat stack is no longer movable, so the only branch that can
-  // run here is the reset one — and it still has to, once. A player who
-  // dragged the stack in 1.27-1.29 has `partyChat` sitting in stored layout
-  // positions, and layoutLoad() drops it on upgrade; this is what takes the
-  // inline transform back off for the session that upgrade happens in.
-  function partyChatPlace(stack) {
-    if (!layoutPosOf('partyChat')) {
-      if (stack.style.transform) {
-        stack.style.transform = '';
-        stack.style.left = '';
-        stack.style.top = '';
-      }
-      return;
-    }
-    layoutStyle(stack, 'transform', 'none');
-    layoutPlace('partyChat', stack, null);
-  }
-
   function partyChatTick(now) {
     // Before anything that can return early: the party has to be told we have
     // gone quiet whether or not there is a stack to draw into.
@@ -8242,7 +7060,6 @@
       return;
     }
     if (stack.style.display !== 'flex') stack.style.display = 'flex';
-    partyChatPlace(stack);
     // The game can take focus back — clicking the canvas to steer does it — and
     // then keystrokes go to the game instead of the box that is plainly open in
     // front of the player. Held here rather than only set once on open.
@@ -8811,22 +7628,14 @@
     // 1.22.0. Boxed, the list wears mope's own HUDBox and aligns box-to-box, so
     // its padding puts the text in the same column the unboxed list sits in.
     const boxed = !!(party.listBox && anchor.box);
-    // 1.27.0. The width, the box and the display mode are still decided here —
-    // they are what the list IS — and only the placement goes through the
-    // registry. They are also written FIRST, deliberately: layoutPlace()
-    // clamps a dragged list against its own box, and a box that has not been
-    // given its width or its padding yet measures the wrong size.
-    //
-    // The anchor is still required even for a list the user has dragged
-    // elsewhere, because the width and the HUDBox are read off #leaderboard
-    // and there is nowhere else to get them. That also keeps the old
-    // behaviour: hiding the HUD with the clutter settings takes the list with
-    // it, wherever it has been moved to.
+    // The width, the box and the display mode are decided here — they are
+    // what the list IS — and read off #leaderboard, which is also where it is
+    // placed. Hiding the HUD with the clutter settings takes the list with it.
     const width = Math.round(boxed ? anchor.boxWidth : anchor.width) + 'px';
     layoutStyle(layer, 'width', width);
     layoutStyle(layer, 'display', 'flex');
     partyListApplyBox(layer, boxed ? anchor.box : null);
-    layoutPlace('partyList', layer, {
+    layoutPlace(layer, {
       left: Math.round(boxed ? anchor.boxLeft : anchor.left),
       top: Math.round(anchor.top + gap),
     });
@@ -10262,8 +9071,6 @@
   let syncHpUnitsRow = () => {};
   // 1.33.0. The five quick-chat fields dim with their parent switch.
   let syncChatRows = () => {};
-  // 1.30.0. The three per-stat rows dim with their parent switch.
-  let syncStatRows = () => {};
 
   // ----------------------------------------------------- clutter reduction
 
@@ -12763,13 +11570,11 @@
     // decides where its top edge goes, and a bar still at display:none has no
     // height — so the first pass after every respawn used to fall back to the
     // hardcoded 34 and land a few pixels out until the next tick corrected it.
-    // layoutPlace() needs the real box for a second reason: a bar the user has
-    // dragged is clamped against it.
     if (!hpBarUI.shown) { ui.root.style.display = 'block'; hpBarUI.shown = true; }
     // Measured from the panel's own height so the gap below it is the gap that
     // was asked for, whatever the text ends up being.
     const own = ui.root.offsetHeight || 34;
-    layoutPlace('hpBar', ui.root, {
+    layoutPlace(ui.root, {
       left: Math.round(cluster.left),
       top: Math.round(cluster.top - own - gap),
     });
@@ -16394,49 +15199,6 @@
   try { PAGE.__lumiBiteDebug = biteDebug; }
   catch (e) { window.__lumiBiteDebug = biteDebug; }
 
-  // Where every movable thing is, what is deciding that, and — for mope's own
-  // elements — where the browser actually PUT it.
-  //
-  // That last column is the point of this hook. `position: fixed` answers to a
-  // transformed ancestor rather than to the viewport, so a coordinate written
-  // into a custom property is a request, not a result. Asked-for and landed
-  // are printed side by side so a future mope layout that puts a transform
-  // above the HUD shows up as two numbers that disagree, rather than as a
-  // vague report that dragging feels off.
-  function layoutDebug() {
-    const vmin = layoutVmin();
-    const rows = {};
-    for (const id of layout.order) {
-      const desc = layout.entries.get(id);
-      if (!desc) continue;
-      const pos = layoutPosOf(id);
-      let el = null;
-      try { el = desc.node ? desc.node() : null; } catch (e) { /* not built */ }
-      const rect = el && el.isConnected ? el.getBoundingClientRect() : null;
-      rows[id] = {
-        kind: desc.kind,
-        source: pos ? 'dragged' : (desc.kind === 'mope' ? 'mope' : 'anchored'),
-        askedX: pos ? Math.round(pos.x * vmin) : '-',
-        askedY: pos ? Math.round(pos.y * vmin) : '-',
-        landedX: rect ? Math.round(rect.left) : '(not on screen)',
-        landedY: rect ? Math.round(rect.top) : '(not on screen)',
-        measured: layout.seen[id] ? 'yes' : 'no (sketch)',
-      };
-    }
-    const report = {
-      watching: layout.watching,
-      sampled: !!layout.sampled,
-      vmin: Number(vmin.toFixed(2)),
-      viewport: innerWidth + 'x' + innerHeight,
-      moved: Object.keys(layout.pos).length,
-    };
-    console.log(TAG, 'layout', report);
-    console.table ? console.table(rows) : console.log(rows);
-    return {...report, entries: rows};
-  }
-  try { PAGE.__lumiLayoutDebug = layoutDebug; }
-  catch (e) { window.__lumiLayoutDebug = layoutDebug; }
-
   // ------------------------------------------------------ the water meter
   //
   // 1.32.0, AND IT IS DELIBERATELY HALF A FEATURE. This is the instrument for
@@ -17866,12 +16628,6 @@
     }
     const wasMenuVisible = prevMenuVisible;
     prevMenuVisible = playVisible;
-    // Crossing between the menu and a game re-runs the layout overrides.
-    // mope's HUD elements do not exist on the menu, so anything measured off
-    // them there measures zero — including the width a dragged element is
-    // clamped against, which is how something arranged on the menu could
-    // otherwise arrive in game hanging off the right-hand edge.
-    if (wasMenuVisible !== playVisible) layout.mopeDirty = true;
     if (wasMenuVisible === true && !playVisible && !firstGameHintShown) {
       firstGameHintShown = true;
       showFirstGameHint();
@@ -18669,264 +17425,6 @@
       .qolc-pl-xp {
         flex: 0 0 auto; font-variant-numeric: tabular-nums;
       }
-      /* ---- the three game stats, redrawn ----
-
-         Styled to match what mope draws rather than to look like this script:
-         the figures are meant to read as part of the game's HUD, not as an
-         overlay on top of it. The shadow is what keeps white legible over
-         snow and amber legible over sand — the colour is the player's choice,
-         so no single one of them can be relied on to have contrast. */
-      #qolc-stats { position: fixed; inset: 0; pointer-events: none; z-index: 2147481500; }
-      .qolc-stat {
-        position: fixed; display: none; pointer-events: none;
-        font: 700 1.6dvmin/1.2 Quicksand, "Trebuchet MS", Verdana, sans-serif;
-        white-space: nowrap;
-        text-shadow: 0 1px 2px rgba(0,0,0,0.95), 0 0 4px rgba(0,0,0,0.8);
-      }
-      /* mope's own block, off, but only once ours has read something out of
-         it — see statsTick(). Its children rather than the block itself, so
-         the layout it contributes to the HUD corner is unchanged and nothing
-         around it moves when the feature is switched on. */
-      html.qolc-stats-on #gameStats { visibility: hidden !important; }
-
-      /* ---- hiding HUD pieces (1.30.0) ----
-
-         visibility rather than display, so a hidden element keeps its
-         size and nothing laid out around it moves into the gap. Hiding is for
-         cleaning the screen up, not for rearranging it. */
-      html.qolc-hide-leaderboard #leaderboard,
-      html.qolc-hide-stats #gameStats,
-      html.qolc-hide-settingsBtn #settingsButton2,
-      html.qolc-hide-coins .coinsCounterWrap,
-      html.qolc-hide-arenaBtn #arenaRequest,
-      html.qolc-hide-btnDash #dashButton,
-      html.qolc-hide-btnAbility1 #ability1Button,
-      html.qolc-hide-btnAbility2 #ability2Button,
-      html.qolc-hide-btnDive #diveButton,
-      html.qolc-hide-btnClimb #climbButton,
-      html.qolc-hide-btnDrop #dropButton {
-        visibility: hidden !important;
-      }
-
-      /* ---- the layout preview ----
-
-         A scale model of the screen, with one draggable chip per movable
-         thing. Its ASPECT RATIO is written from JS at open time rather than
-         fixed here: a preview shaped differently from the screen it stands for
-         would put a chip in a corner the real element cannot reach, and the
-         whole point of a preview is that where a thing looks like it will land
-         is where it lands. */
-      /* Expand, for the Customization category only. The 884x572 shell is the
-         right size for a list of switches and the wrong size for a scale model
-         of a screen with twelve things on it. Capped against the viewport so
-         it cannot outgrow the window it is drawn over. */
-      #qolc-panel.qolc-wide {
-        width: min(1360px, calc(100vw - 48px));
-        height: min(840px, calc(100vh - 48px));
-      }
-      .qolc-lay-stage {
-        position: relative; width: 100%; flex-shrink: 0; margin: 0 auto;
-        border-radius: 12px; overflow: hidden;
-        border: 1px solid var(--qolc-edge);
-        background: var(--qolc-inset);
-        /* Thirds, not a fine grid: enough to read the middle and the corners
-           against, quiet enough not to compete with the chips. */
-        background-image:
-          linear-gradient(to right, var(--qolc-edge) 1px, transparent 1px),
-          linear-gradient(to bottom, var(--qolc-edge) 1px, transparent 1px);
-        background-size: 33.333% 33.333%;
-        touch-action: none;
-      }
-      /* A chip is a scale drawing of a real box, so its width and height come
-         from the element it stands for. Two things stop that being unreadable:
-         it never goes below a size its label fits in, and the label is allowed
-         to wrap onto a second line rather than being clipped mid-word.
-         A chip forced up to the minimum is drawing the label, not the element,
-         which is the right trade at 30px across — you cannot drag what you
-         cannot identify. */
-      .qolc-lay-chip {
-        position: absolute; box-sizing: border-box;
-        min-width: 46px; min-height: 20px;
-        display: flex; align-items: center; justify-content: center;
-        padding: 2px 4px; border-radius: 5px; overflow: hidden;
-        border: 1px solid var(--qolc-edge-lit); background: var(--qolc-card);
-        color: var(--qolc-ink); text-align: center;
-        font: 700 9px/1.05 Quicksand, system-ui, sans-serif;
-        letter-spacing: 0.1px; word-break: break-word; hyphens: auto;
-        cursor: grab; user-select: none; touch-action: none;
-        transition: border-color 0.14s ease, background 0.14s ease;
-      }
-      /* Expanded, there is room for the labels to be read at a normal size. */
-      #qolc-panel.qolc-wide .qolc-lay-chip {
-        min-width: 62px; min-height: 24px;
-        font-size: 11px; padding: 3px 6px;
-      }
-      /* mope's own elements are dashed, ours are solid. One glance says which
-         of the two things on this screen you are moving — a thing the game
-         drew, or a thing this script drew on top of it. */
-      .qolc-lay-chip.qolc-lay-mope { border-style: dashed; }
-      .qolc-lay-chip.qolc-lay-moved {
-        border-color: var(--qolc-accent-lit);
-        background: rgba(53,201,182,0.26);
-      }
-      /* A feature that is switched off still gets a chip, and it is still
-         draggable: deciding where a thing will go before turning it on is a
-         perfectly reasonable order to do this in. */
-      .qolc-lay-chip.qolc-lay-idle { opacity: 0.45; }
-      /* An ability this animal does not have, or one the server has switched
-         off. Red rather than faded, because "not available" and "feature
-         turned off in the panel" are different answers and a player looking at
-         four ability chips wants to know which of theirs are real. Still
-         draggable: deciding where dive goes before you are an animal that
-         dives is a perfectly reasonable order to work in. */
-      .qolc-lay-chip.qolc-lay-unavail {
-        opacity: 1;
-        border-color: rgba(255,120,105,0.75);
-        background: rgba(255,90,75,0.22);
-        color: #ffd9d3;
-      }
-      .qolc-lay-chip.qolc-lay-unavail.qolc-lay-moved {
-        border-color: rgba(255,150,135,0.95);
-      }
-      .qolc-lay-chip:hover { border-color: var(--qolc-accent-lit); }
-      .qolc-lay-chip.qolc-lay-drag {
-        cursor: grabbing; z-index: 4;
-        border-color: var(--qolc-accent-lit);
-        background: rgba(53,201,182,0.4);
-      }
-      /* The five presets plus a free colour, on the row itself. */
-      .qolc-stat-colors { display: flex; align-items: center; gap: 5px; flex-shrink: 0; margin-left: 10px; }
-      .qolc-stat-dot {
-        width: 15px; height: 15px; padding: 0; border-radius: 50%; cursor: pointer;
-        border: 1px solid rgba(203,255,250,0.34);
-      }
-      .qolc-stat-dot:hover { border-color: var(--qolc-accent-lit); }
-      .qolc-stat-dot.on { border: 2px solid #ffffff; }
-      .qolc-stat-free {
-        width: 17px; height: 17px; padding: 0; cursor: pointer;
-        background: none; border: 1px solid rgba(203,255,250,0.34); border-radius: 4px;
-      }
-      .qolc-stat-free::-webkit-color-swatch-wrapper { padding: 1px; }
-      .qolc-stat-free::-webkit-color-swatch { border: none; border-radius: 3px; }
-      .qolc-lay-foot {
-        display: flex; align-items: center; gap: 8px; flex-shrink: 0;
-        margin-top: 2px;
-      }
-      .qolc-lay-note {
-        flex: 1; min-width: 0; font-size: 11px; line-height: 1.35;
-        color: var(--qolc-faint);
-      }
-
-      /* ---- mope's own elements, moved by the layout registry ----
-
-         One rule per movable element, each keyed on a class on <html> and each
-         reading its coordinates out of two custom properties on <html>. Both
-         halves of that matter:
-
-         - The RULE lives here, in our stylesheet, and matches whatever node is
-           in the document. Svelte rebuilds #leaderboard and #gameStats
-           whenever the HUD changes, and a rebuilt node picks this up with
-           nothing to re-apply and no rebuild to race. An inline style written
-           onto the node would be lost every time.
-         - The COORDINATES live on <html>, which Svelte never touches, so a
-           rebuild cannot take them with it either.
-
-         position: fixed answers to a transformed ancestor rather than to the
-         viewport — the same trap the arena HUD move documents below — so where
-         each of these actually LANDS is measured back by __lumiLayoutDebug()
-         rather than assumed.
-
-         margin: 0 is not decoration: mope right-aligns parts of its HUD with
-         margin-left: auto, which fights a left coordinate.
-
-         These are deliberately BEFORE the arena rules. The two have equal
-         specificity, so source order decides, and the arena tidy winning is
-         the right answer: it is a temporary rearrangement that runs only while
-         you are actually in a duel, and it exists to clear the view. */
-      html.qolc-lay-leaderboard #leaderboard,
-      html.qolc-lay-stats #gameStats,
-      html.qolc-lay-arenaBtn #arenaRequest,
-      html.qolc-lay-coins .coinsCounterWrap,
-      html.qolc-lay-btnDash #dashButton,
-      html.qolc-lay-btnAbility1 #ability1Button,
-      html.qolc-lay-btnAbility2 #ability2Button,
-      html.qolc-lay-btnDive #diveButton,
-      html.qolc-lay-btnClimb #climbButton,
-      html.qolc-lay-btnDrop #dropButton,
-      html.qolc-lay-settingsBtn #settingsButton2 {
-        position: fixed !important;
-        right: auto !important; bottom: auto !important;
-        margin: 0 !important;
-      }
-      html.qolc-lay-leaderboard #leaderboard {
-        left: var(--qolc-lay-leaderboard-x, 0px) !important;
-        top: var(--qolc-lay-leaderboard-y, 0px) !important;
-      }
-      html.qolc-lay-stats #gameStats {
-        left: var(--qolc-lay-stats-x, 0px) !important;
-        top: var(--qolc-lay-stats-y, 0px) !important;
-      }
-      html.qolc-lay-arenaBtn #arenaRequest {
-        left: var(--qolc-lay-arenaBtn-x, 0px) !important;
-        top: var(--qolc-lay-arenaBtn-y, 0px) !important;
-      }
-      html.qolc-lay-coins .coinsCounterWrap {
-        left: var(--qolc-lay-coins-x, 0px) !important;
-        top: var(--qolc-lay-coins-y, 0px) !important;
-      }
-      /* The ability buttons, and the second half of why 1.29.0's dragged them
-         off the screen.
-
-         mope arranges the wheel by giving each button its own transform:
-           rotate(-90deg + arc) translateX(var(--arc-radius)) rotate(90deg - arc)
-         which is what puts them on an arc rather than in a stack. That
-         transform is applied AFTER left/top, so a button given a coordinate
-         was then thrown a further --arc-radius (about 22dvmin) away from it.
-
-         So a moved button gives up its arc. It has to: the arc is a position,
-         and it cannot have two. The cost is the --press-scale animation, which
-         lives in the same transform and goes with it — a moved button no longer
-         squashes when pressed. Everything about what it DOES is untouched.
-
-         The three left behind keep their arc and close up around the gap,
-         which is what removing an item from a layout looks like. */
-      html.qolc-lay-btnDash #dashButton,
-      html.qolc-lay-btnAbility1 #ability1Button,
-      html.qolc-lay-btnAbility2 #ability2Button,
-      html.qolc-lay-btnDive #diveButton,
-      html.qolc-lay-btnClimb #climbButton,
-      html.qolc-lay-btnDrop #dropButton,
-      html.qolc-lay-settingsBtn #settingsButton2 {
-        transform: none !important;
-      }
-      html.qolc-lay-btnDash #dashButton {
-        left: var(--qolc-lay-btnDash-x, 0px) !important;
-        top: var(--qolc-lay-btnDash-y, 0px) !important;
-      }
-      html.qolc-lay-btnAbility1 #ability1Button {
-        left: var(--qolc-lay-btnAbility1-x, 0px) !important;
-        top: var(--qolc-lay-btnAbility1-y, 0px) !important;
-      }
-      html.qolc-lay-btnAbility2 #ability2Button {
-        left: var(--qolc-lay-btnAbility2-x, 0px) !important;
-        top: var(--qolc-lay-btnAbility2-y, 0px) !important;
-      }
-      html.qolc-lay-btnDive #diveButton {
-        left: var(--qolc-lay-btnDive-x, 0px) !important;
-        top: var(--qolc-lay-btnDive-y, 0px) !important;
-      }
-      html.qolc-lay-btnClimb #climbButton {
-        left: var(--qolc-lay-btnClimb-x, 0px) !important;
-        top: var(--qolc-lay-btnClimb-y, 0px) !important;
-      }
-      html.qolc-lay-btnDrop #dropButton {
-        left: var(--qolc-lay-btnDrop-x, 0px) !important;
-        top: var(--qolc-lay-btnDrop-y, 0px) !important;
-      }
-      html.qolc-lay-settingsBtn #settingsButton2 {
-        left: var(--qolc-lay-settingsBtn-x, 0px) !important;
-        top: var(--qolc-lay-settingsBtn-y, 0px) !important;
-      }
 
       /* mope's own HUD corner, rearranged while the arena sky is up. Keyed on
          one class on <html> so that Svelte rebuilding that corner — which it
@@ -19414,23 +17912,6 @@
   // Verbatim from the notes the rows used to carry, extended only where the
   // note was too terse to stand on its own away from the row.
   const QOLC_HINTS = {
-    layStage: 'Drag anything on this screen to move it in game. Double-click a piece to put it back where the game had it. Red means that ability is not available on your current animal.',
-    layAbility: 'Ability button — moves out of the wheel on its own, which reflows the ones left in it. Red means this animal does not have it, or the server has it switched off.',
-    layArenaBtn: '1v1 button — the arena request button, which mope only shows from tier 15.',
-    layHide: 'Show on screen — hides this piece of the HUD without moving anything around it. Turn it back on here.',
-    laySettings: "Settings button — mope's own gear, beside the minimap.",
-    layExpand: 'Expand — makes the panel bigger while you are on this category, so the preview and its labels are readable. It goes back to normal when you leave.',
-    gameStats: "Separate game stats — redraws mope's FPS, ping and player count as three figures you can move, colour and hide one at a time. Matched on their units, so it needs the English client.",
-    layStatFps: 'FPS — frames per second, drawn by this script so it can be placed and coloured on its own.',
-    layStatPing: 'Ping — your latency to the server, in milliseconds.',
-    layStatPlayers: 'Players — how many people are on your server.',
-    layCoins: 'Coins — the counter above the water bar.',
-    layLeaderboard: "Leaderboard — mope's own top-ten box. The party list hangs under it and follows it wherever it goes.",
-    layMap: "Minimap — the map itself, drawn into the game canvas. The settings and chat buttons beside it stay where mope puts them.",
-    layStats: "FPS, ping and players — mope's own debug figures. 1.30.0 will split them into three you can move and colour separately.",
-    layPartyList: "Party list — normally under the leaderboard. Moved, it keeps the leaderboard's width.",
-    layHpBar: 'HP bar — normally above your ability cards.',
-    layPartyChat: 'Party chat — normally above your own animal. Moved, it stops following the middle of the screen.',
     menuClutter: 'Reduce menu clutter — hides the season logo, the legal links and the Community & More tab on the main menu.',
     gameClutter: 'Reduce in-game clutter — hides dash and climb, and moves your ability down beside dive.',
     abilityCooldown: 'Ability cooldown timers — seconds left on each ability box, dive air included.',
@@ -19619,19 +18100,6 @@
     // The roster is only refreshed while its category is up, so bring it
     // current the moment it is opened rather than waiting for the next sweep.
     if (selected === 'party') syncPartyUI();
-    // Same reasoning for the preview, with one addition: the stage is sized
-    // from the window, and the window may well have been resized since the
-    // last time this category was on screen.
-    if (selected === 'layout') {
-      layout.watching = true;
-      layoutSizeStage(true);
-      layoutSampleAll();
-      layoutRefreshPreview();
-    } else if (layoutUI.expanded) {
-      // Leaving the category takes the expansion with it. See
-      // layoutSetExpanded() for why this is not remembered.
-      layoutSetExpanded(false);
-    }
   }
 
   function qolcSetHint(key) {
@@ -19962,417 +18430,6 @@
     refs.roster.style.display = members.length ? '' : 'none';
   }
 
-
-  // --------------------------------------------------- the layout preview
-  //
-  // A scale model of the screen with one chip per movable thing, dragged with
-  // the pointer. It is the whole user interface for the layout registry: there
-  // are no coordinate boxes and no per-element rows, because "put it there" is
-  // the only thing anybody wants to say to this feature.
-  //
-  // Everything in here is measured against the STAGE, and the stage is given
-  // the screen's own aspect ratio when the category opens. That is what makes
-  // a chip in the top-right corner of the preview mean the top-right corner of
-  // the screen, and it is why the ratio is written from JS rather than fixed
-  // in the stylesheet — the panel is 884px wide on every screen, and the
-  // screens it is standing in for are not all the same shape.
-  const layoutUI = {
-    stage: null,
-    note: null,
-    chips: new Map(),   // id -> element
-    dragging: null,
-    // The window pointerup/cancel pair, held only while a drag is running on
-    // an engine that refused pointer capture. Null the rest of the time.
-    winEnd: null,
-  };
-
-  // px on the stage per px on the screen.
-  function layoutScale() {
-    const w = layoutUI.stage ? layoutUI.stage.clientWidth : 0;
-    return w > 0 ? w / Math.max(1, innerWidth) : 0;
-  }
-
-  // Redraw every chip from the registry. Cheap, and called on open, after
-  // every drag, after a reset, and on the 250ms pacer while the category is up
-  // — the last of those is what makes the preview follow a HUD that moves for
-  // reasons of its own, such as the arena tidy rearranging the corner.
-  function layoutRefreshPreview() {
-    if (!layoutUI.stage) return;
-    const scale = layoutScale();
-    if (!(scale > 0)) return;
-    const vmin = layoutVmin();
-    let measured = 0, total = 0;
-    for (const id of layout.order) {
-      const desc = layout.entries.get(id);
-      const chip = layoutUI.chips.get(id);
-      if (!desc || !chip) continue;
-      total++;
-      if (layout.seen[id]) measured++;
-      const rect = layoutPreviewRect(id);
-      if (!rect) { chip.style.display = 'none'; continue; }
-      // Compared before every write, like every other placement in this file.
-      // This runs four times a second while the category is open; writing four
-      // unchanged values onto fourteen chips invalidates layout for nothing,
-      // and doing that mid-scroll is felt.
-      layoutStyle(chip, 'display', 'flex');
-      layoutStyle(chip, 'width', Math.round(rect.w * vmin * scale) + 'px');
-      layoutStyle(chip, 'height', Math.round(rect.h * vmin * scale) + 'px');
-      // Placed AFTER the size, and clamped against the size the chip actually
-      // ended up. A small element is drawn at the minimum a label fits in
-      // rather than at its true scale, so a chip near an edge can be wider
-      // than the thing it stands for — and left unclamped it would hang off
-      // the stage, which is the one place a preview must not lie.
-      const cw = chip.offsetWidth || 0, ch = chip.offsetHeight || 0;
-      const sw = layoutUI.stage.clientWidth, sh = layoutUI.stage.clientHeight;
-      const cx = Math.max(0, Math.min(rect.x * vmin * scale, Math.max(0, sw - cw)));
-      const cy = Math.max(0, Math.min(rect.y * vmin * scale, Math.max(0, sh - ch)));
-      layoutStyle(chip, 'left', Math.round(cx) + 'px');
-      layoutStyle(chip, 'top', Math.round(cy) + 'px');
-      chip.classList.toggle('qolc-lay-moved', rect.moved);
-      let on = true;
-      if (typeof desc.on === 'function') {
-        try { on = !!desc.on(); } catch (e) { on = false; }
-      }
-      // Two ways of saying "not currently drawing", kept apart. A feature you
-      // switched off is faded; an ability this animal does not have is red.
-      chip.classList.toggle('qolc-lay-unavail', !on && !!desc.redWhenOff);
-      chip.classList.toggle('qolc-lay-idle', !on && !desc.redWhenOff);
-    }
-    if (layoutUI.note) {
-      // The preview is honest about which of the two things it is showing.
-      // Before a game has been played with this version installed there is
-      // nothing to measure, and a sketch presented as a measurement is exactly
-      // the kind of small lie that gets reported as a bug.
-      const text = measured >= total
-        ? 'Measured from your last game.'
-        : measured
-          ? 'Partly measured — play a round with this open to place the rest exactly.'
-          : 'Approximate until you play a round with this panel open.';
-      if (layoutUI.note.textContent !== text) layoutUI.note.textContent = text;
-    }
-  }
-
-  // Put a moved thing back where mope had it.
-  function layoutResetOne(id) {
-    layoutClearPos(id);
-    layoutApplyNow(id);
-    layoutRefreshPreview();
-  }
-
-  // Make a change visible NOW rather than on the next tick of whichever
-  // feature owns the element. Dragging something and watching it arrive a
-  // quarter of a second later reads as lag; the tick would get there on its
-  // own, and this is only about the wait.
-  function layoutApplyNow(id) {
-    const desc = layout.entries.get(id);
-    if (!desc) return;
-    if (desc.kind === 'mope') { layoutSyncMope(); return; }
-    let el = null;
-    try { el = desc.node ? desc.node() : null; } catch (e) { /* not built */ }
-    if (!el || !el.isConnected) return;
-    // The feature supplies its own placement where it has one to supply — the
-    // chat stack has a transform to take off first, and only it knows that.
-    if (typeof desc.place === 'function') { desc.place(el); return; }
-    if (layoutPosOf(id)) layoutPlace(id, el, null);
-  }
-
-  // How far the pointer must travel before a press becomes a DRAG (1.0.10).
-  //
-  // There was no threshold, so the first pointermove — one pixel of hand
-  // tremor, or the jitter a trackpad emits on any tap — committed a position.
-  // That is not a cosmetic problem: an entry with no stored position is
-  // ANCHORED and follows mope's HUD, and one with a position is pinned to
-  // fixed coordinates. A stray click silently converted the first into the
-  // second, and it looked identical at the time and wrong later, when the HUD
-  // moved and the element did not. 4px is below the smallest deliberate drag
-  // and above every accidental one, on a mouse or a touchscreen.
-  const LAYOUT_DRAG_SLOP = 4;
-  const LAYOUT_DRAG_SLOP_SQ = LAYOUT_DRAG_SLOP * LAYOUT_DRAG_SLOP;
-
-  function layoutBeginDrag(id, chip, ev) {
-    if (!layoutUI.stage) return;
-    // One pointer at a time. Without this a second finger overwrites the drag
-    // state and the two fight over one chip.
-    if (layoutUI.dragging) return;
-    const stageRect = layoutUI.stage.getBoundingClientRect();
-    const chipRect = chip.getBoundingClientRect();
-    layoutUI.dragging = {
-      id, chip,
-      // Where in the chip the pointer took hold. Without this the chip jumps
-      // so its corner is under the cursor on the first move, which reads as
-      // the preview disagreeing with the drag.
-      dx: ev.clientX - chipRect.left,
-      dy: ev.clientY - chipRect.top,
-      stageRect,
-      pointerId: ev.pointerId,
-      startX: ev.clientX,
-      startY: ev.clientY,
-      // Whether the slop has been crossed. Until it has, nothing is written.
-      live: false,
-    };
-    chip.classList.add('qolc-lay-drag');
-    let captured = false;
-    try { chip.setPointerCapture(ev.pointerId); captured = true; } catch (e) { /* older engines */ }
-    // Where capture is unavailable, releasing the pointer outside the chip
-    // would never reach the chip's own pointerup and the drag would stick —
-    // re-arming on the next hover with no button held. A window pair for the
-    // life of the drag closes that, and is removed in layoutEndDrag so nothing
-    // outlives the gesture.
-    if (!captured) {
-      layoutUI.winEnd = layoutEndDrag;
-      PAGE.addEventListener('pointerup', layoutUI.winEnd, true);
-      PAGE.addEventListener('pointercancel', layoutUI.winEnd, true);
-    }
-    ev.preventDefault();
-    ev.stopPropagation();
-  }
-
-  function layoutMoveDrag(ev) {
-    const drag = layoutUI.dragging;
-    if (!drag) return;
-    if (drag.pointerId != null && ev.pointerId != null &&
-        ev.pointerId !== drag.pointerId) return;
-    if (!drag.live) {
-      const mx = ev.clientX - drag.startX;
-      const my = ev.clientY - drag.startY;
-      if (mx * mx + my * my < LAYOUT_DRAG_SLOP_SQ) { ev.preventDefault(); return; }
-      drag.live = true;
-    }
-    const scale = layoutScale();
-    if (!(scale > 0)) return;
-    const stage = drag.stageRect;
-    const chip = drag.chip;
-    // Stage-space top-left the pointer is asking for, kept inside the stage so
-    // a chip cannot be dropped off the edge of the screen it represents.
-    const maxX = Math.max(0, stage.width - chip.offsetWidth);
-    const maxY = Math.max(0, stage.height - chip.offsetHeight);
-    const sx = Math.max(0, Math.min(ev.clientX - stage.left - drag.dx, maxX));
-    const sy = Math.max(0, Math.min(ev.clientY - stage.top - drag.dy, maxY));
-    chip.style.left = Math.round(sx) + 'px';
-    chip.style.top = Math.round(sy) + 'px';
-    const vmin = layoutVmin();
-    // Applied, not committed — see layoutSetPosLive. layoutEndDrag saves once.
-    layoutSetPosLive(drag.id, sx / scale / vmin, sy / scale / vmin);
-    chip.classList.add('qolc-lay-moved');
-    layoutApplyNow(drag.id);
-    ev.preventDefault();
-  }
-
-  function layoutEndDrag(ev) {
-    const drag = layoutUI.dragging;
-    if (!drag) return;
-    if (drag.pointerId != null && ev && ev.pointerId != null &&
-        ev.pointerId !== drag.pointerId) return;
-    layoutUI.dragging = null;
-    if (layoutUI.winEnd) {
-      PAGE.removeEventListener('pointerup', layoutUI.winEnd, true);
-      PAGE.removeEventListener('pointercancel', layoutUI.winEnd, true);
-      layoutUI.winEnd = null;
-    }
-    drag.chip.classList.remove('qolc-lay-drag');
-    try { if (ev) drag.chip.releasePointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
-    // A press that never crossed the slop changed nothing, so there is nothing
-    // to write and nothing to redraw — and crucially no position is created.
-    if (!drag.live) return;
-    layoutSave();
-    layoutRefreshPreview();
-    dbg('layout', drag.id, 'moved to', layoutPosOf(drag.id));
-  }
-
-  function layoutChip(id, desc) {
-    const chip = document.createElement('div');
-    chip.className = 'qolc-lay-chip' + (desc.kind === 'mope' ? ' qolc-lay-mope' : '');
-    chip.textContent = desc.label;
-    chip.title = desc.label + ' — drag to move, double-click to reset';
-    hinted(chip, desc.hint);
-    chip.addEventListener('pointerdown', (e) => layoutBeginDrag(id, chip, e));
-    chip.addEventListener('pointermove', layoutMoveDrag);
-    chip.addEventListener('pointerup', layoutEndDrag);
-    chip.addEventListener('pointercancel', layoutEndDrag);
-    // Double-click rather than a per-chip button: at this scale a chip is
-    // sometimes 30px wide and there is no room for a control inside one.
-    chip.addEventListener('dblclick', (e) => {
-      e.stopPropagation();
-      layoutResetOne(id);
-    });
-    return chip;
-  }
-
-  // The stage has to be given the screen's shape, and the screen can change
-  // shape while the panel is open.
-  //
-  // Sized in JS rather than with an `aspect-ratio` rule, because the pane it
-  // sits in has a height budget as well as a width: the shell is a fixed
-  // 884x572 and roughly 366px of that reaches a pane. A full-width stage on a
-  // squarish window is 590px tall and puts the category behind a scrollbar,
-  // which for a preview is worse than usual — half the screen you are
-  // arranging is off the bottom of the thing you are arranging it in. So width
-  // is tried first and height wins when the two disagree.
-  // How much of the pane the stage may take.
-  //
-  // 1.29.0 used a constant, 272, worked out against a 366px pane. That was
-  // wrong twice over: it did not know about the rows this category has now,
-  // and it could not grow when the panel does. Both are measured instead —
-  // the pane's real height, less whatever else is in it — so expanding the
-  // panel actually buys a bigger preview rather than a bigger margin.
-  // The stage keeps this height even when the pane cannot spare it — the pane
-  // scrolls to reach the rows below instead. A preview squeezed to 150px to
-  // make room for controls is the wrong trade: the controls are readable at
-  // any size and the preview is not.
-  const LAYOUT_STAGE_MIN_H = 272;
-
-  function layoutSizeStage(force) {
-    const stage = layoutUI.stage;
-    const pane = stage && stage.parentNode;
-    if (!stage || !pane) return;
-    const ratio = Math.max(0.4, Math.min(3.2, innerWidth / Math.max(1, innerHeight)));
-    const paneW = pane.clientWidth;
-    const paneH = pane.clientHeight;
-    // This runs four times a second while the category is open, so the early
-    // exit is what keeps it off the layout path.
-    if (!force && layoutUI.ratio === ratio &&
-        layoutUI.paneW === paneW && layoutUI.paneH === paneH) return;
-    layoutUI.ratio = ratio;
-    layoutUI.paneW = paneW;
-    layoutUI.paneH = paneH;
-
-    // Everything in the pane that is not the stage, measured rather than
-    // remembered — the caption, the footer, the stat rows and the gaps
-    // between them all move as the category gains and loses controls.
-    // Only the stage's IMMEDIATE neighbours count — the caption above it and
-    // the footer below. Everything further down the pane (the visibility
-    // switches, the game-stats card) is content you scroll to, and subtracting
-    // it was wrong twice over: it squeezed the stage to the floor as soon as
-    // 1.30.0 added twelve rows, and it meant Expand bought a taller pane
-    // without buying a bigger preview, which is the entire point of Expand.
-    const above = stage.previousElementSibling;
-    const below = stage.nextElementSibling;
-    const others = (above ? above.offsetHeight || 0 : 0) +
-                   (below ? below.offsetHeight || 0 : 0);
-    const room = Math.max(LAYOUT_STAGE_MIN_H, paneH - others - 22);
-
-    // Where the pane was scrolled to, kept across the resize.
-    //
-    // 1.30.0. This function collapses the stage to measure the pane, which
-    // shortens the content, which the browser answers by CLAMPING scrollTop —
-    // and then the stage comes back and the scroll position is gone. Running
-    // four times a second that reads as a stutter, and as the scroll jumping
-    // backwards while the wheel is still moving. Restoring it afterwards is
-    // half the fix; the other half is not running this on a timer at all —
-    // see layoutTick().
-    const wasScrolled = pane.scrollTop;
-    stage.style.width = '100%';
-    stage.style.height = 'auto';
-    let w = stage.clientWidth;
-    let h = Math.round(w / ratio);
-    if (h > room) {
-      h = Math.round(room);
-      w = Math.round(h * ratio);
-    }
-    stage.style.width = Math.round(w) + 'px';
-    stage.style.height = h + 'px';
-
-    // One correction pass, measured rather than predicted.
-    //
-    // The arithmetic above has to guess at every margin in the pane — the
-    // caption's, the card's, the footer's — and it guessed 8px short, which is
-    // enough to leave a scrollbar on an expanded panel that has room to spare.
-    // Asking the pane whether it actually overflows and taking that much off
-    // the stage is exact, and it cannot drift when a future row arrives with
-    // margins nobody remembered to add here.
-    //
-    // Bounded by the floor: when the stage is already at its minimum the pane
-    // is MEANT to scroll, and shrinking the preview further to avoid that is
-    // the trade this whole function exists to refuse.
-    // The pane below the stage is meant to scroll, so a correction pass that
-    // shrank the stage until it did not would undo the sizing above. Removed
-    // in 1.30.0 along with the reason for it.
-    if (pane.scrollTop !== wasScrolled) pane.scrollTop = wasScrolled;
-  }
-
-  // Expand: a bigger panel, for this category only.
-  //
-  // The shell has been a fixed 884x572 since 1.25.0 and that is still the
-  // right size for a list of switches. It is the wrong size for a scale model
-  // of a 1080p screen with twelve things on it, which is what this category
-  // is — at 884 wide the chips come out 30px across and their labels clip.
-  //
-  // Reverted on leaving the category rather than remembered, deliberately:
-  // the panel is opened in game over a live fight, and a panel that stayed
-  // enormous because of something you did in another category five minutes ago
-  // is worse than one that is occasionally too small.
-  function layoutSetExpanded(on) {
-    if (!extras || !extras.panel) return;
-    layoutUI.expanded = !!on;
-    extras.panel.classList.toggle('qolc-wide', !!on);
-    if (layoutUI.expandBtn) {
-      layoutUI.expandBtn.textContent = on ? 'Shrink' : 'Expand';
-    }
-    // The panel is centred by a transform in game and by measurement on the
-    // menu, so a size change has to be followed by a re-place either way.
-    positionExtrasPanel();
-    layoutSizeStage(true);
-    layoutRefreshPreview();
-  }
-
-  function buildLayoutPane(pane) {
-    const stage = document.createElement('div');
-    stage.className = 'qolc-lay-stage';
-    hinted(stage, 'layStage');
-    layoutUI.stage = stage;
-    for (const id of layout.order) {
-      const desc = layout.entries.get(id);
-      if (!desc) continue;
-      const chip = layoutChip(id, desc);
-      layoutUI.chips.set(id, chip);
-      stage.appendChild(chip);
-    }
-    pane.appendChild(makeSecLabel('Screen'));
-    pane.appendChild(stage);
-
-    const foot = document.createElement('div');
-    foot.className = 'qolc-lay-foot';
-    const note = document.createElement('div');
-    note.className = 'qolc-lay-note';
-    layoutUI.note = note;
-    const expand = document.createElement('button');
-    expand.type = 'button';
-    expand.className = 'qolc-obtn';
-    expand.textContent = 'Expand';
-    hinted(expand, 'layExpand');
-    layoutUI.expandBtn = expand;
-    expand.addEventListener('click', (e) => {
-      e.stopPropagation();
-      layoutSetExpanded(!layoutUI.expanded);
-    });
-
-    const reset = document.createElement('button');
-    reset.type = 'button';
-    reset.className = 'qolc-obtn';
-    reset.textContent = 'Reset all';
-    reset.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const ids = Object.keys(layout.pos);
-      layoutResetAll();
-      for (const id of ids) layoutApplyNow(id);
-      layoutRefreshPreview();
-      dbg('layout reset', ids.length, 'positions');
-    });
-    foot.appendChild(note);
-    foot.appendChild(expand);
-    foot.appendChild(reset);
-    pane.appendChild(foot);
-    // After the stage is in the document, not before: it is sized from the
-    // width it has been GIVEN, and a stage with no parent has none.
-    layoutSizeStage(true);
-    layoutRefreshPreview();
-    // The one thing that can change the stage's size without anybody touching
-    // the panel. Cheap: the early exit in layoutSizeStage() turns a resize
-    // that did not change the pane into three comparisons.
-    addEventListener('resize', () => {
-      if (layout.watching) { layoutSizeStage(); layoutRefreshPreview(); }
-    });
-  }
   function ensureExtrasUI() {
     if (extras) return extras;
     const host = document.body || document.documentElement;
@@ -20434,20 +18491,9 @@
       applyHpNumbers();
       domSweep();
       syncNameColorUI();
-      // 1.0.10. The layout registry has to be told, and it was not.
-      //
-      // layoutSyncMope() removes every override class while the master switch
-      // is off — but it only runs when the registry is DIRTY, and the switch
-      // marked nothing. So the hidden HUD pieces came back (layoutApplyHidden
-      // runs unconditionally) and the minimap was restored (the pixi path
-      // reads the switch directly), while anything DRAGGED — the leaderboard,
-      // the coin counter, an ability button — stayed exactly where it had been
-      // put until the player changed screens. Half the feature undid itself and
-      // half did not, which reads as the switch being broken.
-      layout.mopeDirty = true;
-      // Draw order is the same shape of omission: the mode stays armed and the
-      // animal stays on the layer it was promoted to. mope's own re-attach
-      // churn heals it within seconds, but "off" should mean off now.
+      // Draw order stays armed and the animal stays on the layer it was
+      // promoted to unless told otherwise. mope's own re-attach churn heals it
+      // within seconds, but "off" should mean off now.
       if (!on) zorderRestore();
       // Nothing to re-apply: the zoom hub already collapses its factor to 1
       // while the master switch is off, and the camera reads it on its next
@@ -20503,16 +18549,13 @@
     const catArena = makeCategory('arena', 'Arena', side, content);
     const catCosmetics = makeCategory('cosmetics', 'Cosmetics', side, content);
     const catParty = makeCategory('party', 'Party', side, content);
-    // 1.27.0. Fifth, and last in the sidebar, because it is the only category
-    // that is about where things are rather than whether they are on — and
-    // because it is the one you go to after you have decided the rest.
-    const catLayout = makeCategory('layout', 'Customization (WIP)', side, content);
-    // 1.0.7. Sixth, and last: it is about the MOD rather than about the game,
-    // so it sits below everything that changes what you see while playing.
+    // 1.0.23 removed Customization, which sat between Party and Settings.
+    // 1.0.7. Last: it is about the MOD rather than about the game, so it sits
+    // below everything that changes what you see while playing.
     const catSettings = makeCategory('settings', 'Settings', side, content);
     const cats = {
       general: catGeneral, arena: catArena,
-      cosmetics: catCosmetics, party: catParty, layout: catLayout,
+      cosmetics: catCosmetics, party: catParty,
       settings: catSettings,
     };
     for (const key of Object.keys(cats)) {
@@ -20543,120 +18586,6 @@
     const generalPane = catGeneral.pane, arenaPane = catArena.pane;
     const cosmeticsPane = catCosmetics.pane, partyPane = catParty.pane;
     const settingsPane = catSettings.pane;
-    // Built in one call and in one place, unlike every other pane: the whole
-    // category is one preview and one button, and there are no rows for a
-    // later pass to append in the wrong order.
-    buildLayoutPane(catLayout.pane);
-
-
-    // ---- what is on screen at all ----
-    //
-    // Between the preview and the game stats, as asked. Twelve switches, one
-    // per piece of mope's HUD the registry already knows how to reach — the
-    // same nouns, a second verb. Only mope's own pieces: everything this
-    // script draws already has its own switch elsewhere in the panel, and two
-    // controls for one thing that can disagree with each other is worse than
-    // one.
-    catLayout.pane.appendChild(makeSecLabel('Show on screen'));
-    const visStack = document.createElement('div');
-    visStack.className = 'qolc-stack';
-    for (const [id, label] of HIDEABLE) {
-      const row = makeRow(label, 'layHide', !layoutHidden(id), (on) => {
-        layoutSetHidden(id, !on);
-        dbg('hud piece', id, on ? 'shown' : 'hidden');
-      });
-      visStack.appendChild(row.row);
-    }
-    catLayout.pane.appendChild(visStack);
-    // ---- the three game stats, in Customization ----
-    //
-    // One card: the feature switch, then a row per figure carrying its own
-    // visibility switch and its own colour. Nesting carries the relationship,
-    // which is the rule the 1.25.0 rebuild settled, and it keeps three
-    // sub-settings out of the top level of a category that is mostly a picture.
-    const statsRow = makeRow(
-      'Separate game stats',
-      'gameStats',
-      settings.gameStats,
-      (on) => {
-        settings.gameStats = on;
-        store.set('gameStats', on);
-        if (!on) {
-          statsHideAll();
-          document.documentElement.classList.remove('qolc-stats-on');
-        }
-        syncStatRows();
-        layoutRefreshPreview();
-        dbg('separate game stats', on ? 'enabled' : 'disabled');
-      }
-    );
-
-    const statKids = [];
-    const statRowRefs = [];
-    for (const def of STAT_DEFS) {
-      const sub = makeSubRow(
-        def.label,
-        def.hint,
-        statShown(def.id),
-        (on) => {
-          statsSetHidden(def.id, !on);
-          layoutRefreshPreview();
-          dbg('stat', def.id, on ? 'shown' : 'hidden');
-        }
-      );
-      // The colour swatches sit on the row itself rather than behind a
-      // picker, because there are five of them and a row has the width. The
-      // sixth is a real colour input, so "any colour they please" is one click
-      // rather than a mode.
-      const swatches = document.createElement('div');
-      swatches.className = 'qolc-stat-colors';
-      const marks = [];
-      const paint = () => {
-        const cur = statColor(def.id).toLowerCase();
-        marks.forEach((m) => m.el.classList.toggle('on', m.value.toLowerCase() === cur));
-        free.value = statColor(def.id);
-      };
-      for (const [value, name] of STAT_COLORS) {
-        const dot = document.createElement('button');
-        dot.type = 'button';
-        dot.className = 'qolc-stat-dot';
-        dot.title = name;
-        dot.style.background = value;
-        dot.addEventListener('click', (e) => {
-          e.stopPropagation();
-          statsSetColor(def.id, value);
-          paint();
-        });
-        swatches.appendChild(dot);
-        marks.push({el: dot, value});
-      }
-      const free = document.createElement('input');
-      free.type = 'color';
-      free.className = 'qolc-stat-free';
-      free.title = 'Any colour';
-      free.value = statColor(def.id);
-      free.addEventListener('input', (e) => {
-        e.stopPropagation();
-        statsSetColor(def.id, free.value);
-        paint();
-      });
-      free.addEventListener('click', (e) => e.stopPropagation());
-      swatches.appendChild(free);
-      sub.row.appendChild(swatches);
-      paint();
-      statKids.push(sub.row);
-      statRowRefs.push(sub.row);
-    }
-
-    const statsCard = makeCard(statsRow.row, statKids);
-    syncStatRows = () => {
-      for (const row of statRowRefs) {
-        row.classList.toggle('qolc-row-off', !settings.gameStats);
-      }
-    };
-    syncStatRows();
-    catLayout.pane.appendChild(makeSecLabel('Game stats'));
-    catLayout.pane.appendChild(statsCard);
     // General is built out of order too — the camera zoom card is constructed
     // before the HP rows are — so its three sections are pinned here.
     const genDetail = document.createElement('div');
@@ -22362,12 +20291,6 @@
     if (settings.turnSpeed) turnInstallEntityTrap();
     // Menus may render slightly after DOMContentLoaded.
     setTimeout(applyCluttersIfEnabled, 500);
-    // A saved layout is applied once here rather than waiting for the pacer.
-    // The pacer stands down for a hidden tab, which is right for everything
-    // else on it and wrong for this: a tab that loads in the background and is
-    // switched to later would show mope's HUD in its own places for a moment
-    // and then rearrange itself in front of the player.
-    layoutSyncMope();
     let lastTextTrack = 0;
     setInterval(() => {
       // This walk exists to keep the panel and the menus current, and there is
@@ -22382,23 +20305,13 @@
         trackTexts();
       }
       positionExtrasBtn();
-      // The three game stats ride the same pacer, for the same reason: they
-      // are DOM, they change a few times a second at most, and reading them
-      // off mope's block is a querySelectorAll rather than anything on the
-      // frame path.
-      statsTick(now);
       // The roster is DOM, and incoming peer messages already arrive without
       // a renderer. Keep it usable even while renderer recovery is pending.
       // partyListTick has its own throttle, shared with the render path.
       try { if (partyWorkNeeded()) partyListTick(now); }
       catch (e) { frameFailed('party list', e); }
-      // The layout registry rides this pacer rather than the render hook: the
-      // elements it moves are DOM, they only move when the window resizes or
-      // somebody drags one, and putting it on the frame path would tie the
-      // whole feature to a renderer capture it does not need.
-      layoutTick(now);
       // The water instrument rides it too, and for a narrower reason than the
-      // two above: this call does not READ the meter, it only re-attaches the
+      // one above: this call does not READ the meter, it only re-attaches the
       // two MutationObservers when Svelte has replaced the nodes under them.
       // Every actual measurement happens in an observer callback, at the
       // instant mope writes the value, which is the whole reason the timings
