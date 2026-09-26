@@ -33,7 +33,8 @@ Coming soon.
 3. Click **Load unpacked** and pick the folder that contains `manifest.json`.
 4. Reload mope.io.
 
-A developer-mode install does not update itself. To update, replace the folder
+A developer-mode install does not update itself, but it tells you on the menu
+when a newer version is out. To update, replace the folder
 contents with a newer release, then click the reload arrow on the extension's
 card.
 
@@ -68,8 +69,16 @@ payloads are encrypted with AES-GCM under a key derived from your party code
 the clear. The brokers can see that traffic exists and how large it is; they
 cannot read it.
 
-Nothing is sent anywhere else, there is no analytics or telemetry, and no
-data leaves your machine while both features are off. Your settings are
+**Update check (extension only).** Once a day the extension downloads this
+repository's `manifest.json` from GitHub to see whether a newer version is out.
+That request carries nothing about you. GitHub sees it the way it sees any page
+visit. It is on by default and can be switched off in Settings →
+Troubleshooting. A Tampermonkey copy never checks, because Tampermonkey updates
+it on its own.
+
+Nothing else is sent anywhere, and there is no analytics or telemetry. With
+the party, the registry and the update check all off, no data leaves your
+machine. Your settings, and the hook record in Settings → Troubleshooting, are
 stored locally in your own browser.
 
 The source is one file and it is all here — if you would rather check than

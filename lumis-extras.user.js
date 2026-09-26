@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.24
+// @version      1.0.25
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -28,6 +28,15 @@
  *      Lumi's — if you are working on this and think a change earns it, ask.
  *      Default to leaving it alone.
  *   y  everything else: features, fixes, extra gradients, copy tweaks.
+ *
+ * 1.0.25 keeps a HOOK RECORD: one line per game saying whether mope's game
+ * object, renderer and camera were caught directly and whether the player
+ * lock ever had to guess (Settings → Troubleshooting, or __lumiHookRecord()).
+ * It is the evidence the next step waits on — deleting the guessing
+ * fallbacks once the extension is shown never to need them. The extension
+ * also checks GitHub once a day for a newer release, since a Load-unpacked
+ * install never updates itself, and a Tampermonkey copy says once that the
+ * extension exists.
  *
  * 1.0.24 is the first build that is also a Chrome extension. It is the same
  * file: manifest.json runs it straight in the page at document_start, which
@@ -3051,7 +3060,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.24';
+    return '1.0.25';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -3295,6 +3304,9 @@
     turnSpeedValue: normalizeTurnSpeed(store.get('turnSpeedValue', TURN_NEUTRAL)),
     turnStyle: normalizeTurnStyle(store.get('turnStyle', 'linear')),
     debug: !!store.get('debug', false),
+    // 1.0.25. The extension's once-a-day look for a newer release. On unless
+    // switched off; a Tampermonkey copy never checks.
+    updateCheck: store.get('updateCheck', true) !== false,
   };
 
   /* ================= keybinds (1.0.7) =================
@@ -4970,6 +4982,183 @@
   }
   try { PAGE.__lumiCaptureDebug = captureDebug; }
   catch (e) { window.__lumiCaptureDebug = captureDebug; }
+
+  // ---------------------------------------------------------- the hook record
+  //
+  // 1.0.25. Whether the mis-hooks are actually gone, answered from evidence
+  // rather than from how the last game felt.
+  //
+  // Every mis-hook traced so far came down to one of two things: mope's game
+  // object was never caught (the script arrived after mope had built it, so
+  // there was no `$.player` to ask), or it was caught and something fell back
+  // to GUESSING which animal is yours anyway. So each game gets one line,
+  // written ten seconds in, saying how each hook was caught and whether the
+  // player lock ever had to guess. The last thirty are kept.
+  //
+  // That record is also the gate for the next step. Every guessing fallback
+  // left in this file exists for a copy that missed the game object; once the
+  // record shows the extension never misses, the fallbacks can be deleted and
+  // a miss can be reported as a miss instead of being papered over.
+  //
+  // Nothing here leaves the browser. "Copy report" puts it on the clipboard so
+  // it can be pasted to Lumi by hand.
+  const HOOK_LOG_KEY = 'hookLog';
+  const HOOK_LOG_MAX = 30;
+  const HOOK_SAMPLE_AFTER_MS = 10000;
+  const hookRecord = {
+    log: (() => { const v = store.get(HOOK_LOG_KEY, null); return Array.isArray(v) ? v : []; })(),
+    entry: null,        // this page load's line, once written
+    inGameSince: 0,
+  };
+
+  // 'game' when mope's own $.player decided, 'guessed' when the inference ran,
+  // '' when nothing has needed a lock yet (every feature that uses one is off).
+  function hookLockKind() {
+    const by = hpState.lockedBy || '';
+    if (by === 'game') return 'game';
+    return by ? 'guessed' : '';
+  }
+
+  function hookSnapshot() {
+    return {
+      at: Date.now(),
+      v: VERSION,
+      via: QOLC_VIA,
+      game: !!gameCapture.game,
+      renderer: gameCapture.rendererVia ||
+        (renderers.length ? 'Pixi devtools hook' : 'none'),
+      camera: zoomHub.hooked() ? (zoomHub.hookedVia() || 'hooked') : 'none',
+      lock: hookLockKind(),
+    };
+  }
+
+  // Runs on the 250ms pacer. One store write per game, plus one more only if
+  // the lock is later seen guessing — never a write per tick.
+  function hookRecordTick(now) {
+    if (prevMenuVisible !== false) { hookRecord.inGameSince = 0; return; }
+    if (!hookRecord.inGameSince) hookRecord.inGameSince = now;
+    const entry = hookRecord.entry;
+    if (!entry) {
+      if (now - hookRecord.inGameSince < HOOK_SAMPLE_AFTER_MS) return;
+      hookRecord.entry = hookSnapshot();
+      hookRecord.log.push(hookRecord.entry);
+      if (hookRecord.log.length > HOOK_LOG_MAX) hookRecord.log.splice(0, hookRecord.log.length - HOOK_LOG_MAX);
+      store.set(HOOK_LOG_KEY, hookRecord.log);
+      return;
+    }
+    const lock = hookLockKind();
+    if (lock && entry.lock !== 'guessed' && lock !== entry.lock) {
+      entry.lock = lock;
+      store.set(HOOK_LOG_KEY, hookRecord.log);
+    }
+  }
+
+  // One line for the Settings pane. Counts only lines written by the way this
+  // copy is installed, so a Tampermonkey history does not muddy the
+  // extension's.
+  function hookSummary(log, via) {
+    const mine = log.filter((e) => e && e.via === via);
+    if (!mine.length) return 'Nothing recorded yet. Play a game for ten seconds.';
+    const n = mine.length;
+    const game = mine.filter((e) => e.game).length;
+    const renderer = mine.filter((e) => e.renderer && e.renderer !== 'none').length;
+    const camera = mine.filter((e) => e.camera && e.camera !== 'none').length;
+    const guessed = mine.filter((e) => e.lock === 'guessed').length;
+    const clean = game === n && renderer === n && camera === n && guessed === 0;
+    return (clean ? 'All clean. ' : '') + 'Last ' + n + (n === 1 ? ' game' : ' games') +
+      ': game ' + game + '/' + n + ', renderer ' + renderer + '/' + n +
+      ', camera ' + camera + '/' + n + ', player guessed in ' + guessed + '.';
+  }
+
+  function hookReport() {
+    return JSON.stringify({
+      version: VERSION, via: QOLC_VIA, now: hookSnapshot(),
+      capture: captureDebug(), log: hookRecord.log,
+    }, null, 1);
+  }
+
+  function hookRecordDebug() {
+    console.log(TAG, hookSummary(hookRecord.log, QOLC_VIA));
+    console.table ? console.table(hookRecord.log) : console.log(hookRecord.log);
+    return hookRecord.log;
+  }
+  try { PAGE.__lumiHookRecord = hookRecordDebug; }
+  catch (e) { window.__lumiHookRecord = hookRecordDebug; }
+
+  // ------------------------------------------------------------ keeping current
+  //
+  // 1.0.25. An extension loaded with "Load unpacked" never updates itself, and
+  // that is how this one is shared. So the extension copy looks, at most once a
+  // day, at the version in the repository's manifest.json and says so on the
+  // menu when a newer one is out. It fetches one public file from GitHub and
+  // sends nothing; Settings → Troubleshooting switches it off.
+  //
+  // A Tampermonkey copy has its own updater, so it does not check. It gets a
+  // one-time note that the extension exists instead, once per version.
+  const UPDATE_URL = 'https://raw.githubusercontent.com/Luminosity67/lumis-extras/main/manifest.json';
+  const UPDATE_PAGE = 'https://github.com/Luminosity67/lumis-extras/releases/latest';
+  const UPDATE_EVERY_MS = 24 * 60 * 60 * 1000;
+  const menuNotice = {text: '', bad: false};
+
+  // True when `a` is a later 1.x.y than `b`. Missing parts count as 0.
+  function qolcVersionNewer(a, b) {
+    const pa = String(a).split('.').map((n) => parseInt(n, 10) || 0);
+    const pb = String(b).split('.').map((n) => parseInt(n, 10) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const x = pa[i] || 0, y = pb[i] || 0;
+      if (x !== y) return x > y;
+    }
+    return false;
+  }
+
+  function updateAvailable() {
+    const v = store.get('updateLatest', '');
+    return v && qolcVersionNewer(v, VERSION) ? v : '';
+  }
+
+  function updateCheck() {
+    if (QOLC_VIA !== 'extension' || !settings.updateCheck) return;
+    const last = Number(store.get('updateCheckedAt', 0)) || 0;
+    if (Date.now() - last < UPDATE_EVERY_MS) {
+      const known = updateAvailable();
+      if (known) queueMenuNotice('Lumi’s Extras ' + known + ' is out. Get it from the GitHub releases page (Settings → Troubleshooting).');
+      return;
+    }
+    store.set('updateCheckedAt', Date.now());
+    fetch(UPDATE_URL, {cache: 'no-store', credentials: 'omit'})
+      .then((r) => (r.ok ? r.json() : null))
+      .then((m) => {
+        if (!m || typeof m.version !== 'string') return;
+        store.set('updateLatest', m.version);
+        const known = updateAvailable();
+        if (known) queueMenuNotice('Lumi’s Extras ' + known + ' is out. Get it from the GitHub releases page (Settings → Troubleshooting).');
+        syncTroubleshootingUI();
+      })
+      .catch((e) => dbg('update check failed', e));
+  }
+
+  function userscriptNotice() {
+    if (QOLC_VIA !== 'userscript') return;
+    if (store.get('extensionNoticeFor', '') === VERSION) return;
+    store.set('extensionNoticeFor', VERSION);
+    queueMenuNotice('Lumi’s Extras works best as a browser extension now. ' +
+      'Install it from github.com/Luminosity67/lumis-extras.');
+  }
+
+  // Shown on the MENU only — never over a game — and held long enough to read.
+  function queueMenuNotice(text, bad) {
+    menuNotice.text = text;
+    menuNotice.bad = !!bad;
+  }
+
+  function menuNoticeTick() {
+    if (!menuNotice.text || prevMenuVisible !== true) return;
+    qolcToast(menuNotice.text, menuNotice.bad ? 'is-bad' : '', 9000);
+    menuNotice.text = '';
+  }
+
+  // Replaced with the real thing once the panel exists.
+  let syncTroubleshootingUI = () => {};
 
   // Everything drawn in the world — name colors above all — depends on one of
   // the two hooks above catching a renderer. If neither did, in-world colors
@@ -17978,6 +18167,8 @@
     arenaTheme: 'Which backdrop. Starfield is deep space and the original; Antimatter is the same sky as a negative, pale with dark stars; Deep Water is pale motes on blue-green with no star band.',
     panelTheme: 'Panel theme — recolours the Extras panel itself. It changes nothing about the game.',
     debugLogging: 'Debug logging — writes what the script is doing to the browser console (F12). Only useful when reporting a problem; leave it off otherwise.',
+    hookRecord: 'Hook record — for each game, whether the script caught mope\'s game object, renderer and camera directly, and whether it ever had to guess which animal is yours. Stays in your browser; Copy report puts it on the clipboard to send to Lumi.',
+    updateCheck: 'Check for updates — once a day, reads the version number from this mod\'s GitHub page and tells you on the menu when a newer one is out. Nothing about you is sent.',
     zorderAbove: 'Draw above other players — forces your animal to be painted over every other one. mope decides this inconsistently on its own. Toggled in game with the ] key.',
     zorderBelow: 'Draw below other players — the opposite: everyone else is painted over you. Toggled in game with the [ key.',
     biteIndicator: 'Bite indicator — a bitten fighter cannot be bitten again for three seconds. A purple mark on their health bar counts that down, so you can see when they are worth biting again.',
@@ -18154,6 +18345,7 @@
     // The roster is only refreshed while its category is up, so bring it
     // current the moment it is opened rather than waiting for the next sweep.
     if (selected === 'party') syncPartyUI();
+    if (selected === 'settings') syncTroubleshootingUI();
   }
 
   function qolcSetHint(key) {
@@ -20089,6 +20281,77 @@
       console.log(TAG, 'debug', on ? 'enabled' : 'disabled');
     });
     settingsPane.appendChild(debugRow.row);
+
+    // 1.0.25. How the hooks have been caught, game by game. See hookRecordTick.
+    const hookRecRow = document.createElement('div');
+    hookRecRow.className = 'qolc-subrow';
+    hinted(hookRecRow, 'hookRecord');
+    const hookRecName = document.createElement('div');
+    hookRecName.className = 'qolc-row-name';
+    hookRecName.textContent = 'Hook record';
+    const hookRecNote = document.createElement('div');
+    hookRecNote.className = 'qolc-row-note';
+    const hookRecBtn = document.createElement('button');
+    hookRecBtn.className = 'qolc-hook-btn';
+    hookRecBtn.type = 'button';
+    hookRecBtn.textContent = 'Copy report';
+    hookRecBtn.title = 'Copy the record to the clipboard, to paste to Lumi';
+    hookRecBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const done = (ok) => {
+        hookRecBtn.textContent = ok ? 'Copied' : 'Copy failed';
+        setTimeout(() => { hookRecBtn.textContent = 'Copy report'; }, 1500);
+      };
+      try { navigator.clipboard.writeText(hookReport()).then(() => done(true), () => done(false)); }
+      catch (err) { done(false); }
+    });
+    hookRecRow.appendChild(hookRecName);
+    hookRecRow.appendChild(hookRecNote);
+    hookRecRow.appendChild(hookRecBtn);
+    settingsPane.appendChild(hookRecRow);
+
+    // The update check is the extension's alone, so a Tampermonkey copy does
+    // not get a switch that would do nothing.
+    let updateNote = null;
+    if (QOLC_VIA === 'extension') {
+      const updateRow = makeRow('Check for updates', 'updateCheck', settings.updateCheck, (on) => {
+        settings.updateCheck = on;
+        store.set('updateCheck', on);
+        if (on) store.set('updateCheckedAt', 0);
+        syncTroubleshootingUI();
+      });
+      settingsPane.appendChild(updateRow.row);
+      updateNote = document.createElement('div');
+      updateNote.className = 'qolc-subrow';
+      const updateName = document.createElement('div');
+      updateName.className = 'qolc-row-note';
+      const updateBtn = document.createElement('button');
+      updateBtn.className = 'qolc-hook-btn';
+      updateBtn.type = 'button';
+      updateBtn.textContent = 'Releases';
+      updateBtn.title = 'Open the GitHub releases page in a new tab';
+      // No name column on this row, so the button is pushed to the edge by
+      // hand to line up with Copy report above it.
+      updateBtn.style.marginLeft = 'auto';
+      updateBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        PAGE.open(UPDATE_PAGE, '_blank', 'noopener');
+      });
+      updateNote.appendChild(updateName);
+      updateNote.appendChild(updateBtn);
+      updateNote.textEl = updateName;
+      settingsPane.appendChild(updateNote);
+    }
+    syncTroubleshootingUI = () => {
+      hookRecNote.textContent = hookSummary(hookRecord.log, QOLC_VIA);
+      if (updateNote) {
+        const latest = updateAvailable();
+        updateNote.textEl.textContent = latest
+          ? 'Version ' + latest + ' is out. You have ' + VERSION + '.'
+          : settings.updateCheck ? 'Up to date (' + VERSION + ').' : 'Not checking. You have ' + VERSION + '.';
+      }
+    };
+    syncTroubleshootingUI();
     function syncPanelTheme() {
       const active = panelThemeOf().id;
       for (const b of panelThemeButtons) {
@@ -20352,6 +20615,10 @@
     if (qolcInstances.length > 1 && qolcInstances[0] === QOLC_INSTANCE) {
       setTimeout(() => qolcToast('Lumi’s Extras is installed twice. Keep the ' +
         'browser extension and uninstall the Tampermonkey copy.', 'is-bad', 12000), 2500);
+    } else {
+      // Both of these only queue a message; the pacer shows it on the menu.
+      userscriptNotice();
+      setTimeout(updateCheck, 4000);
     }
     let lastTextTrack = 0;
     setInterval(() => {
@@ -20367,6 +20634,8 @@
         trackTexts();
       }
       positionExtrasBtn();
+      try { hookRecordTick(now); } catch (e) { frameFailed('hook record', e); }
+      menuNoticeTick();
       // The roster is DOM, and incoming peer messages already arrive without
       // a renderer. Keep it usable even while renderer recovery is pending.
       // partyListTick has its own throttle, shared with the render path.

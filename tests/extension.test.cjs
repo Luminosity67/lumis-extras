@@ -80,3 +80,30 @@ test('positive controls: the userscript alone, and the extension, both carry on'
   assert.equal(ext.result, 'continued');
   assert.equal(ext.warnings.length, 0);
 });
+
+function fn(name) {
+  const start = source.search(new RegExp('^  function ' + name + '\\(', 'm'));
+  assert.notEqual(start, -1, name + ' exists');
+  return source.slice(start, source.indexOf('\n  }', start) + 4);
+}
+
+test('update check compares 1.x.y versions numerically', () => {
+  const newer = vm.runInNewContext(fn('qolcVersionNewer') + '; qolcVersionNewer');
+  assert.equal(newer('1.0.26', '1.0.25'), true);
+  assert.equal(newer('1.0.10', '1.0.9'), true, 'numeric, not string, order');
+  assert.equal(newer('1.1.0', '1.0.99'), true);
+  assert.equal(newer('1.0.25', '1.0.25'), false);
+  assert.equal(newer('1.0.24', '1.0.25'), false, 'an older release is never offered');
+  assert.equal(newer('1.0', '1.0.0'), false);
+});
+
+test('hook record summary counts only this install\'s games and flags any guess', () => {
+  const summary = vm.runInNewContext(fn('hookSummary') + '; hookSummary');
+  const good = {via: 'extension', game: true, renderer: 'game loop', camera: 'syncZoom', lock: 'game'};
+  assert.match(summary([], 'extension'), /Nothing recorded/);
+  assert.match(summary([good, good], 'extension'), /^All clean\. Last 2 games: game 2\/2, renderer 2\/2, camera 2\/2, player guessed in 0\./);
+  const missed = {...good, game: false, lock: 'guessed'};
+  const s = summary([good, missed, {...missed, via: 'userscript'}], 'extension');
+  assert.doesNotMatch(s, /All clean/);
+  assert.match(s, /Last 2 games: game 1\/2, .*player guessed in 1\./, 'the userscript line is not counted');
+});
