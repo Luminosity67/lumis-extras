@@ -224,7 +224,8 @@ test('DOM timer draws received party members with zero renderers, then expires t
   });
   for (const name of ['ensureExtrasUI', 'startDomObserver', 'startClutterLoop',
     'applyAbilityCooldown', 'applyHpNumbers', 'applyArenaSky', 'applyCluttersIfEnabled',
-    'dbg', 'trackTexts', 'positionExtrasBtn', 'waterTick']) h.c[name] = () => {};
+    'dbg', 'trackTexts', 'positionExtrasBtn', 'waterTick', 'userscriptNotice',
+    'updateCheck', 'hookRecordTick', 'menuNoticeTick']) h.c[name] = () => {};
   h.run(fn('partyListMembers'));
   h.run(fn('partyListTick'));
   h.run(fn('onReady'));
