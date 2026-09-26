@@ -69,7 +69,7 @@ payloads are encrypted with AES-GCM under a key derived from your party code
 the clear. The brokers can see that traffic exists and how large it is; they
 cannot read it.
 
-**Update check (extension only).** Once a day the extension downloads this
+**Update check (extension only).** Once an hour the extension downloads this
 repository's `manifest.json` from GitHub to see whether a newer version is out.
 That request carries nothing about you. GitHub sees it the way it sees any page
 visit. It is on by default and can be switched off in Settings →

@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.25
+// @version      1.0.26
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -28,6 +28,10 @@
  *      Lumi's — if you are working on this and think a change earns it, ask.
  *      Default to leaving it alone.
  *   y  everything else: features, fixes, extra gradients, copy tweaks.
+ *
+ * 1.0.26 checks for a new release every hour instead of once a day, and keeps
+ * checking while the tab stays open. Each release is announced once per page
+ * load, so the hourly check does not repeat itself.
  *
  * 1.0.25 keeps a HOOK RECORD: one line per game saying whether mope's game
  * object, renderer and camera were caught directly and whether the player
@@ -3060,7 +3064,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.25';
+    return '1.0.26';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -3304,7 +3308,7 @@
     turnSpeedValue: normalizeTurnSpeed(store.get('turnSpeedValue', TURN_NEUTRAL)),
     turnStyle: normalizeTurnStyle(store.get('turnStyle', 'linear')),
     debug: !!store.get('debug', false),
-    // 1.0.25. The extension's once-a-day look for a newer release. On unless
+    // 1.0.25. The extension's hourly look for a newer release. On unless
     // switched off; a Tampermonkey copy never checks.
     updateCheck: store.get('updateCheck', true) !== false,
   };
@@ -5088,8 +5092,8 @@
   // ------------------------------------------------------------ keeping current
   //
   // 1.0.25. An extension loaded with "Load unpacked" never updates itself, and
-  // that is how this one is shared. So the extension copy looks, at most once a
-  // day, at the version in the repository's manifest.json and says so on the
+  // that is how this one is shared. So the extension copy looks, at most once an
+  // hour, at the version in the repository's manifest.json and says so on the
   // menu when a newer one is out. It fetches one public file from GitHub and
   // sends nothing; Settings → Troubleshooting switches it off.
   //
@@ -5097,7 +5101,7 @@
   // one-time note that the extension exists instead, once per version.
   const UPDATE_URL = 'https://raw.githubusercontent.com/Luminosity67/lumis-extras/main/manifest.json';
   const UPDATE_PAGE = 'https://github.com/Luminosity67/lumis-extras/releases/latest';
-  const UPDATE_EVERY_MS = 24 * 60 * 60 * 1000;
+  const UPDATE_EVERY_MS = 60 * 60 * 1000;   // 1.0.26: hourly (was daily)
   const menuNotice = {text: '', bad: false};
 
   // True when `a` is a later 1.x.y than `b`. Missing parts count as 0.
@@ -5116,22 +5120,29 @@
     return v && qolcVersionNewer(v, VERSION) ? v : '';
   }
 
+  // The notice is said once per version per page load. The check itself now
+  // repeats every hour, and without this a known release would be announced
+  // again on every one of them.
+  let updateAnnounced = '';
+
+  function updateAnnounce() {
+    const known = updateAvailable();
+    if (!known || known === updateAnnounced) return;
+    updateAnnounced = known;
+    queueMenuNotice('Lumi’s Extras ' + known + ' is out. Get it from the GitHub releases page (Settings → Troubleshooting).');
+  }
+
   function updateCheck() {
     if (QOLC_VIA !== 'extension' || !settings.updateCheck) return;
     const last = Number(store.get('updateCheckedAt', 0)) || 0;
-    if (Date.now() - last < UPDATE_EVERY_MS) {
-      const known = updateAvailable();
-      if (known) queueMenuNotice('Lumi’s Extras ' + known + ' is out. Get it from the GitHub releases page (Settings → Troubleshooting).');
-      return;
-    }
+    if (Date.now() - last < UPDATE_EVERY_MS) { updateAnnounce(); return; }
     store.set('updateCheckedAt', Date.now());
     fetch(UPDATE_URL, {cache: 'no-store', credentials: 'omit'})
       .then((r) => (r.ok ? r.json() : null))
       .then((m) => {
         if (!m || typeof m.version !== 'string') return;
         store.set('updateLatest', m.version);
-        const known = updateAvailable();
-        if (known) queueMenuNotice('Lumi’s Extras ' + known + ' is out. Get it from the GitHub releases page (Settings → Troubleshooting).');
+        updateAnnounce();
         syncTroubleshootingUI();
       })
       .catch((e) => dbg('update check failed', e));
@@ -18168,7 +18179,7 @@
     panelTheme: 'Panel theme — recolours the Extras panel itself. It changes nothing about the game.',
     debugLogging: 'Debug logging — writes what the script is doing to the browser console (F12). Only useful when reporting a problem; leave it off otherwise.',
     hookRecord: 'Hook record — for each game, whether the script caught mope\'s game object, renderer and camera directly, and whether it ever had to guess which animal is yours. Stays in your browser; Copy report puts it on the clipboard to send to Lumi.',
-    updateCheck: 'Check for updates — once a day, reads the version number from this mod\'s GitHub page and tells you on the menu when a newer one is out. Nothing about you is sent.',
+    updateCheck: 'Check for updates — once an hour, reads the version number from this mod\'s GitHub page and tells you on the menu when a newer one is out. Nothing about you is sent.',
     zorderAbove: 'Draw above other players — forces your animal to be painted over every other one. mope decides this inconsistently on its own. Toggled in game with the ] key.',
     zorderBelow: 'Draw below other players — the opposite: everyone else is painted over you. Toggled in game with the [ key.',
     biteIndicator: 'Bite indicator — a bitten fighter cannot be bitten again for three seconds. A purple mark on their health bar counts that down, so you can see when they are worth biting again.',
@@ -20619,6 +20630,10 @@
       // Both of these only queue a message; the pacer shows it on the menu.
       userscriptNotice();
       setTimeout(updateCheck, 4000);
+      // And again while the tab stays open, which a mope tab often does for
+      // hours. Asked every five minutes; updateCheck() only goes to GitHub
+      // once an hour has passed, and says nothing new about a known release.
+      setInterval(updateCheck, 5 * 60 * 1000);
     }
     let lastTextTrack = 0;
     setInterval(() => {
