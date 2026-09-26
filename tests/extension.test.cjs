@@ -82,7 +82,7 @@ test('positive controls: the userscript alone, and the extension, both carry on'
 });
 
 function fn(name) {
-  const start = source.search(new RegExp('^  function ' + name + '\(', 'm'));
+  const start = source.search(new RegExp('^  function ' + name + '\\(', 'm'));
   assert.notEqual(start, -1, name + ' exists');
   return source.slice(start, source.indexOf('\n  }', start) + 4);
 }
