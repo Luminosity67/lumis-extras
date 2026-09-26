@@ -220,10 +220,11 @@ test('DOM timer draws received party members with zero renderers, then expires t
     partyListLayer: () => layer, layoutVmin: () => 1, layoutStyle() {},
     partyListApplyBox() {}, layoutPlace() {}, partyListRow: () => ({}),
     partyListPaint: (row, member) => painted.push(member),
+    qolcInstances: [], QOLC_INSTANCE: {}, qolcToast() {},
   });
   for (const name of ['ensureExtrasUI', 'startDomObserver', 'startClutterLoop',
     'applyAbilityCooldown', 'applyHpNumbers', 'applyArenaSky', 'applyCluttersIfEnabled',
-    'registerMenu', 'dbg', 'trackTexts', 'positionExtrasBtn', 'waterTick']) h.c[name] = () => {};
+    'dbg', 'trackTexts', 'positionExtrasBtn', 'waterTick']) h.c[name] = () => {};
   h.run(fn('partyListMembers'));
   h.run(fn('partyListTick'));
   h.run(fn('onReady'));

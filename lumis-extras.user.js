@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.23
+// @version      1.0.24
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -13,7 +13,6 @@
 // @grant        unsafeWindow
 // @grant        GM_getValue
 // @grant        GM_setValue
-// @grant        GM_registerMenuCommand
 // @noframes
 // @license      MIT
 // ==/UserScript==
@@ -29,6 +28,17 @@
  *      Lumi's — if you are working on this and think a change earns it, ask.
  *      Default to leaving it alone.
  *   y  everything else: features, fixes, extra gradients, copy tweaks.
+ *
+ * 1.0.24 is the first build that is also a Chrome extension. It is the same
+ * file: manifest.json runs it straight in the page at document_start, which
+ * Chrome guarantees is before any of mope's code, so the construction-time
+ * hooks can no longer lose the race a userscript manager sometimes loses.
+ * Nothing here needs Tampermonkey any more — storage already fell back to
+ * localStorage, `unsafeWindow` to `window` and the version to its literal —
+ * so the only changes are around the edges: Debug logging moved from
+ * Tampermonkey's menu to Settings, a userscript copy stands down when it finds
+ * the extension already on the page, and two copies running at once are now
+ * reported on screen rather than only in the console.
  *
  * 1.0.23 removes the Customization category. mope is adding HUD customization
  * of its own, and two systems moving the same elements would fight, so the
@@ -2271,6 +2281,40 @@
   const PAGE = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
   const TAG = '[LumisExtras]';
 
+  // How this copy was loaded. The Chrome extension and the userscript are the
+  // SAME FILE: the extension's manifest runs it straight in the page, at
+  // document_start, with nothing wrapped around it. Every userscript manager
+  // defines GM_info for every script it runs, even under @grant none, and
+  // nothing defines it for an extension's page-world script — so that one
+  // check is the whole test.
+  const QOLC_VIA = typeof GM_info !== 'undefined' ? 'userscript' : 'extension';
+
+  // 1.0.24. With both installed, the extension is the copy to keep. Chrome
+  // runs an extension's document_start script before any of the page's own,
+  // and every hook this script depends on — the game singleton, the camera,
+  // the renderer — is caught while mope's code is BUILDING them. A userscript
+  // manager cannot promise to be that early, and when it is late those hooks
+  // miss, which is where the mis-hooks came from.
+  //
+  // So a userscript copy that finds the extension already on the page does
+  // nothing at all: this runs before the zoom hub, before any trap and before
+  // anything is drawn. The other order (the userscript first) cannot be
+  // settled from here — the extension cannot unload a copy that has already
+  // hooked things — so that case is left to the warning further down.
+  if (QOLC_VIA === 'userscript') {
+    let extensionRunning = false;
+    try {
+      const list = PAGE.__lumiExtrasInstances;
+      extensionRunning = Array.isArray(list) && list.some((i) => i && i.via === 'extension');
+    } catch (e) { /* sealed page: assume alone */ }
+    if (extensionRunning) {
+      console.warn(TAG, 'the Lumi\'s Extras browser extension is already running ' +
+        'on this page, so this Tampermonkey copy is standing down. Uninstall ' +
+        'the Tampermonkey copy; the extension replaces it.');
+      return;
+    }
+  }
+
   // Announced on the page, not in the sandbox, so a sibling script can see it.
   // Lumi's FOV stands down against this; camera zoom below stands down against
   // the moderator script's equivalent flag.
@@ -3007,7 +3051,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.0.23';
+    return '1.0.24';
   })();
 
   // ---------------------------------------------------------------- settings
@@ -3051,9 +3095,16 @@
   //
   // Not fatal on purpose: refusing to run would leave somebody with the newer
   // copy disabled and the older one in charge. Both keep working; the console
-  // says what is going on, and __lumiInstances() answers it on demand.
+  // says what is going on, and __lumiInstances() answers it on demand. The one
+  // exception is a userscript meeting the extension, settled at the very top.
+  //
+  // 1.0.24 also says it ON SCREEN, once the page is up (see onReady), because
+  // the likeliest way to get here now is somebody who installed the extension
+  // and has not removed Tampermonkey's copy — and the console is not where
+  // that person is looking.
   const QOLC_INSTANCE = {
     version: VERSION,
+    via: QOLC_VIA,
     at: (function () { try { return performance.now(); } catch (e) { return 0; } })(),
   };
 
@@ -3066,17 +3117,18 @@
     list.push(QOLC_INSTANCE);
     if (list.length > 1) {
       console.warn(TAG, 'ANOTHER COPY OF THIS SCRIPT IS ALREADY RUNNING on ' +
-        'this page (' + list.map((i) => i.version).join(' + ') + '). Two copies ' +
-        'draw two of every overlay, publish to the party twice, and fight over ' +
-        'mope\'s ability buttons. Disable all but one in your userscript ' +
-        'manager. Run __lumiInstances() for details.');
+        'this page (' + list.map((i) => i.version + ' ' + (i.via || 'userscript')).join(' + ') +
+        '). Two copies draw two of every overlay, publish to the party twice, ' +
+        'and fight over mope\'s ability buttons. Keep the extension and ' +
+        'uninstall any Tampermonkey copy. Run __lumiInstances() for details.');
     }
     return list;
   })();
 
   try {
     PAGE.__lumiInstances = () => qolcInstances.map((i, n) => ({
-      copy: n + 1, version: i.version, startedAtMs: Math.round(i.at),
+      copy: n + 1, version: i.version, via: i.via || 'userscript (before 1.0.24)',
+      startedAtMs: Math.round(i.at),
     }));
   } catch (e) { /* page is locked down; the console warning still stands */ }
 
@@ -5079,8 +5131,8 @@
         'left alone and its wheel is intercepted, so this is the only zoom moving.');
     } else if (report.trap.indexOf('armed') !== 0) {
       console.warn(TAG, 'the camera hook could not be installed on the page — check ' +
-        'that the script is installed with @grant unsafeWindow and that the ' +
-        'userscript manager is up to date.');
+        'that the script is running in the page itself. The extension always does; ' +
+        'a Tampermonkey copy needs @grant unsafeWindow and an up-to-date manager.');
     } else {
       console.warn(TAG, 'mope\'s camera has not been seen being built yet. The hook ' +
         'stays armed for the whole session, so this usually clears itself once ' +
@@ -5396,7 +5448,8 @@
         'setting is at neutral (' + TURN_NEUTRAL + ') and there is nothing to change.');
     } else if (!report.entityTrap.startsWith('installed')) {
       console.warn(TAG, 'the entity trap could not be installed on this page — check ' +
-        'that the script has @grant unsafeWindow.');
+        'that the script is running in the page itself (the extension always does; a ' +
+        'Tampermonkey copy needs @grant unsafeWindow).');
     } else {
       console.warn(TAG, 'no animal has gone through the trap yet. Join a game with ' +
         'the setting on: mope does not build any animal until then. If it stays ' +
@@ -6769,7 +6822,7 @@
   const qolcToastState = {el: null, timer: 0};
   const QOLC_TOAST_MS = 2600;
 
-  function qolcToast(text, cls) {
+  function qolcToast(text, cls, ms) {
     try {
       if (!qolcToastState.el || !qolcToastState.el.isConnected) {
         const host = document.body || document.documentElement;
@@ -6785,7 +6838,7 @@
       clearTimeout(qolcToastState.timer);
       qolcToastState.timer = setTimeout(() => {
         if (qolcToastState.el) qolcToastState.el.style.display = 'none';
-      }, QOLC_TOAST_MS);
+      }, ms || QOLC_TOAST_MS);
     } catch (e) { /* the message is a courtesy; never let it break the caller */ }
   }
 
@@ -17924,6 +17977,7 @@
     arenaSky: 'Arena theme — a backdrop behind your own 1v1 duels. Z toggles it in game.',
     arenaTheme: 'Which backdrop. Starfield is deep space and the original; Antimatter is the same sky as a negative, pale with dark stars; Deep Water is pale motes on blue-green with no star band.',
     panelTheme: 'Panel theme — recolours the Extras panel itself. It changes nothing about the game.',
+    debugLogging: 'Debug logging — writes what the script is doing to the browser console (F12). Only useful when reporting a problem; leave it off otherwise.',
     zorderAbove: 'Draw above other players — forces your animal to be painted over every other one. mope decides this inconsistently on its own. Toggled in game with the ] key.',
     zorderBelow: 'Draw below other players — the opposite: everyone else is painted over you. Toggled in game with the [ key.',
     biteIndicator: 'Bite indicator — a bitten fighter cannot be bitten again for three seconds. A purple mark on their health bar counts that down, so you can see when they are worth biting again.',
@@ -20024,6 +20078,17 @@
     }
     themePanelRow.appendChild(themePanelPicks);
     settingsPane.appendChild(themePanelRow);
+
+    /* ---- Settings: troubleshooting ---- */
+    // 1.0.24. This lived in Tampermonkey's menu, which the extension does not
+    // have, so it is here for both — one place, whichever way it was installed.
+    settingsPane.appendChild(makeSecLabel('Troubleshooting'));
+    const debugRow = makeRow('Debug logging', 'debugLogging', settings.debug, (on) => {
+      settings.debug = on;
+      store.set('debug', on);
+      console.log(TAG, 'debug', on ? 'enabled' : 'disabled');
+    });
+    settingsPane.appendChild(debugRow.row);
     function syncPanelTheme() {
       const active = panelThemeOf().id;
       for (const b of panelThemeButtons) {
@@ -20254,17 +20319,6 @@
     dbg('DOM observer installed');
   }
 
-  // ---------------------------------------------------------- menu commands
-
-  function registerMenu() {
-    if (typeof GM_registerMenuCommand !== 'function') return;
-    GM_registerMenuCommand(`Debug logging: ${settings.debug ? 'ON' : 'OFF'} (toggle)`, () => {
-      settings.debug = !settings.debug;
-      store.set('debug', settings.debug);
-      console.log(TAG, 'debug', settings.debug ? 'enabled' : 'disabled');
-    });
-  }
-
   // -------------------------------------------------------------------- go
 
   // This must run at document-start, before the game script loads. The radius
@@ -20291,6 +20345,14 @@
     if (settings.turnSpeed) turnInstallEntityTrap();
     // Menus may render slightly after DOMContentLoaded.
     setTimeout(applyCluttersIfEnabled, 500);
+    // Two copies on the page, said where the player will see it. Only the
+    // FIRST copy says it — both see the same shared list, and two toasts built
+    // by two copies would be the very duplication being complained about.
+    // Late enough for the menu to have drawn, and held long enough to read.
+    if (qolcInstances.length > 1 && qolcInstances[0] === QOLC_INSTANCE) {
+      setTimeout(() => qolcToast('Lumi’s Extras is installed twice. Keep the ' +
+        'browser extension and uninstall the Tampermonkey copy.', 'is-bad', 12000), 2500);
+    }
     let lastTextTrack = 0;
     setInterval(() => {
       // This walk exists to keep the panel and the menus current, and there is
@@ -20318,7 +20380,6 @@
       // out of it are worth anything.
       waterTick();
     }, 250);
-    registerMenu();
     dbg('ready — menuClutter:', settings.menuClutter,
       'abilityCooldown:', settings.abilityCooldown, 'hpNumbers:', settings.hpNumbers,
       'cameraZoom:', settings.cameraZoom,

@@ -8,15 +8,43 @@ party chat, clutter controls, and solid or gradient player-name colours.
 
 ## Install
 
-1. Install [Tampermonkey](https://www.tampermonkey.net/) for your browser.
-2. Click **[lumis-extras.user.js](../../raw/main/lumis-extras.user.js)**.
-3. Tampermonkey will open an install page. Click **Install**.
+Lumi's Extras is a **browser extension** for Chrome, Vivaldi, Edge, Brave and
+other Chromium browsers.
 
-Updates are automatic from then on — Tampermonkey checks this repository and
-pulls new versions as they are published.
+It used to be a Tampermonkey userscript, and the same file still works that
+way, but the extension is the version to use. Chrome starts an extension's
+script before any of mope's own code runs, and every hook this script depends
+on (the game, the camera, the renderer) has to be in place while mope is
+building them. Tampermonkey can't guarantee that timing, and when it ran late
+those hooks missed. That timing is behind most of the long-running "mis-hook"
+bugs.
 
-> Install from the link above, not by pasting the file into Tampermonkey's
-> editor. A pasted script is a local copy and will never update.
+### From the Chrome Web Store
+
+Coming soon.
+
+### Loading it yourself (developer mode)
+
+1. Download the latest `lumis-extras-<version>.zip` from
+   [Releases](../../releases) and unzip it. A clone of this repository works
+   too.
+2. Open `chrome://extensions` (in Vivaldi, `vivaldi://extensions`) and turn on
+   **Developer mode**.
+3. Click **Load unpacked** and pick the folder that contains `manifest.json`.
+4. Reload mope.io.
+
+A developer-mode install does not update itself. To update, replace the folder
+contents with a newer release, then click the reload arrow on the extension's
+card.
+
+### Moving over from Tampermonkey
+
+Install the extension, then **uninstall the Tampermonkey copy**. Your settings
+carry over, because both keep them in the same place in your browser.
+
+If both are installed, the Tampermonkey copy steps aside whenever the extension
+is already running. If the userscript happens to load first, the game shows a
+warning telling you to remove it.
 
 ## Using it
 
@@ -54,6 +82,14 @@ the panel, your browser, and whether you have any other mope.io scripts or
 extensions installed.
 
 ## Development
+
+The extension is `manifest.json`, `lumis-extras.user.js` and `icons/`, and
+nothing else. There is no build step: the manifest runs the userscript file
+as-is, in the page (`"world": "MAIN"`) at `document_start`. The version lives in
+three places (the manifest, the `@version` line and the fallback literal
+`VERSION` returns), and the checks fail if they disagree. To release, bump all
+three and push a tag `v<version>`. The *Extension package* workflow then builds
+the store zip and attaches it to a GitHub release.
 
 Run `node scripts/check.cjs` before releasing. The same regression suite runs in
 GitHub Actions on every push and pull request. See
