@@ -4,8 +4,7 @@ A quality-of-life and cosmetic userscript for [mope.io](https://mope.io).
 
 Ability cooldown timers, HP damage numbers, a camera zoom, turn-speed feel,
 a night sky behind 1v1 duels, an encrypted party map with a party list and
-party chat, clutter controls, a rearrangeable HUD, and solid or gradient
-player-name colours.
+party chat, clutter controls, and solid or gradient player-name colours.
 
 ## Install
 

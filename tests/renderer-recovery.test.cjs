@@ -29,7 +29,7 @@ function setup({separatePage = false} = {}) {
     sceneSweepNeeded: () => false, hpWorkNeeded: () => true,
     partyWorkNeeded: () => true, arenaSkyWorkNeeded: () => false,
     boostPlace() {}, hpTick: () => calls.push('hp'), zorderApply() {}, nameReconcile() {},
-    partyTick: stage => calls.push(['party', stage]), layoutPixiTick() {},
+    partyTick: stage => calls.push(['party', stage]),
     arenaDuelTick() {}, boostTick() {}, frameFailed: (...args) => failures.push(args),
     record: (...args) => calls.push(args),
   });
@@ -223,8 +223,7 @@ test('DOM timer draws received party members with zero renderers, then expires t
   });
   for (const name of ['ensureExtrasUI', 'startDomObserver', 'startClutterLoop',
     'applyAbilityCooldown', 'applyHpNumbers', 'applyArenaSky', 'applyCluttersIfEnabled',
-    'layoutSyncMope', 'registerMenu', 'dbg', 'trackTexts', 'positionExtrasBtn',
-    'statsTick', 'layoutTick', 'waterTick']) h.c[name] = () => {};
+    'registerMenu', 'dbg', 'trackTexts', 'positionExtrasBtn', 'waterTick']) h.c[name] = () => {};
   h.run(fn('partyListMembers'));
   h.run(fn('partyListTick'));
   h.run(fn('onReady'));
