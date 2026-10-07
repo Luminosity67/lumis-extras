@@ -12,12 +12,13 @@ Lumi's Extras is a **browser extension** for Chrome, Vivaldi, Edge, Brave and
 other Chromium browsers.
 
 It used to be a Tampermonkey userscript, and the same file still works that
-way, but the extension is the version to use. Chrome starts an extension's
-script before any of mope's own code runs, and every hook this script depends
-on (the game, the camera, the renderer) has to be in place while mope is
-building them. Tampermonkey can't guarantee that timing, and when it ran late
-those hooks missed. That timing is behind most of the long-running "mis-hook"
-bugs.
+way, but the extension is the version to use: it checks for new releases on its
+own, and a Tampermonkey copy steps aside whenever the extension is running.
+
+Since 1.1.0 the script reads mope's own game code directly (see
+[how it reaches the game](docs/game-bridge.md)), so it no longer has to start
+before mope does. That race is what the old "mis-hook" bugs came from, and it
+is gone for both the extension and the userscript.
 
 ### From the Chrome Web Store
 
@@ -49,7 +50,7 @@ warning telling you to remove it.
 
 ## Using it
 
-Open the panel with the teal meteor button on the main menu, or press **N**
+Open the panel with the gear button in the bottom-left corner of the main menu, or press **N**
 while in game. Everything is configured there.
 
 ## Privacy
@@ -78,8 +79,7 @@ it on its own.
 
 Nothing else is sent anywhere, and there is no analytics or telemetry. With
 the party, the registry and the update check all off, no data leaves your
-machine. Your settings, and the hook record in Settings → Troubleshooting, are
-stored locally in your own browser.
+machine. Your settings are stored locally in your own browser.
 
 The source is one file and it is all here — if you would rather check than
 take the above on trust, that is the point of publishing it.
@@ -100,36 +100,30 @@ three places (the manifest, the `@version` line and the fallback literal
 three and push a tag `v<version>`. The *Extension package* workflow then builds
 the store zip and attaches it to a GitHub release.
 
-Run `node scripts/check.cjs` before releasing. The same regression suite runs in
-GitHub Actions on every push and pull request. See
-[visual ownership contracts](docs/visual-contracts.md) for the arena, name-colour
-and draw-order guarantees, compatibility changes and validation procedure.
-See [party health correction](docs/party-health.md) for the 1.0.22 fix and its
-sender-to-receiver regression coverage. Every party member needs the update
-because each client publishes its own HP.
+[How the script reaches the game](docs/game-bridge.md) explains the game
+bridge, what each feature reads, and what to check when a mope update breaks
+something.
 
-If party chat works but minimap dots are missing, run
-`__lumiCaptureDebug()` and `__lumiPartyDebug()` in the browser console.
-`renderersHooked: 0` together with `stageSeen: false` means the script missed
-the game renderer, even if party messages are arriving. Version 1.0.20 adds
-recovery from the running game loop and keeps the party list updating while
-that recovery is pending. This can be triggered by startup timing without a
-userscript update; it does not mean your party code or relay changed.
+If something in game is not appearing, Settings → Troubleshooting → **Game
+connection** says whether the script found mope's game, and **Copy report**
+puts the details on the clipboard. In the console, `__lumi.status()`,
+`__lumi.party()`, `__lumi.health()`, `__lumi.arena()`, `__lumi.zoom()` and
+`__lumi.errors()` give more.
 
 ## Regression checks
 
 With Node.js 24 installed, run:
 
 ```sh
-node --check lumis-extras.user.js
-node --test tests/renderer-recovery.test.cjs
+node scripts/check.cjs
 ```
 
-GitHub Actions runs these checks on pushes and pull requests. Tests execute
-the userscript's actual capture/render functions with isolated game fixtures,
-including missed startup, late injection, renderer replacement, native bind
-behavior, and party-list updates without a renderer. They do not connect to
-public relays or replace checking the result in a live game.
+That syntax-checks the script and runs every `tests/*.test.cjs`. GitHub Actions
+runs the same command on pushes and pull requests. The tests run the script's
+own functions against fixtures shaped like mope's classes: the bridge's
+fingerprints, the shared zoom hub's contract with Moderator Extras, the
+name-tag wire format, and the feature logic. They do not replace checking the
+result in a live game.
 
 ## Licence
 
