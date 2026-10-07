@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.1.0
+// @version      1.1.1
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -62,6 +62,11 @@
  *
  * The 1.0.x history (and the long notes on why each workaround existed) is
  * in the git history of github.com/Luminosity67/lumis-extras.
+ *
+ * 1.1.1 — the bite mark sits under mope's HP numbers instead of over them;
+ * the zoom hub (rev 5) zooms in to 400% instead of 150%, and its readout no
+ * longer says "zoom off" while Moderator Extras is the one zooming; and a
+ * staff-outline test (Settings → Troubleshooting) that paints staff pink.
  */
 
 (function () {
@@ -100,7 +105,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.1.0';
+    return '1.1.1';
   })();
 
   /* ---------------------------------------------- one instance, one layer */
@@ -250,6 +255,7 @@
     zorderMode: (() => { const v = Number(store.get('zorderMode', 0)); return v === 1 || v === -1 ? v : 0; })(),
     arenaFocus: !!store.get('arenaFocus', false),
     biteIndicator: !!store.get('biteIndicator', false),
+    staffOutline: store.get('staffOutline', true) !== false,
     turnSpeedValue: normalizeTurnSpeed(store.get('turnSpeedValue', TURN_NEUTRAL)),
     turnStyle: normalizeTurnStyle(store.get('turnStyle', 'linear')),
     debug: !!store.get('debug', false),
@@ -460,6 +466,10 @@
       ui: ['currentScreen', 'showSettings'],
       // {visible, timeAlive, kills, ...} — the death screen
       death: ['timeAlive', 'kills', 'killerName'],
+      // {targeting, observing, target, adminPanelOpen, adminUsers} — mope's
+      // moderator tools. `target` is {entityId, accountId, name, role, ...}
+      // while a moderator watches someone; `adminUsers` is the admin list.
+      moderation: ['targeting', 'observing', 'target', 'adminUsers'],
     };
 
 
@@ -965,20 +975,33 @@
    * 1, so it can only zoom IN, and mope saves it. The hub owns the wheel on
    * the window at capture phase so a notch never reaches mope's listener on
    * the canvas, and Extras holds mope's value at 1 while its zoom is on.
+   *
+   * REVISION 5 (Extras 1.1.1) lifts the zoom-IN cap from 150% to 400%.
+   * mope's own wheel zoom reaches about 286% (1 / 0.35), so a 150% cap made
+   * the hub zoom in LESS than vanilla — felt most in a 1v1, where people zoom
+   * in on the fight. Steps are 10% up to 200% and 25% past it. Zoom-out keeps
+   * its 50% floor. Same API, so Moderator Extras still joins unchanged.
    */
 
   const ZOOM_HUB_KEY = '__lumiZoomHub';
-  const ZOOM_HUB_REV = 4;
+  const ZOOM_HUB_REV = 5;
 
   function buildZoomHub(previous) {
     // Shared, so both panels always read the same number.
     const LEVEL_STORAGE_KEY = 'lumi:zoom:v1:level';
-    const MIN = 0.5, MAX = 1.5, STEP = 0.1;
+    const MIN = 0.5, MAX = 4, STEP = 0.1;
+    const COARSE_FROM = 2, COARSE_STEP = 0.25;
 
     function normalize(value) {
       const number = Number(value);
       if (!Number.isFinite(number)) return 1;
-      return Math.round(Math.min(Math.max(number, MIN), MAX) * 10) / 10;
+      return Math.round(Math.min(Math.max(number, MIN), MAX) * 20) / 20;
+    }
+
+    // One notch from `level` in `direction` (+1 in, -1 out).
+    function stepped(level, direction) {
+      const coarse = direction > 0 ? level >= COARSE_FROM - 1e-9 : level > COARSE_FROM + 1e-9;
+      return level + direction * (coarse ? COARSE_STEP : STEP);
     }
 
     function readStoredLevel() {
@@ -1219,7 +1242,7 @@
       if (Math.abs(wheelDelta) < WHEEL_THRESHOLD) return;
       const step = wheelDelta > 0 ? -1 : 1;
       wheelDelta = 0;
-      setLevel(state.level + step * STEP, 'wheel');
+      setLevel(stepped(state.level, step), 'wheel');
     }, {capture: true, passive: false});
 
     PAGE.addEventListener('keydown', (event) => {
@@ -1233,7 +1256,7 @@
       if (!ready() || inputBusy() || vetoed(event)) return;
       event.preventDefault();
       event.stopImmediatePropagation();
-      setLevel(state.level + (out ? -STEP : STEP), 'key');
+      setLevel(stepped(state.level, out ? -1 : 1), 'key');
     }, true);
 
     // mope resets its OWN zoom on a middle click and its handler still runs.
@@ -1276,6 +1299,7 @@
     return {
       rev: ZOOM_HUB_REV,
       MIN, MAX, STEP,
+      stepped,
       normalize,
       getLevel() { return state.level; },
       setLevel,
@@ -7023,10 +7047,15 @@
   let zoomToast = null;
   let zoomToastTimer = 0;
 
+  // This readout is drawn whenever the hub moves, whoever owns it. In a 1v1
+  // Moderator Extras' own readout has nowhere to sit and hands it here, so
+  // "zoom off" (meaning only Extras' own switch) read as if zoom were off.
   function zoomStatusSuffix() {
+    if (!zoomHub.hooked()) return ' (not applied)';
+    const owner = zoomHub.ownerId();
+    if (owner && owner !== ZOOM_MEMBER_ID) return '';
     if (!settings.masterEnabled) return ' (extras off)';
     if (!settings.cameraZoom) return ' (zoom off)';
-    if (!zoomHub.hooked()) return ' (not applied)';
     return '';
   }
 
@@ -7189,6 +7218,147 @@
       button.classList.toggle('active', button.dataset.turnStyle === settings.turnStyle);
     }
   }
+
+  /* =========================== staff outline (test) ===========================
+   *
+   * 1.1.1. A test of what the client can see about staff. Every account has a
+   * role — 0 player, 1 moderator, 2 trusted moderator, 3 event team, 4 admin,
+   * 5 developer — but the role NUMBER is not in the spawn packet. What every
+   * client gets per animal is one flags byte (bit 1 staff badge, bit 2 name
+   * tint, bit 4 has an account); mope keeps bit 1 as `animal.staffBadge` and
+   * draws the mope_staff badge beside the name from it. So:
+   *
+   *   - `staffBadge` is the only staff signal an ordinary client gets — for
+   *     everyone in view, with nothing sent to ask;
+   *   - the number itself only reaches a client through mope's moderator
+   *     tools: `targetInfo` while a moderator watches one player, and
+   *     `adminUserList` for admins. Both land in the moderation store.
+   *
+   * Either one turns that animal's outline pink. It only READS: no lookup is
+   * ever fired at a player to learn their role.
+   */
+  const STAFF_PINK = 0xff4fc8;
+  const STAFF_ROLE_NAMES = ['player', 'moderator', 'trusted moderator', 'event team',
+    'admin', 'developer'];
+
+  const staff = {
+    wrapped: null,
+    roles: new WeakMap(),     // animal -> role number from the moderator tools
+    painted: new WeakSet(),   // animals whose outline this has turned pink
+    seen: new Map(),          // entity id -> what was learned, for __lumi.staff()
+  };
+
+  function staffOn() {
+    return !!settings.masterEnabled && !!settings.staffOutline;
+  }
+
+  // The role if the moderator tools have told us, -1 for "staff badge, number
+  // unknown", 0 for nothing to go on.
+  function staffRoleOf(animal) {
+    const learned = staff.roles.get(animal);
+    if (learned > 0) return learned;
+    return animal && animal.staffBadge === true ? -1 : 0;
+  }
+
+  function staffPaint(animal) {
+    if (!staffOn() || !animal || !animal.outline || staffRoleOf(animal) === 0) return;
+    animal.outline.tint = STAFF_PINK;
+    staff.painted.add(animal);
+  }
+
+  // mope recolours the outline whenever an affliction, a biome or what you
+  // can eat changes, so the pink goes on at the end of every recolour rather
+  // than being set once and painted over.
+  function staffInstall() {
+    const Animal = bridge.Animal;
+    const prototype = Animal && Animal.prototype;
+    if (!prototype || staff.wrapped === prototype) return;
+    const original = prototype.setOutlineColor;
+    if (typeof original !== 'function') return;
+    if (original.__lumiStaffWrapper) { staff.wrapped = prototype; return; }
+    const wrapper = function () {
+      const result = original.apply(this, arguments);
+      try { staffPaint(this); } catch (e) { /* never break a recolour */ }
+      return result;
+    };
+    try { Object.defineProperty(wrapper, '__lumiStaffWrapper', {value: true}); } catch (e) { /* cosmetic */ }
+    prototype.setOutlineColor = wrapper;
+    staff.wrapped = prototype;
+    dbg('staff outline: Animal.prototype.setOutlineColor wrapped');
+  }
+
+  function staffLearn(id, role, name, via) {
+    const Entity = bridge.Entity;
+    if (!Entity || !id || typeof role !== 'number') return;
+    let entity = null;
+    try { entity = Entity.list.get(id) || null; } catch (e) { return; }
+    if (!entity || entity.type !== 'animal') return;
+    staff.roles.set(entity, role);
+    if (role > 0) {
+      staff.seen.set(id, {name: name || entity.originalName || '', role,
+        roleName: STAFF_ROLE_NAMES[role] || 'role ' + role, via});
+    }
+  }
+
+  function staffTick() {
+    staffInstall();
+    const mod = bridge.store('moderation');
+    if (mod) {
+      try {
+        const target = mod.target;
+        // Before the reply arrives mope fills the target in with role 0.
+        if (target && target.online && target.accountId) {
+          staffLearn(target.entityId, target.role, target.name, 'moderator target');
+        }
+        const list = mod.adminUsers;
+        if (list && typeof list.length === 'number') {
+          for (let i = 0; i < list.length; i++) {
+            const user = list[i];
+            if (user) staffLearn(user.id, user.role, user.name, 'admin list');
+          }
+        }
+      } catch (e) { /* the store is mope's; a bad read just waits for the next */ }
+    }
+    const on = staffOn();
+    for (const animal of liveAnimals()) {
+      const role = staffRoleOf(animal);
+      const want = on && role !== 0;
+      if (want) {
+        if (role < 0 && !staff.seen.has(animal.id)) {
+          staff.seen.set(animal.id, {name: animal.originalName || '', role: null,
+            roleName: 'staff (badge; number not sent)', via: 'staff badge'});
+        }
+        if (!animal.outline || animal.outline.tint === STAFF_PINK) continue;
+      } else if (!staff.painted.has(animal)) continue;
+      // mope's own recolour puts its colour back, then the wrapper adds ours.
+      try { animal.setOutlineColor(); } catch (e) { /* mope's method */ }
+      if (want) staffPaint(animal);
+      else staff.painted.delete(animal);
+    }
+  }
+
+  function staffDebug() {
+    const rows = [];
+    for (const animal of liveAnimals()) {
+      if (animal.staffBadge !== true && !(staff.roles.get(animal) > 0)) continue;
+      const role = staffRoleOf(animal);
+      rows.push({id: animal.id, name: animal.originalName || '', staffBadge: animal.staffBadge === true,
+        role: role > 0 ? role + ' (' + (STAFF_ROLE_NAMES[role] || '?') + ')' : 'not sent',
+        pink: !!animal.outline && animal.outline.tint === STAFF_PINK});
+    }
+    const report = {
+      version: VERSION,
+      enabled: staffOn(),
+      wrapped: !!staff.wrapped,
+      moderationStore: bridge.store('moderation') ? 'found' : 'missing',
+      inView: rows,
+      seenThisSession: [...staff.seen.entries()].map(([id, row]) => Object.assign({id}, row)),
+    };
+    console.log(TAG, 'staff', report);
+    if (console.table && rows.length) console.table(rows);
+    return report;
+  }
+
   const ARENA_SKY_FADE_MS = 260;
   const ARENA_SKY_WORK_MIN_MS = 60;
   // How far the sky reaches. The camera follows you and you can only be as far
@@ -7784,7 +7954,19 @@
     let rounded = true;
     try { rounded = !!mopeSettingsProxy().rendering.roundedCorners; } catch (e) { /* default */ }
     return {container: health.container, Graphics: health.wrapper && health.wrapper.constructor,
-      w, h, r: rounded ? 2.5 : 0};
+      label: health.label, w, h, r: rounded ? 2.5 : 0};
+  }
+
+  // mope's bar is plate, fill, mask, then the HP-number label (Settings →
+  // Show Health Numbers) LAST, so it reads on top. Anything we draw on the bar
+  // goes in just under that label — addChild() put the bite mark over the
+  // number and hid it for the whole three seconds.
+  function addUnderLabel(box, node) {
+    const container = box.container;
+    const at = box.label && box.label.parent === container
+      ? container.children.indexOf(box.label) : -1;
+    if (at >= 0) container.addChildAt(node, at);
+    else container.addChild(node);
   }
 
   function drawBox(g, box, width) {
@@ -7810,7 +7992,7 @@
         node.pivot.set(box.w / 2, box.h / 2);
         drawBox(node, box, box.w);
         node.stroke({color: 0xffffff, alpha: 0.5, width: 0.7});
-        box.container.addChild(node);
+        addUnderLabel(box, node);
         hpEdges.set(fighter, node);
       } catch (e) {
         try { if (node) { if (node.parent) node.parent.removeChild(node); node.destroy(); } } catch (e2) {}
@@ -8047,7 +8229,7 @@
           const node = new box.Graphics();
           node.__lumiBiteMark = true;
           node.pivot.set(box.w / 2, box.h / 2);
-          box.container.addChild(node);
+          addUnderLabel(box, node);
           mark.node = node;
           mark.drawn = -1;
         } catch (e) { continue; }
@@ -9862,6 +10044,7 @@
     arenaSky: 'Arena theme — a backdrop behind your own 1v1 duels. Z toggles it in game.',
     arenaTheme: 'Which backdrop. Starfield is deep space and the original; Antimatter is the same sky as a negative, pale with dark stars; Deep Water is pale motes on blue-green with no star band.',
     panelTheme: 'Panel theme — recolours the Extras panel itself. It changes nothing about the game.',
+    staffOutline: "Staff outline (test) — turns a player's outline pink when the game marks them as staff. mope never sends other players' role numbers; it sends one staff-badge flag, and moderator tools reveal the number only for a player being looked up. __lumi.staff() in the console lists what was seen.",
     debugLogging: 'Debug logging — writes what the script is doing to the browser console (F12). Only useful when reporting a problem; leave it off otherwise.',
     gameLink: "Game connection — whether the script has reached mope's game, its animals and its HUD. It reads them straight from mope's own code, so this should say Connected within a second of the page loading. Copy report puts the details on the clipboard to send to Lumi.",
     updateCheck: 'Check for updates — once an hour, reads the version number from this mod\'s GitHub page and tells you on the menu when a newer one is out. Nothing about you is sent.',
@@ -11961,6 +12144,15 @@
     });
     settingsPane.appendChild(debugRow.row);
 
+    // 1.1.1. A test: can the client tell who is staff? See staffTick().
+    const staffRow = makeRow('Staff outline (test)', 'staffOutline', settings.staffOutline, (on) => {
+      settings.staffOutline = on;
+      store.set('staffOutline', on);
+      try { staffTick(); } catch (e) { frameFailed('staff outline', e); }
+      dbg('staff outline', on ? 'enabled' : 'disabled');
+    });
+    settingsPane.appendChild(staffRow.row);
+
     // 1.1.0. What the game bridge found — the one line to read when something
     // in game is not appearing, and a report to paste to Lumi.
     const hookRecRow = document.createElement('div');
@@ -12303,6 +12495,7 @@
     arena: arenaDebug,
     party: partyDebug,
     zoom: zoomDebug,
+    staff: staffDebug,
     keybinds: kbDebug,
     registry: nrDebug,
     errors() { return [...featureErrors].map(([name, row]) => Object.assign({name}, row)); },
@@ -12312,7 +12505,7 @@
     // the animal configs and the HUD stores.
     get mope() {
       const stores = {};
-      for (const name of ['hud', 'stats', 'arena', 'leaderboard', 'ui', 'death']) stores[name] = bridge.store(name);
+      for (const name of ['hud', 'stats', 'arena', 'leaderboard', 'ui', 'death', 'moderation']) stores[name] = bridge.store(name);
       return {game: bridge.game, Entity: bridge.Entity, Animal: bridge.Animal, configs: bridge.configs, stores};
     },
   };
@@ -12334,6 +12527,9 @@
   bridge.ready().then(() => {
     startFrameHook();
     turnInstall();
+    setInterval(() => {
+      try { staffTick(); } catch (e) { frameFailed('staff outline', e); }
+    }, 500);
     dbg('ready —', bridgeSummary());
   });
 
