@@ -2777,7 +2777,8 @@
     if (!Number.isFinite(n) || n < 0) return '';
     const units = [[1e9, 'B'], [1e6, 'M'], [1e3, 'K']];
     for (const [size, suffix] of units) {
-      if (n >= size) return String(Math.floor(n / size * 100) / 100) + suffix;
+      // The epsilon absorbs float error: 2030000 / 1e6 * 100 is 202.99999...
+      if (n >= size) return String(Math.floor(n / size * 100 + 1e-6) / 100) + suffix;
     }
     return String(Math.floor(n));
   }

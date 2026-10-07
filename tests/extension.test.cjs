@@ -29,7 +29,7 @@ test('the userscript runs in the page, where import() can reach mope', () => {
   // A sandboxed userscript has its own module map, so the bridge would
   // import a SECOND copy of mope's game rather than the running one.
   assert.match(source, /^\/\/ @grant\s+none$/m);
-  assert.doesNotMatch(source, /^\/\/ @grant\s+(?!none)/m, 'no other grant may sandbox it');
+  assert.doesNotMatch(source, /^\/\/ @grant[ \t]+(?!none\b)\S/m, 'no other grant may sandbox it');
 });
 
 test('the extension asks for no permissions at all', () => {
