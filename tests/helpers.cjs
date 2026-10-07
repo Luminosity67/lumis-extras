@@ -52,7 +52,7 @@ function plain(value) {
 // Runs the named pieces in a fresh context with `globals`, then evaluates
 // `expr` there and returns its value.
 function run(pieces, globals, expr) {
-  const ctx = vm.createContext(Object.assign({console}, globals || {}));
+  const ctx = vm.createContext(Object.assign({console, performance}, globals || {}));
   vm.runInContext(pieces.join('\n'), ctx);
   return plain(vm.runInContext(expr, ctx));
 }
