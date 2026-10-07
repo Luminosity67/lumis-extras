@@ -510,9 +510,15 @@
         Object.keys(STORE_SHAPES).every((name) => state.stores[name]));
     }
 
+    // Every module namespace imported so far. Exports are LIVE bindings, so a
+    // piece assigned after the first look shows up when the same namespace is
+    // examined again — which is why each attempt re-examines all of them
+    // rather than only the URLs it has not seen.
+    const namespaces = [];
+
     async function discover() {
       state.attempts++;
-      state.phase = 'importing mope\'s modules';
+      if (!state.game) state.phase = 'importing mope\'s modules';
       const urls = moduleUrls();
       for (const url of urls) {
         if (state.modules.indexOf(url) !== -1) continue;
@@ -520,10 +526,13 @@
         try {
           // The SAME instance the page is running, because the URL is the
           // module map's key. See the block comment above.
-          examine(await import(url));
+          namespaces.push(await import(url));
         } catch (error) {
           state.failures.push({url, error: String(error && error.message || error)});
         }
+      }
+      for (const namespace of namespaces) {
+        examine(namespace);
         if (complete()) break;
       }
       if (state.game) {
@@ -536,7 +545,7 @@
           const resolve = waiters.shift();
           try { resolve(state.game); } catch (e) { /* one listener cannot stop the rest */ }
         }
-        return true;
+        return complete();
       }
       state.phase = urls.length ? 'the game was not among ' + urls.length + ' modules'
         : 'no modules on the page yet';
@@ -544,18 +553,18 @@
     }
 
     // DOMContentLoaded comes after every non-async module script has run, so
-    // by then the entry (and through it the game chunk) has been evaluated. A
-    // miss is retried with a backoff rather than given up on: a redeploy that
-    // moved the game behind a dynamic import would show up as modules
-    // appearing later.
+    // by then the entry (and through it the game chunk) has been evaluated.
+    // Until EVERYTHING is found — the game and every optional piece — it keeps
+    // looking, backing off to once every five seconds: a redeploy that moved
+    // something behind a dynamic import shows up as modules appearing later.
     let started = false;
     function start() {
       if (started) return;
       started = true;
       let delay = 250;
       const attempt = () => {
-        discover().then((found) => {
-          if (found) return;
+        discover().then((done) => {
+          if (done) return;
           delay = Math.min(delay * 2, 5000);
           setTimeout(attempt, delay);
         }, (error) => {
@@ -821,20 +830,40 @@
     }
   }
 
+  // Each renderer instance is wrapped ONCE, and the wrapper runs every
+  // runner registered on the page — so two copies of this script (or the
+  // watchdog firing again) can never stack wrapper on wrapper and run every
+  // feature twice per frame. The flag lives on the renderer itself, so a
+  // rebuilt renderer is a fresh instance and gets wrapped in its turn.
+  function frameRunners() {
+    let runners = null;
+    try {
+      runners = PAGE.__lumiFrameRunners;
+      if (!Array.isArray(runners)) runners = PAGE.__lumiFrameRunners = [];
+    } catch (e) { runners = []; }
+    if (runners.indexOf(runFrameHooks) === -1) runners.push(runFrameHooks);
+    return runners;
+  }
+
   function wrapRenderer() {
     const game = bridge.game;
     const loop = game && game.loop;
     const renderer = loop && loop.renderer;
     if (!renderer || typeof renderer.render !== 'function') return false;
-    if (frame.renderer === renderer && renderer.render === frame.wrapper) return true;
+    const runners = frameRunners();
+    if (renderer.__lumiFrameWrapped) { frame.renderer = renderer; return true; }
     const original = renderer.render;
     const wrapper = function () {
       const result = original.apply(this, arguments);
-      runFrameHooks(performance.now());
+      const now = performance.now();
+      for (let i = 0; i < runners.length; i++) {
+        try { runners[i](now); } catch (e) { /* one copy cannot stop another */ }
+      }
       return result;
     };
     try {
       renderer.render = wrapper;
+      Object.defineProperty(renderer, '__lumiFrameWrapped', {value: true, configurable: true});
     } catch (e) {
       return false;
     }
@@ -884,6 +913,8 @@
     // loads its assets) there is simply nothing to wrap.
     setInterval(() => {
       try { wrapRenderer(); } catch (e) { frameFailed('frame hook', e); }
+      // Also picks up the Animal class if the bridge found it late.
+      try { turnInstall(); } catch (e) { frameFailed('turn speed', e); }
     }, 1000);
     wrapRenderer();
   }
@@ -2163,9 +2194,14 @@
     if (!st) {
       const m = overlays.get(node);
       if (m) destroyOverlay(node, m);
+      // Bookkeeping first: if restoring the node throws (it was destroyed under
+      // us), it must not stay listed and fail again on every frame.
       const original = nameOriginals.get(node);
-      if (original) { node.tint = original.tint; node.renderable = original.renderable; nameOriginals.delete(node); }
+      nameOriginals.delete(node);
       tinted.delete(node);
+      if (original && !node.destroyed) {
+        try { node.tint = original.tint; node.renderable = original.renderable; } catch (e) { /* gone */ }
+      }
       return;
     }
     if (!nameOriginals.has(node)) nameOriginals.set(node, {tint: node.tint, renderable: node.renderable});
@@ -4522,6 +4558,12 @@
           if (peer.tag) peer.tag.style.display = 'none';
           continue;
         }
+        // A dot whose minimap was rebuilt (new server, new game) is gone with
+        // it: Pixi nulls a destroyed node's position, so it is dropped and
+        // drawn again here rather than read.
+        if (peer.node && (peer.node.destroyed || peer.node.parent !== container)) {
+          partyDestroyPeer(peer);
+        }
         if (!peer.node) peer.node = partyMakeDot(container, parts, peer.color);
         if (!peer.node) continue;
         partyPaintDot(peer.node, peer.color);
@@ -6632,11 +6674,17 @@
       if (health == null) continue;
       let seen = hpState.seen.get(animal);
       if (!seen) {
-        hpState.seen.set(animal, {health, shownAt: -Infinity, stack: 0});
+        hpState.seen.set(animal, {health, at: now, shownAt: -Infinity, stack: 0});
         continue;
       }
+      // Only a reading from the PREVIOUS tick is a baseline. An animal that
+      // was out of range (or the feature was off) took its damage unseen,
+      // and showing it all at once on its return would be a hit nobody made.
+      const fresh = now - seen.at <= 250;
       const before = seen.health;
       seen.health = health;
+      seen.at = now;
+      if (!fresh) continue;
       if (!(health < before)) continue;
       const lost = before - health;
       let text;
@@ -7096,12 +7144,17 @@
     if (!prototype || turnState.wrapped === prototype) return;
     const original = prototype.update;
     if (typeof original !== 'function') return;
-    prototype.update = function () {
+    // Another copy of this script got here first: its wrapper already turns
+    // every animal, and a second would apply the multiplier twice.
+    if (original.__lumiTurnWrapper) { turnState.wrapped = prototype; return; }
+    const wrapper = function () {
       const before = this.angle;
       const result = original.apply(this, arguments);
       try { turnApply(this, before); } catch (e) { /* never break a frame */ }
       return result;
     };
+    try { Object.defineProperty(wrapper, '__lumiTurnWrapper', {value: true}); } catch (e) { /* cosmetic */ }
+    prototype.update = wrapper;
     turnState.wrapped = prototype;
     dbg('turn speed: Animal.prototype.update wrapped');
   }
@@ -7546,15 +7599,36 @@
 
   // Written through mope's settings object and read back, so a write that
   // did not take reports as failed rather than as done. mope persists it.
-  function mopeSetCulling(hide) {
+  function mopeWriteCulling(want) {
     const proxy = mopeSettingsProxy();
-    const want = hide ? MOPE_CULL_HIDE : MOPE_CULL_SHOW;
     try {
       const arena = proxy && proxy.gameplay && proxy.gameplay.arena;
       if (!arena) return false;
       if (arena.outsideWorld !== want) arena.outsideWorld = want;
     } catch (e) { return false; }
     return mopeCullingValue() === want;
+  }
+
+  // The theme needs mope's Arena Culling on (HIDE), or the world is drawn
+  // over the sky. It is YOUR mope setting, though, so whatever it was before
+  // the theme first changed it is remembered (across reloads) and put back
+  // when the theme goes off — by its own switch or the master switch —
+  // rather than forced to SHOW.
+  function mopeSetCulling(hide) {
+    if (hide) {
+      if (store.get('cullingBeforeTheme', null) === null) {
+        const current = mopeCullingValue();
+        if (current === MOPE_CULL_HIDE || current === MOPE_CULL_SHOW) {
+          store.set('cullingBeforeTheme', current);
+        }
+      }
+      return mopeWriteCulling(MOPE_CULL_HIDE);
+    }
+    const saved = store.get('cullingBeforeTheme', null);
+    if (saved === null) return true;
+    const ok = mopeWriteCulling(saved === MOPE_CULL_HIDE ? MOPE_CULL_HIDE : MOPE_CULL_SHOW);
+    if (ok) store.set('cullingBeforeTheme', null);
+    return ok;
   }
 
   /* ----- the sky ----- */
@@ -8107,7 +8181,15 @@
 
   /* ----- one tick for everything that happens in a duel ----- */
 
+  let cullingCheckAt = -Infinity;
+
   function arenaFrame(now) {
+    // Off by the master switch (or any path that skipped arenaSkySet): give
+    // mope's Arena Culling back. Checked once a second; it is a storage read.
+    if (!arenaSkyOn() && now - cullingCheckAt > 1000) {
+      cullingCheckAt = now;
+      if (store.get('cullingBeforeTheme', null) !== null) mopeSetCulling(false);
+    }
     const mine = arenaPlaying() && !document.hidden ? arenaMine() : null;
     if (mine && !arenaDuel.active) {
       arenaDuel.active = true;

@@ -66,9 +66,31 @@ test('the animal config table is recognised by its species entries', () => {
 
 test('the bridge imports by URL from the page, and never pins a file name', () => {
   const {source} = require('./helpers.cjs');
-  assert.match(source, /examine\(await import\(url\)\)/);
+  assert.match(source, /namespaces\.push\(await import\(url\)\)/);
   assert.match(source, /script\[type="module"\]\[src\], link\[rel="modulepreload"\]\[href\]/);
   // A hash-named chunk written into the script is exactly how the modpacks
   // break on every mope deploy.
   assert.doesNotMatch(source, /mope\.io\/[A-Za-z0-9_-]{8}\.js/);
+});
+
+// The frame hook. Two copies of the script on one page, and the once-a-second
+// watchdog, must never stack wrapper on wrapper.
+test('mope\'s renderer is wrapped once, however often and by however many copies', () => {
+  const page = {};
+  let draws = 0;
+  const renderer = {render() { draws++; }};
+  const makeCopy = () => run([fn('frameRunners'), fn('wrapRenderer'),
+    'const frame = {renderer: null, original: null, wrapper: null, frames: 0};',
+    'let ran = 0; function runFrameHooks() { ran++; }'], {
+    PAGE: page,
+    dbg: () => {},
+    bridge: {game: {loop: {renderer}}},
+  }, '({wrap: wrapRenderer, ran: () => ran})');
+  const a = makeCopy();
+  const b = makeCopy();
+  for (let i = 0; i < 5; i++) { a.wrap(); b.wrap(); }
+  renderer.render();
+  assert.equal(draws, 1, 'mope draws once');
+  assert.equal(a.ran(), 1, 'copy A\'s features run once per frame');
+  assert.equal(b.ran(), 1, 'copy B\'s features run once per frame');
 });

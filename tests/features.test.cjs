@@ -155,3 +155,26 @@ test('a skin id names its species by the longest prefix', () => {
   assert.equal(species('king_crab_amethyst'), 'king_crab');
   assert.equal(species('nothing_here'), '');
 });
+
+/* ----- arena culling ----- */
+
+test('the arena theme gives mope\'s Arena Culling back as it found it', () => {
+  const stored = new Map();
+  const arena = {outsideWorld: 0};
+  const env = run(['MOPE_CULL_SHOW', 'MOPE_CULL_HIDE'].map(constant).concat(
+    [fn('mopeCullingValue'), fn('mopeWriteCulling'), fn('mopeSetCulling')]), {
+    mopeSettingsProxy: () => ({gameplay: {arena}}),
+    store: {
+      get: (k, d) => (stored.has(k) ? stored.get(k) : d),
+      set: (k, v) => stored.set(k, v),
+    },
+  }, '({set: mopeSetCulling})');
+  env.set(true);
+  assert.equal(arena.outsideWorld, 1, 'on: culled');
+  env.set(false);
+  assert.equal(arena.outsideWorld, 0, 'off: back to the player\'s SHOW');
+  arena.outsideWorld = 1;          // the player's own choice is HIDE
+  env.set(true);
+  env.set(false);
+  assert.equal(arena.outsideWorld, 1, 'off: a player who culls keeps culling');
+});
