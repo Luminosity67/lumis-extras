@@ -4,15 +4,14 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.0.26
+// @version      1.1.0
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
 // @match        *://*.mope.io/*
 // @run-at       document-start
-// @grant        unsafeWindow
-// @grant        GM_getValue
-// @grant        GM_setValue
+// @grant        none
+// @inject-into  page
 // @noframes
 // @license      MIT
 // ==/UserScript==
@@ -20,8 +19,8 @@
 /*
  * Lumi's Extras
  * -------------
- * Everything is configured from the panel: use the teal meteor button on the
- * main menu, or press N while in game, to open it.
+ * Everything is configured from the panel: the button in the bottom-left
+ * corner of the main menu, or N while in game.
  *
  * Versioning — 1.x.y, and the leading 1 does not move:
  *   x  MASSIVE changes only. It is NEVER bumped on anyone's initiative but
@@ -29,2291 +28,56 @@
  *      Default to leaving it alone.
  *   y  everything else: features, fixes, extra gradients, copy tweaks.
  *
- * 1.0.26 checks for a new release every hour instead of once a day, and keeps
- * checking while the tab stays open. Each release is announced once per page
- * load, so the hourly check does not repeat itself.
- *
- * 1.0.25 keeps a HOOK RECORD: one line per game saying whether mope's game
- * object, renderer and camera were caught directly and whether the player
- * lock ever had to guess (Settings → Troubleshooting, or __lumiHookRecord()).
- * It is the evidence the next step waits on — deleting the guessing
- * fallbacks once the extension is shown never to need them. The extension
- * also checks GitHub once a day for a newer release, since a Load-unpacked
- * install never updates itself, and a Tampermonkey copy says once that the
- * extension exists.
- *
- * 1.0.24 is the first build that is also a Chrome extension. It is the same
- * file: manifest.json runs it straight in the page at document_start, which
- * Chrome guarantees is before any of mope's code, so the construction-time
- * hooks can no longer lose the race a userscript manager sometimes loses.
- * Nothing here needs Tampermonkey any more — storage already fell back to
- * localStorage, `unsafeWindow` to `window` and the version to its literal —
- * so the only changes are around the edges: Debug logging moved from
- * Tampermonkey's menu to Settings, a userscript copy stands down when it finds
- * the extension already on the page, and two copies running at once are now
- * reported on screen rather than only in the console.
- *
- * 1.0.23 removes the Customization category. mope is adding HUD customization
- * of its own, and two systems moving the same elements would fight, so the
- * drag-to-position preview, the "Show on screen" switches and the separate
- * game stats are gone, along with everything they stored. The script no
- * longer moves or hides any of mope's HUD; the party list and the HP bar
- * still sit at their usual anchors. __lumiLayoutDebug() and
- * __lumiStatsDebug() went with them.
- *
- * 1.0.22 reads party health from the current player's server health value.
- * The visual fallback accounts for the fill's local scale, including when
- * native HP numbers are disabled. Stale HP samples are no longer published.
- *
- * 1.0.21 makes visual ownership explicit: arena model parts bypass discovery,
- * name colours require verified name nodes and remote share tags, and self uses
- * a dedicated render layer reconciled independently of health-bar work.
- * Regression contracts and the release check command now live in the repository.
- *
- * 1.0.20 recovers a missed renderer capture. The startup-only game trap used
- * to expire after 20 seconds, leaving Canvas users with working party chat
- * and incoming peers but no frame work at all. A temporary bind probe now
- * catches mope's running loop as it schedules its next animation frame. It
- * restores the native method as soon as the renderer is attached. Slow loads
- * and late userscript injection no longer depend on catching construction.
- * Renderer ownership is local to this script, and a watchdog repairs a
- * replaced render method without duplicating feature work in wrapper chains.
- *
- * 1.0.19 BREAKS THE FAILURE CHAIN between the player lock and the arena
- * features. Arena ownership now comes straight from mope's `$.player.arena`
- * model on every arena read, whether or not the HP scanner has produced a
- * bar entry yet. The boost counter resolves its anchor by matching the
- * authoritative `$.player.container` against the current bar readings rather
- * than trusting a possibly stale shared entry. The old inference remains only
- * when the game singleton or player shape is genuinely unavailable.
- *
- * The renderer wrapper also isolates and records every feature failure. A
- * throw in HP, party, layout, boost, or scene discovery can no longer skip the
- * arena theme later in the same frame; __lumiPerfDebug().featureErrors names
- * the failing stage and count instead of the outer wrapper swallowing it.
- *
- * 1.0.13 is the rest of the culled-duel bug, reported as "the background
- * fails in Black Dragon arenas, or in the volcano". Those are one report:
- * black_dragon is a volcano species, so those duels are usually the same
- * duels. Two independent faults, both of which take the starfield, the bite
- * indicator AND the boost counter down together, because all three hang off
- * arenaSkyPick() returning an arena.
- *
- *   THE ARENA MATCHER counted children and demanded exactly six. An arena
- *   carrying one more was not mis-measured, it was INVISIBLE — never recorded
- *   by the scan, so there was no arena to be inside. Parts are now found by
- *   shape (a floor with a texture, a Graphics that draws circles, four Text
- *   labels) and carried on `mine`, so the sky's Graphics lookup and the bite
- *   indicator's score labels stop counting children for themselves too.
- *
- *   THE ARENA MEMORY lived on `entry`, which is a reading of a health BAR and
- *   is dropped the moment that bar leaves a scan — routine inside a culled
- *   duel, and exactly the state 1.0.12 taught the lock to hold through. So a
- *   fact about an ANIMAL went out with a reading of its bar, and a duel the
- *   script had seen seconds earlier read as somebody else's. It is now also
- *   kept in a WeakMap on the entity.
- *
- * Also: an animal's name and wins labels are found as the first ADJACENT pair
- * of Text children rather than at index 1, since a bigger animal carries extra
- * art ahead of them — the 1.18.1 fingerprint is kept, only the assumption
- * about where it sits is dropped. And __lumiArenaDebug() now reports the
- * containers that ALMOST matched, because "no arena in the scene" was the
- * least actionable sentence this feature could produce.
- *
- * 1.0.18 FIXES 1.0.17, WHICH BROKE SIX FEATURES FOR EVERYONE. `$.player` is
- * the entity MODEL, not the Pixi container: the model owns `.container`, and
- * that container is what the health-bar scan sees. 1.0.17 asked the model for
- * `.children`, got none, and then refused every animal as "you have no animal
- * right now" — HP bar, damage numbers, party health, boost counter, starfield
- * and bite indicator all dark, on main and on beta. The lock now matches
- * `entry.entity === $.player.container`, reads `.arena` off the model and its
- * container off the arena model, and — the rule 1.0.17 claimed and did not
- * keep — a shape it cannot resolve falls back to the old inference and says
- * so; it never refuses. __lumiHpDebug().lock.gamePlayerShape reports what the
- * game's object actually looks like, which is the row that would have caught
- * this in one paste.
- *
- * 1.0.17 REPLACES HOW THE SCRIPT KNOWS WHICH ANIMAL IS YOURS. Every lock
- * before it inferred that — ability icon, nameplate, outline tint, distance
- * from the centre of the screen — and the handoff's §21 is five releases of
- * the inference being wrong; it was wrong again on a bot standing next to a
- * player with the same default name. mope's own singleton, captured by the
- * 1.36.0 game-loop route, carries `player`: set the moment the server hands
- * you an animal, nulled on death and disconnect, and it is the same container
- * the health-bar scan sees above your bar. The lock is now the equality
- * `entry.entity === $.player`, and "am I duelling" is `$.player.arena`, the
- * field mope itself reads, which also hands over the arena BY REFERENCE. The
- * inference survives only as the fallback for a page where the singleton was
- * never captured, and __lumiHpDebug().lock.lockSource says which is in use.
- *
- * 1.0.16 makes the counter go down by EXACTLY one on every boost. The meter
- * shows an integer and a boost costs 1.5, so on screen a boost takes 1 point
- * or 2, alternating — and floor((pct - 15) / 1.5) could not see which it was
- * standing before: at 25% it said 6, the boost took the meter to 24%, and it
- * still said 6. Lumi reported exactly that, and it recurred at every third
- * value of the meter. The count is now a walk down the meter using the next
- * cost, which waterNote() reads off every drop (a drop of 1 means the next is
- * 2, and the reverse; any drop, mod 3), and that holds under any rounding the
- * server uses because two boosts are always exactly 3. A bite is the same 1.5
- * and the same alternation, so it needs no attribution. And the walk counts
- * the last, partial boost the game lets you take at 16%, which the division
- * never did — 25% is seven boosts, not six.
- *
- * 1.0.15 makes the boost counter divide by a CONSTANT. Filmed in a duel, the
- * count read 6, 9, 10, 4, 2 while the lava meter only drifted down from 32% to
- * 25% — a count that rises while the meter falls is not a reading of the
- * meter, it is the divisor moving under it. The divisor was a least-squares
- * fit, built when the cost per boost was unknown; it re-solved on every
- * interval, and inside a culled duel — where there is routinely no health
- * reading — it took enemy bites as boosts and swung by a factor of three.
- * Lumi has confirmed the constant from the game: 1.5% per boost, and an
- * enemy bite about the same. So it divides by 1.5 and the fit is reported as
- * a tripwire, never used. Also corrected: King Dragon does NOT have "125%
- * lava" — its meter reads 0–100% like every animal's; 125 is the raw-unit
- * count behind that percent, which the counter has not used since 1.0.10.
- * Black Dragon is 100. And the fit now admits only intervals whose damage
- * state could actually be checked, so what it reports is not bite-polluted.
- *
- * 1.0.12 fixes the arena features dying together inside a CULLED duel — the
- * starfield, the bite indicator and the boost counter, reported as one bug
- * because it was one. 1.0.10 stood the player lock down whenever the ability
- * cards were gone, to stop the death screen adopting a stranger; but Arena
- * Culling takes the whole ability wheel out of the document for the length of
- * a duel, and hpHudCluster() cannot tell that from dying. So the first bar
- * hiccup inside a culled duel sent the lock through that gate, the gate
- * cleared hpState.player, the relock had nothing to re-find, and a null lock
- * reads as "not your duel" to arenaSkyPick() — one gate, three features. The
- * lock now HOLDS an animal still standing in the scene (hpPlayerAlive) and
- * refuses only when it is gone, which is what the death screen looks like;
- * arenaSkyLockIsSelf() takes the entity rather than a reading; and the Arena
- * Culling switch has a second way in — mope's own game object, captured by
- * the 1.36.0 loop route, carries the settings proxy the Proxy hook races for.
- *
- * 1.0.9 fixes the mis-hook properly. The boost counter following the opponent
- * and the draw-order keys working backwards in an arena were ONE bug: the
- * player lock was on the wrong animal, and everything downstream repeated it.
- *
- * The inversion is the tell. "Above" re-attaches the locked animal and "below"
- * re-attaches everyone EXCEPT it — so with the lock on your opponent, above
- * lifts them (you sink) and below lifts everyone but them (you rise). Exactly
- * backwards, which is what was reported.
- *
- * WHY THE LOCK WAS WRONG. The species check — "is this animal the animal the
- * HUD says I am" — was gated on `near.length > 1`. With a single animal near
- * the middle of the screen it did not run at all, so when the camera sat
- * nearer the opponent than to you the lock adopted them WITHOUT EVER ASKING
- * whether they were your species, even though hpIdentifySelfFromHud() could
- * have said no outright. Both players in the report were called "mope.io" —
- * the default name — so the nameplate path added in 1.0.3 could not help
- * either: styleFor() and hpSelfByName() both refuse to match "mope.io",
- * because every nameless player shows it.
- *
- * THREE CHANGES:
- *   - hpLockByName() — "exactly one animal on screen is the animal the HUD
- *     says I am" — now runs BEFORE position is consulted, over every bar. It
- *     could always answer this; it was only ever called as a last resort when
- *     nothing at all was near the centre, so the strongest signal available to
- *     a nameless player was the one the lock reached for last and usually
- *     never. Only a UNIQUE match counts, so a mirror match still declines.
- *   - The near-centre species pass keeps its `near.length > 1` shape, since
- *     being near the centre is corroborating evidence in its own right.
- *   - Position is now CHECKED rather than trusted. Before adopting the nearest
- *     animal, if the HUD names our species and that animal is positively a
- *     different one, it is refused. A candidate we can identify as NOT us is
- *     worse than no candidate: it is confidently wrong, and the boost counter,
- *     the HP bar, the damage numbers, the party health and the draw-order keys
- *     all repeat the mistake.
- *
- * What is still a guess, honestly: a mirror match between two nameless players
- * of the same species has nothing left to separate them but position, and the
- * lock takes the nearest. Setting a nickname removes the ambiguity outright,
- * since the nameplate path is checked first and beats all of this.
- *
- * 1.0.8 fixes the "67" bug PROPERLY, and makes the draw-order keys work.
- *
- * THE GRADIENT ON A HEALTH NUMBER. 1.0.3 aimed at this and hit the wrong
- * target. It scoped domSweep to the leaderboard, which was a real improvement
- * and not the bug: the numbers on a health bar are not HTML. They are Pixi
- * text nodes in the game world, and the SCENE sweep colours every text node it
- * walks — so a player called "67" and a dragon's health reading of 67 were the
- * same eight bits of string with nothing to tell them apart. Reported again,
- * from the same dragon, after 1.0.3 shipped.
- *
- * The scene sweep now asks textIsBarReadout() first, which is hpIsHealthBar()
- * put to the text node's PARENT — mope's health number is a child of the bar
- * container, so the bar matcher already knew how to recognise it. Answers are
- * cached in two WeakSets, because hpBarParts() measures children and that is
- * far too much work to repeat per text node per sweep; a container cannot stop
- * being a health bar, and a WeakSet lets the scene drop nodes freely.
- *
- * Worth stating what is NOT fixed: a chat bubble or a floating tag whose text
- * happens to equal a registered name will still take that name's colour. The
- * same collision, a different container, and it needs a positive test for
- * "this is a nameplate" rather than another exclusion.
- *
- * DRAW ORDER ACROSS LAYERS. 1.0.6 re-attached you to YOUR OWN layer, on the
- * theory that a layer draws in attach order and going last puts you on top.
- * True, and not enough: mope keeps animals on more than one layer and decides
- * between them — so a tier 2 dove re-attached to the end of `belowAnimal` is
- * still under every dragon on `defaultAnimal`, however last it is. Reported
- * exactly that way.
- *
- * The layer is now CHOSEN. A RenderLayer is itself a child of a container and
- * mope builds them in draw order, so a layer's index among its parent's
- * children is its depth and comparing two is comparing two integers — no layer
- * NAME is needed, which is what keeps this working when mope renames or
- * reorders them. Above moves you to the highest layer any animal on screen is
- * drawn on; below moves you to the lowest and re-attaches everyone sharing it.
- *
- * And turning it off puts you back. mope picks your layer from what you are,
- * so a dove promoted onto the big-animal layer and left there is a change the
- * player did not ask to keep. The home layer is remembered per ENTITY, since a
- * respawn hands you a new one and mope picks its layer afresh.
- *
- * 1.0.7 adds a SETTINGS category: keybinds, and a theme for the panel itself.
- *
- * WHY A REGISTRY. There were five keydown handlers, each with its own literal,
- * its own typing guard and its own idea of when to stand down. That is fine
- * until two of them want the same key, at which point nothing in the script
- * knows both exist and the loser fails silently. KEYBINDS is the only place a
- * question like "is anything already on this key" has an answer. See the block
- * above it for the three kinds of clash and what override/underride mean.
- *
- * Underride is the default for every bind, which preserves exactly what each
- * of these keys did before this existed — including the one that matters:
- * Digit1-Digit9 while the upgrade menu is up still reaches mope untouched.
- *
- * NINE THINGS TWO REVIEWERS FOUND, all fixed here, worth recording because
- * most were in the new code rather than the old:
- *
- *  - The arena hotkey still asked mopeBindFor(ARENA_SKY_KEY) — a frozen
- *    'KeyZ' — AFTER kbHit had decided. Override was inoperative for that bind
- *    (kbHit says yes, then this said no on the exact case Override exists
- *    for), and rebinding it carried Z's clash onto the new key.
- *  - kb.capturing could stick. The game-to-menu transition hides the panel
- *    from a POLLED DOM walk, which is neither a click nor a blur, so it
- *    reached none of the cancels. An armed capture survived it invisibly:
- *    every hotkey dead (kbHit refuses while capturing) AND the next key
- *    pressed on the menu silently rebound. kbCancelCapture() is now called
- *    from that path.
- *  - The panel hotkey was on `document`, downstream of mope's own handlers,
- *    so Override could never work for it. Moved to the window at capture like
- *    every other hotkey, and it was also the only kbHit caller with no
- *    isTrusted check — which now lives inside kbHit for all of them.
- *  - Two handlers outside the registry (the shared zoom hub's -/=, party
- *    chat's Enter) consume with stopImmediatePropagation and register at
- *    document-start, ahead of the capture listener — so those keys could
- *    never BE bound. Both now stand down while a capture is armed, and both
- *    appear in SCRIPT_RESERVED so a bind moved onto them shows a clash.
- *  - The summary line ranked clashes last-wins, so a milder 'bound' row could
- *    hide a 'fixed' row above it — on the one line whose job is to say which
- *    problem matters.
- *  - Capture consumed before filtering, so F5 would not reload and F12 would
- *    not open devtools while armed. It now refuses unbindable keys WITHOUT
- *    consuming them.
- *  - kbHit did not filter shiftKey while three call sites did, so Shift+N and
- *    Shift+P fired. Filtered centrally.
- *  - The theme picker's own active button was a hardcoded teal, so choosing
- *    Ember lit the Ember button teal. That and the panel's frame are now
- *    tokenised. Note ~45 other teal literals in the stylesheet still are not:
- *    themes reach the panel's chrome and its controls, not every last inset.
- *
- * 1.0.6 is one bug and one feature.
- *
- * THE OUTLINE NOW FOLLOWS THE SHAPE, not just the bar. Geometry is copied off
- * mope's plate at attach time, which is right, but it was only ever copied
- * ONCE — so turning mope's Rounded Corners off left a rounded ring around a
- * square bar. The header above used to claim the next duel corrected it; it
- * does not reliably, because the outline lives as long as the bar entry does
- * and that outlasts several fights. The plate is now re-read on a 400ms
- * throttle and the ring rebuilt when the shape under it has changed. An
- * unreadable plate is not treated as a change — hpEdgeAttach already refuses
- * to build a ring it cannot measure, so rebuilding on a failed read would drop
- * the outline for good.
- *
- * DRAW ORDER, on two keys: ] draws you above every other animal, [ draws you
- * below them. Works in the open world as well as in an arena, because mope's
- * inconsistency does.
- *
- * The lever is not zIndex and not the child list. mope builds its world out of
- * about forty named RenderLayers, and a layer draws what is attached to it in
- * ATTACH ORDER — so re-attaching moves an object to the end and therefore
- * draws it last. Above re-attaches YOU; below re-attaches everyone else so
- * they all land after you. That asymmetry is unavoidable: a layer can be told
- * to draw something last and has no equivalent for first.
- *
- * Every engine call is feature-detected and a missing one turns the feature
- * off rather than half-applying it — a duplicate attach would draw an animal
- * twice, which is far worse than the inconsistency being fixed. detach comes
- * before attach wherever it exists, because attach alone on an object the
- * layer already holds is the one call that could duplicate. Re-applied on a
- * 250ms throttle, since mope re-attaches animals as they enter and leave view
- * and a single application at keypress would be undone within seconds.
- * __lumiZOrderDebug() reports what the engine turned out to support.
- *
- * 1.0.5 turns the starfield into ARENA THEMES, and adds two.
- *
- * The backdrop was one thing, so its palette lived in module constants and the
- * painter read them directly. Those constants are now the Starfield theme's
- * values and the painter reads whichever is selected. The geometry is
- * untouched — same generators, same seeds, same three star sizes, same
- * scattered-blob clouds — so a theme is a palette and four numbers. That is
- * deliberate: a new theme can introduce a new set of colours and not a new
- * class of rendering bug.
- *
- * ANTIMATTER is the starfield as a negative: a cool near-white ground with
- * dark stars. Pure white was rejected — under mope's own bright HUD it reads
- * as a blown highlight and the arena wall has nothing to contrast against. The
- * halo on the brightest stars is pulled from 0.13 to 0.07, because a dark halo
- * on a light ground is far more visible than a light one on dark and at full
- * strength they read as smudges.
- *
- * DEEP WATER is pale motes on blue-green with a stronger caustic wash. It has
- * NO STAR BAND: the milky way is the one part of the starfield that is
- * unmistakably sky, and a diagonal seam of motes underwater reads as a
- * rendering fault rather than as a feature.
- *
- * The colour rule from arenaSkyPaint() is what a new theme has to respect —
- * cloud colours sit twelve to twenty-six levels from the ground, no further.
- * It is what stops the wash banding, and it is a DISTANCE rather than a
- * direction: Antimatter's clouds are that far below a light ground for exactly
- * the reason Starfield's are that far above a dark one.
- *
- * Selecting a theme clears arenaSky.builtSpan. The sky is geometry, built once
- * and kept until the view changes enough to be worth redrawing, and a recolour
- * is not a change of view — so without that, nothing would rebuild it.
- *
- * Not animated. The sky is a single Graphics rebuilt on demand, and moving it
- * would mean clearing and redrawing eight hundred to a thousand shapes every
- * frame. Deep Water's caustics are a static wash, not a moving one.
- *
- * 1.0.4 REVERTS THE HARM 1.0.3 DID. The starfield flashing on and off inside
- * an arena, and the bite indicator not working at all, were both mine, both
- * from one line, and both shipped the same day.
- *
- * 1.0.3 taught the HP lock to refuse rather than guess when it could not tell
- * two duellists apart. arenaSkyPick() opens by reading hpState.playerEntry and
- * hands it to arenaSkyLockIsSelf(), which returns false on a null entry — so a
- * refusal did not merely withhold the HP bar. It made the duel read as
- * not-yours, which took the sky down and meant biteTick() never ran. And it
- * flashed, because a refusal is not stable: whenever one fighter drifted out
- * of the near-centre circle there was one candidate, the lock adopted, the sky
- * returned, and the moment both were near again it refused.
- *
- * Two things were wrong and both are fixed:
- *   - Identity was almost never AVAILABLE. nameKey() reads the name-colour
- *     panel's field, empty unless you have set a name colour, so refusing was
- *     the default case rather than the rare one. hpSelfNameKey() now falls
- *     back to mope's own nickname box, which nearly everybody has.
- *   - Refusing is only defensible when a question was asked and came back no.
- *     It is now conditioned on hpHaveIdentity(); with no name and no tag there
- *     was never a question, and it falls through to the old nearest-to-centre
- *     answer. A guess that is usually right beats a feature that is always
- *     dark. Where a lock already exists it is HELD rather than cleared, which
- *     is what removes the flashing outright.
- *
- * BITE INDICATOR: the outline style is gone. Filling the whole bar is now the
- * only behaviour, so the sub-option, its setting and its stored key are all
- * removed and `fullBar` answers with a constant.
- *
- * 1.0.3 fixes two reported bugs that turned out to be ONE bug wearing two
- * hats: both features identified a thing by what it LOOKED like instead of by
- * what it was, and both were then surprised when something else looked the
- * same.
- *
- * GRADIENTS LANDING ON THINGS THAT ARE NOT NAMES. Reported as: a friend
- * playing under the name "67", and hours later this client's own health
- * reaching 67 and being drawn in their gradient. The colourer matches a text
- * node by its text, which is the only thing it can do — "67" the name and "67"
- * the health reading are the same two characters. The text was never the
- * problem; walking the whole document was. Given the entire page, a
- * name-shaped string will eventually collide with something that is not a
- * name. The sweep is now scoped to where names actually are: in game, the
- * leaderboard and nothing else, so every HUD number is simply out of reach; in
- * the menu, the whole document, which has no live HUD to collide with. An
- * ALLOW-list, so mope's future elements arrive excluded rather than included.
- *
- * THE BOOST COUNTER FOLLOWING THE OPPONENT. It hangs off the HP lock, and the
- * lock chose species-then-nearest-to-the-centre. In ordinary play that is
- * sound, because the camera follows you and you ARE the centre. In an arena it
- * is not: the camera pins to neither duellist, and in a tier-matched duel both
- * animals are usually the same species, so the species check separated nothing
- * and it fell through to a coin flip between you and the person trying to kill
- * you. The HP bar, the damage numbers, the health published to the party and
- * the boost counter all followed that choice.
- *
- * The lock now reads the NAMEPLATE first, and across every bar rather than
- * only the ones near the centre — the first attempt scanned just the
- * near-centre candidates and a test caught it immediately, because in an arena
- * you are frequently not near the centre at all. Your emitted share tag is
- * accepted as proof; your configured name as strong evidence. Position is
- * consulted only when neither answers, and inside an arena an unresolved
- * choice is REFUSED rather than guessed: showing nothing beats confidently
- * showing your opponent's numbers as your own.
- *
- * 1.0.2 is three party changes.
- *
- * PARTY LEADER AND KICK. The earliest member to join is the leader and can
- * remove anybody from the roster in the panel. There is no server here, so
- * leadership is not granted by anyone — everybody publishes the moment they
- * joined and everybody computes the same lowest one, which means the answer
- * needs no announcing and heals on its own when a leader leaves. A kick is
- * cooperative by nature: it asks that client to leave and it does. See the
- * note above partyLeaderId(), including the clock-skew caveat.
- *
- * CHAT AND THE MAP ARE NO LONGER THE SAME SWITCH. They never were in the
- * code — partyChatTick has run ahead of the minimap lookup for several
- * versions precisely so a frame that cannot find the map does not swallow
- * what somebody said. The problem was the NAME: the master switch was called
- * "Party map" and turning it off took chat and the list with it, because it
- * is the switch that joins the party. It is now "Party", and the dots have
- * taken the name "Party map" for themselves.
- *
- * THE FOCUS-MODE NOTICE. Focus mode blanks the party during a 1v1 — messages
- * still arrive and still expire, they are just not drawn over the duel — which
- * from the other side is indistinguishable from being ignored. Entering one
- * now sends "NOTIFICATION: <name> is in a 1v1 and cannot see party chat until
- * it ends." once per duel, with a 30s floor so arena hopping cannot spam it.
- * It bypasses partyChatSend deliberately: that refuses to send while chat is
- * hidden, which is the exact moment this has to work.
- *
- * 1.0.1 makes the separate game stats FOLLOW mope's own block instead of
- * sitting on constants. In an arena the sky rearranges the HUD corner and
- * the bundled block travels with it; the three separate figures used to
- * stay behind, under a minimap that is no longer being drawn. The home is
- * now measured off #gameStats every half second, so they go wherever it
- * goes — moved by us, by mope, or by nobody. The minimap constants survive
- * as the fallback for before the first reading. __lumiStatsDebug() reports
- * which of the two is in use.
- *
- * 1.0.0 IS A DELIBERATE RESET, not a rewrite. The code is 1.36.0's; only the
- * number went back. Note the consequence, because it is silent: Tampermonkey
- * only ever updates UPWARD, so an install sitting on 1.36.0 will never see
- * this or anything after it. Everyone reinstalls once from the repo link, and
- * then auto-update carries them forward normally.
- *
- * What changed with it:
- *   - The separate game stats now default to UNDER THE MINIMAP, in mope's own
- *     two-line arrangement, instead of stacking over the leaderboard. The
- *     Arrange row is gone with its presets — those coordinates were dvmin from
- *     the LEFT and so never landed under the map on a non-square window.
- *   - The archived gradients are deleted outright, all forty-four of them, and
- *     gradients are no longer numbered anywhere. 103 entries became 59.
- *   - The gradient bar no longer shows a sliver of its own opposite end down
- *     each vertical edge.
- *   - The HP bar's whole-hit-point marks are exclusive to hit points mode.
- *   - Customization and the damage indicator are both labelled (WIP).
- *
- * 1.36.0 MAKES CANVAS2D WORK. Nothing new to switch on: if you were one of
- * the players for whom half this script silently did nothing, it now does.
- *
- * WHAT WAS WRONG. Everything drawn in the world hangs off catching a Pixi
- * renderer, and the only way in was Pixi's devtools global — which is fired by
- * an extension registered for WebGL and WebGPU and nothing else. mope ships a
- * custom Pixi 8.19.0 that HAS a canvas renderer and picks it automatically for
- * a weak GPU or a mobile device. So on Canvas nothing was captured and the
- * whole per-frame set died together: in-world name colours, party dots and
- * tags, the party list, HP numbers, the HP bar, the arena starfield, the bite
- * indicator and the boost counter. Since 1.20.1 the script could name the
- * cause; it could not do anything about it.
- *
- * THE WAY IN is the one this file already uses for the camera. mope's game
- * singleton is built once, in a constructor that assigns eighteen plain
- * properties onto a fresh object, and an `Object.prototype` accessor on any of
- * them hands the object over mid-construction. The key is `closestObjects`: it
- * is assigned EXACTLY ONCE in the whole bundle, appears in neither the Pixi
- * nor the Svelte chunk, is the LAST line of the constructor — so `loop`,
- * `camera` and `settings` are already on the object when it fires — and it is
- * untouched by Lumi's Moderator Extras, which matters because only one script
- * can own a prototype key.
- *
- * From there the renderer is not polled for. `loop.renderer` is assigned after
- * an await inside `loop.init()` and has no own property before that, so an
- * accessor on the loop instance catches the assignment at the instant it
- * happens. The key is handed back the moment it has done its job, and on a
- * 20-second ceiling regardless.
- *
- * WHY IT IS BETTER THAN THE HOOK IT BACKS UP rather than merely equal: it does
- * not care which renderer mope built, so it would survive Pixi dropping the
- * devtools global entirely. The devtools hook is still tried first and still
- * wins where it fires — it is the documented route and it fires earlier.
- *
- * The old unknown resolved well too. RenderLayers, which the arena starfield's
- * depth depends on, live in Pixi's shared scene chunk rather than in a
- * backend, so a backend cannot refuse them. The canvas renderer's complete
- * list of refusals is four warnings — non-`source-over` blend modes, filters,
- * inverse masks, and masks that are not Graphics — and none of them is
- * anything this script draws. mope's own health bar uses a Graphics mask,
- * which is explicitly supported.
- *
- * ONE DIAGNOSTIC WAS QUIETLY WRONG and is fixed with it.
- * __lumiArenaDebug().renderer read mope's SETTING — what the player asked for
- * — and reported it as though it were what they got. mope silently forces
- * canvas for a weak GPU, so those are different questions. There are now two
- * fields, `rendererSetting` and `rendererBuilt`, and the second is read off
- * the captured renderer itself. __lumiCaptureDebug() reports the whole thing.
- *
- * 1.35.2: above the floor there is always at least one boost.
- *
- * Reported from a duel: at 16% the counter said "No boost" and the boost went
- * through anyway, taking the meter to 15. The arithmetic said 16 - 15 = 1
- * point of usable water and 1 / 1.5 = 0, so nothing — and the game said
- * otherwise, which settles it.
- *
- * What is now known from two observations is exactly this much: you can boost
- * at 16% and you cannot at 15%. So that is all the count is told. While the
- * meter is above the floor the answer is never zero, and with a cost near 1.5
- * that changes exactly ONE reading, because 16 is the only percentage where
- * the division rounds to nothing while still being above the floor.
- *
- * Deliberately not built on a theory of WHY. It could be that the last boost
- * is always allowed, or that the server rounds the deduction rather than
- * flooring it — 16 taken to 15 rather than 14 is consistent with either, and
- * nothing in this script depends on which, because the counter reads the
- * displayed integer rather than trying to reconstruct the fraction behind it.
- * __lumiBoostDebug().boostsLeftBeforeTheClamp shows the raw division beside
- * the shown answer, so the two disagreeing anywhere except 16% would be the
- * sign that the cost estimate is too high.
- *
- * ALSO: the fit now says why it has not settled. "Not settled" had one
- * message and two completely different causes — too few intervals, which is a
- * matter of playing more, or intervals that are all boosted or all idle,
- * which can never separate drain from cost however many of them there are.
- * fitIntervalsWithABoost, fitIntervalsIdle and fitConditioning tell those
- * apart.
- *
- * 1.35.1 fixes both things wrong with the counter on its first outing.
- *
- * IT COUNTED WATER THAT CANNOT BE SPENT. Boost stops working at 15%, and
- * 1.35.0 divided the whole meter — so at 25% it said sixteen boosts when the
- * true answer is six. Only the water above the floor is counted now, which
- * also makes the amber and red bands mean something: the useful range is
- * about six down to none rather than sixteen down to none.
- *
- * IT VIBRATED. The position was written from boostTick(), which runs on the
- * arena budget — 60ms, about sixteen updates a second — while the animal it
- * follows is drawn at up to 240. A number stepping along in 60ms jumps behind
- * a smoothly moving target does not read as lag, it reads as vibration, and
- * rounding both coordinates to whole CSS pixels made it worse: a sub-pixel
- * drift flips between two integers and the node twitches without going
- * anywhere.
- *
- * So the two halves are split. The tick still decides everything — whether to
- * draw, the number, the colour, the size, all of which are cheap at 16Hz — and
- * boostPlace() does nothing but move it, on EVERY frame, with no rounding and
- * no layout. `transform` rather than left/top, because it is composited rather
- * than laid out and it takes fractional pixels. It is the second thing ever to
- * run outside the render hook's 12ms budget, and like the first (1.28.x's bite
- * tint) it is affordable because it is not a scan: two reads and one write,
- * returning on the first line whenever the counter is not on screen.
- *
- * At the bottom it now says "No boost" rather than "0 boosts". A zero reads as
- * a number you could still spend.
- *
- * 1.35.0 IS THE BOOST COUNTER, and it fixes the exclusion 1.34.0 got wrong.
- *
- * Switch it on in Arena. In a 1v1 of your own, once your meter is at 25% or
- * less, the number of boosts it will still pay for appears over your health
- * bar — amber at three, red at one.
- *
- * WHAT THE SECOND MEASUREMENT SETTLED, and it is the question the whole
- * feature was waiting on: boost is a FIXED CHARGE PER PRESS, not a rate while
- * held. Across 21 clean presses on one dragon, the holds that cost 1 point
- * averaged 210ms held and the holds that cost 2 averaged 180ms — the longer
- * holds cost LESS — over a range from 41ms to 492ms. A rate cannot look like
- * that. So the counter divides.
- *
- * The divisor is about 1.5 and the data will not yet say so to a second
- * decimal, because natural drain is the same size as the thing being
- * measured — around 0.3 points a second against a boost of about 1.5. So it
- * is not hardcoded: the counter divides by whatever the least-squares fit has
- * worked out for the animal you are on, and falls back to 1.5 until the fit
- * has forty intervals and a believable answer.
- *
- * IT ANCHORS TO MOPE'S HEALTH BAR and that is forced rather than preferred.
- * This script's own HP bar follows the ability cards, and Arena Culling
- * removes the whole ability wheel — so inside the duel this feature is for,
- * that anchor does not exist. mope's little bar over your animal's head does.
- *
- * THE EXCLUSION 1.34.0 GOT WRONG. It assumed a press inside the animal's
- * `boostCooldown` was one the server refused and threw it out. Of the six
- * presses the second run flagged that way, FIVE cost water anyway — gaps of
- * 1332, 1418, 1467 and 1488ms all drained the meter on a dragon whose config
- * says 1500. So boostCooldown gates something other than the cost. That was
- * worse than wasted samples: the same flag fed the fit's press count, so it
- * was under-counting presses by about fifteen per cent and inflating the cost
- * per press by the same amount. The flag is now a column and decides nothing.
- *
- * 1.34.0 fixes the water instrument against its first real measurement. Still
- * no counter — but the run found three things wrong with the instrument, and
- * one of them made every duel invisible to it.
- *
- * THE BOOST SIGNAL DISAPPEARED INSIDE DUELS. `#dashButton` carries mope's own
- * `active` class, which was the right signal and still is — but the button
- * lives in `#abilityButtonsWheel`, and mope renders that only while
- * `Ar.showUI` is true. Arena Culling sets it false. So in a duel with culling
- * on — which is to say the fight this feature is FOR, and which the arena
- * starfield turns culling on for — the button is not in the document at all.
- * The measurement showed it plainly: thirteen boosts, every one outside an
- * arena, and two minutes of duel with the meter moving and no boost recorded
- * against any of it.
- *
- * There is now a second signal: mope's own boost BIND, read from the same
- * settings capture mopeBindFor() uses, listened for without capture and
- * without consuming anything. The button still wins wherever there is one,
- * because it knows the difference between a press and a boost the server
- * took; the bind only speaks when there is no button to read.
- *
- * A MEAN OVER HOLDS CANNOT MEASURE THIS, and the data proves it rather than
- * suggesting it: two holds on the same animal, 4009ms and 4027ms long, cost 8
- * points and 5. Three things drain the meter at once and only the sum is ever
- * visible — natural drain, which ran at 0.5-0.8 points a second in that
- * session and is therefore the same size as the thing being measured; the
- * boost; and damage. So the estimate is now a least-squares fit over every
- * clean interval between two meter steps:
- *
- *     lost = drain x seconds + perSecond x boostSeconds + perPress x presses
- *
- * which also answers the shape question outright. If the cost sits on the
- * press and not on the second, boost is a fixed charge and the counter is a
- * division; if it sits on the second, the counter has to be built round a
- * rate instead. `fit.reading` in __lumiWaterDebug() says which.
- *
- * It accumulates as sums rather than samples, so it costs no memory and does
- * not depend on the log surviving — the first run trimmed away every meter
- * step from the period the holds were in, which made the two tables
- * impossible to cross-reference.
- *
- * TWO KINDS OF SAMPLE ARE NOW THROWN OUT rather than averaged in:
- *
- *   - A PRESS INSIDE THE COOLDOWN. Boost has a per-animal cooldown and it is
- *     in the client — 1500ms by default, 750 for a cheetah, 600 for an
- *     ostrich, and 1200/900/600 for the three lion cubs. In the run, a press
- *     1176ms after the previous one cost nothing, because the server refused
- *     it. That zero is not a free boost and must not drag a mean down.
- *   - A HOLD CUT SHORT. Each hold keeps its books open for 700ms past the
- *     release, to catch the packet that answers it. Two presses 321ms apart
- *     meant the second stole the first one's cost — 0 beside a 1, both wrong.
- *     The earlier hold is now closed and marked when a new press arrives.
- *
- * What the run DID show, for the record, is a cost per activation somewhere
- * around 1.2-2.3 points once drain is taken out by hand, which is consistent
- * with the user's own reading of 1.5 and nowhere near precise enough to build
- * on. That is what the fit is for.
- *
- * 1.33.0 adds QUICK CHAT: five messages on the number row, in a new Social
- * section of the General category.
- *
- * Write a message into slots 1-5 in the panel, and pressing that number in
- * game sends it into mope's public chat. Off by default, for the reason
- * below. 35 characters, which is mope's own limit and not one invented here.
- *
- * IT GOES THROUGH MOPE'S OWN CHAT BOX, not over the wire. `$.network` is
- * module-scoped and unreachable, the same wall the handoff describes for
- * `$.player` and `$.camera`, so the box the player types into is the way in:
- * press mope's chat bind, wait for `#chatInput` to be rendered, write the
- * text, submit the form.
- *
- * The step that is easy to get wrong is the third. mope's submit handler
- * sends SVELTE'S STATE rather than the input's value — `wo(H(c))`, not
- * `input.value` — so setting `.value` alone would send an empty message every
- * time. Svelte's bind_value listens for an `input` event and reads `.value`
- * back, so firing one is what actually puts the text where the submit handler
- * will look for it. That was read out of the Svelte chunk rather than
- * guessed.
- *
- * None of it needs a trusted event. mope's bundle contains exactly three
- * isTrusted checks and all three are on MOUSE events; the keyboard path is
- * unguarded and the Svelte binding never looks. Worth confirming before
- * building anything, because isTrusted is unforgeable and the wrong answer
- * would have meant the feature could not exist.
- *
- * WHY IT SHIPS OFF. mope hardcodes Digit1-Digit9 to pick an animal while the
- * upgrade menu is open. That is not a rebindable action, so the usual clash
- * check — mopeBindFor(), which is what keeps the starfield's Z off somebody's
- * dive — cannot see it and would report the number row as free. The guard is
- * the upgrade menu's own root, `#upgradeMenu`: while it exists these keys are
- * left completely alone and the event is not consumed, so upgrading behaves
- * exactly as it always did. Even with that, taking five keys off somebody who
- * never asked is not a default.
- *
- * An empty slot is not a refusal either — the key is left alone rather than
- * swallowed, so the feature is safe to leave on with two of the five filled.
- * Everything else that can stand the keys down is silent on purpose, because
- * a hotkey that toasts at you mid-fight is worse than one that quietly does
- * nothing: __lumiChatDebug() is where the reason lives.
- *
- * 1.32.0 is the INSTRUMENT for the 1v1 boost counter, and draws nothing.
- *
- * There is no new switch and nothing new on screen. What there is, is
- * __lumiWaterDebug() in the console, and a reason for doing it in this order.
- *
- * The counter is one division: boosts left = water / cost per boost. Water is
- * readable — the server sends it as a uint8 and mope draws it as the middle
- * meter in the bottom centre, where the fill's own inline width IS the
- * percentage. Every animal that can be in a 1v1 divides that by 100, so in a
- * duel the number on screen is the server's own integer; the single exception
- * is King Dragon, whose percent is ceil(raw / 125 * 100) — still a 0–100 meter.
- *
- * The COST is not in the client anywhere. startBoost and stopBoost are bare
- * network messages and the server owns the whole resource economy — it has
- * been retuned per animal repeatedly, by mope's own changelog. So the cost
- * has to be measured, exactly as BITE_IMMUNE_MS was in 1.28.1, and writing
- * the arithmetic before measuring it is how item 5 spent two sessions planned
- * as a tint on a bar mope draws in black.
- *
- * What this release adds:
- *
- *   - ONE reader for the resource meter, waterRead(), which the damage
- *     colour's hpResourceDry() now calls instead of carrying its own copy;
- *   - the per-animal maxima that percentage was divided by (camel 125, harpy
- *     and greater spotted eagle 150, King Dragon 125, everything else 100);
- *   - a log of every step the meter takes, with what else was happening at
- *     that instant — was boost held, how long since it was pressed, did your
- *     health drop in the same moment;
- *   - a log of every boost HOLD, because boost is held rather than tapped:
- *     mope sends startBoost on press and stopBoost on release, and whether a
- *     long hold costs more than a short tap is the first thing the data has
- *     to answer.
- *
- * Two things are worth knowing about how it reads those:
- *
- * BOOST IS READ OFF MOPE'S OWN DOM, not off the keyboard. #dashButton carries
- * the class `active`, bound to `ha.pressingDash`, which is set on the same
- * line that sends startBoost. So it is correct for any bind, mouse or key,
- * needs no bind list, and takes no key away from anybody.
- *
- * BOTH SIGNALS ARE MutationObservers, not a poll on the frame hook. Polling
- * was the obvious shape and would have been worse twice: a read every frame
- * forever, and ±60ms of error on both edges of every measurement. That was
- * tolerable against a 3000ms window in 1.28.1; against the gap between a
- * keypress and a packet it is most of the quantity being measured. Observers
- * fire at the instant mope writes the value, and cost nothing when it does
- * not.
- *
- * What the data has to settle: whether the cost is fixed; whether it is 1.5,
- * as the user's own reading of "1.5%, or alternating 2 then 1" implies — those
- * are the same observation, since a constant 1.5 against an integer wire value
- * alternates 2,1,2,1 — and whether the server rounds down, which is what would
- * let the counter be exact rather than approximate.
- *
- * 1.31.0 makes the damage indicator and the HP bar read in PERCENT, and makes
- * that the default.
- *
- * The indicator has always been inconsistent, and the cause is arithmetic
- * rather than a bug. mope only ever tells the client a health PERCENT — one
- * whole byte per animal — so an HP figure is `percent lost x that animal's
- * maximum`, and the maximum is not in the game at all. It comes from a table
- * of GENERIC per-tier values a mope developer supplied, which means:
- *
- *   - every figure is approximate for any animal whose real maximum differs
- *     from its tier's generic one, which is most of them;
- *   - a rare shows NOTHING, because rares share a tier with their base animal
- *     but not always its health and no per-rare figures were ever published —
- *     only the three toucans are known;
- *   - an animal wearing a shop skin has to be named from the skin's id, and
- *     one this cannot name shows nothing either;
- *   - King Dragon has no tier entry at all.
- *
- * So the same hit reads as a different number on different animals, and on
- * some animals as no number. None of that is fixable, because the information
- * does not exist on this side of the network.
- *
- * The percent does exist, exactly, and it is already what everything else in
- * this script publishes — the party list has always shown health as a percent.
- * So "Show as" is a third row under the two features, and in Percentage mode:
- *
- *   - the number is `before - after`, whole, printed with a % sign, and it is
- *     the server's own figure rather than a product of it;
- *   - it works on EVERY animal in the game, rares and skins included, because
- *     the identification apparatus is never consulted;
- *   - the HP bar reads "62%" and stays on screen for animals that used to take
- *     it away, keeping its whole-point marks whenever the maximum happens to
- *     be known, since those are about the bar's geometry rather than its text.
- *
- * Hit points is kept and is unchanged, including its refusals. It is the
- * incomplete half and the info bar says so.
- *
- * 1.30.1 fixes the full-bar bite indicator, again, by taking something away.
- *
- * The mark is now ONE opaque purple rectangle as wide as the time left, and
- * nothing else. Two wrong versions came before it and both were wrong the same
- * way — they let something show THROUGH the mark:
- *
- *   1.29.0 drew it at alpha .8, so wherever it lay over the green fill the two
- *   blended and the draining boundary was a smear rather than an edge. That is
- *   what was reported.
- *
- *   1.30.0 made it opaque, which fixed that, and then ALSO laid a black sheet
- *   at alpha .55 across the full width underneath, meaning to make the drained
- *   end read as an empty track. Black over the green fill is not an empty
- *   track, it is a shadow on the health bar that spreads as the purple
- *   retreats. A second bug in the name of fixing the first.
- *
- * Opacity was the whole fix. There is nothing to blend with, and the part the
- * mark has vacated is mope's own bar, untouched — which is right, because the
- * moment the mark expires that is exactly what is there.
- *
- * 1.30.0 splits the game stats, adds Expand, and fixes two 1.29.0 bugs.
- *
- * THE ABILITY BUTTONS VANISHED WHEN DRAGGED, and there were two reasons, both
- * in mope's own CSS. `#abilityButtonsWheel` carries
- * `transform: scale(var(--ability-scale))`, which makes it a CONTAINING BLOCK:
- * `position: fixed` on a child of it is relative to the wheel, a box about
- * 17dvmin square in the corner, not to the viewport. And each button carries
- * its own `rotate(...) translateX(var(--arc-radius)) rotate(...)`, the arc,
- * which then threw it a further ~22dvmin from wherever it had been put.
- * Nothing was broken; the buttons were exactly where they had been told to go,
- * which was off the screen. Coordinates are now converted into whatever space
- * an element's `fixed` actually answers to, and a moved button gives up its
- * arc — it cannot have two positions.
- *
- * RESET ALL DID NOT BRING THE MINIMAP BACK. Reset clears the position and
- * calls the DOM sync, which skips canvas-drawn entries by definition, so the
- * map stayed where it was until mope next regenerated it. Its original
- * position is now remembered the first time it is overridden and written back
- * the first time it is not.
- *
- * THE THREE GAME STATS ARE THREE THINGS NOW. FPS, ping and the player count
- * are redrawn as separate figures, each moved, coloured and hidden on its own,
- * with five presets and a free colour each. They are OUR elements rather than
- * mope's three divs, because mope's carry no id, no class and no attribute
- * saying which is which, and Svelte rebuilds them — there is nothing stable to
- * select, and colour needs a selector per figure. They are matched on their
- * UNITS (fps, ms, player), which makes the feature English-only for now and
- * makes it fail SAFE: an unrecognised block leaves mope's own alone rather
- * than showing three blanks.
- *
- * EXPAND makes the panel big while you are on Customization and puts it back
- * when you leave. The 884x572 shell is right for a list of switches and wrong
- * for a scale model of a screen with fourteen things on it.
- *
- * Also: party chat is no longer movable, at the user's request — its default
- * position is a decision, not an accident, since the stack grows upward so the
- * newest message is nearest your animal.
- *
- * 1.29.0 reworks the bite indicator, fixes the minimap, and adds six movables.
- *
- * THE BITE MARK IS A CLOCK NOW. Instead of tinting the health bar purple, the
- * script draws its own node into mope's bar container and shrinks it as the
- * three seconds run down — a purple outline by default, or the whole bar in
- * purple with the sub-option. Both deplete left to right, the same direction
- * the health fill reads.
- *
- * That change deleted more than it added. The tint had to be re-applied on
- * EVERY frame, outside the render hook's budget, because mope rewrites
- * `bar.tint` while a bar is animating; it needed the old colour saved and
- * restored, and a guard against reading back its own purple. mope does not
- * touch a child we added, so all of that is gone and the mark simply stays put.
- *
- * THE MINIMAP CHIP MOVED THE WRONG THING, and this fixes it. `#minimap` is an
- * empty div that reserves layout space; the map itself is drawn into the
- * canvas. Moving `#mapContainer` moved the settings gear and the placeholder
- * and left the map where it was. There is now a third kind of movable thing —
- * a Pixi one — that positions the scene node instead, converting through the
- * same canvas rect the party name tags already use, measuring the node's own
- * bounds rather than assuming its origin is its top-left (it is not; mope
- * hangs the minimap off its top-RIGHT), and re-applying because mope rewrites
- * that position whenever it regenerates the map.
- *
- * SIX MORE MOVABLES: the four ability-wheel buttons, each on its own and drawn
- * red in the preview when the animal does not have it or the server has it
- * switched off; the 1v1 request button; and the coin counter.
- *
- * ALSO: "(1v1)" beside a party member's name while they are duelling, which
- * needed one new optional field on the wire; roomier panel buttons, because
- * New, Copy, Re-hook and Reset all were all cramped; and the Customization
- * chip that said "Score & stats" now says "FPS & ping", which is what
- * `#gameStats` actually holds. Splitting those three figures into separately
- * movable, colourable, hideable pieces is 1.30.0.
- *
- * 1.28.1 pins the bite window down: it is THREE SECONDS, measured, not guessed.
- *
- * 1.28.0 shipped with a 1000ms placeholder and the hook to measure the real
- * one. Twenty-one bites over two live duels settled it. The ordinary fight
- * only bounds the answer from above — those gaps are just how often two
- * players happen to connect — so the measurement is the run where the opponent
- * bit as fast as the game would allow:
- *
- *     3013  3025  3026  3055  3066  2963  3084     mean 3033
- *
- * Every one of those is somebody TRYING to bite sooner and being refused, so
- * the cluster is the window rather than a sample of human timing. The 121ms
- * spread is this script's own observation error — a bite is seen up to 60ms
- * after the server sent it — which is also why one reading came in UNDER at
- * 2963, and a true floor cannot be undercut. 3000 exactly.
- *
- * __lumiBiteDebug() stays in, repurposed from measuring to re-checking: the
- * window is a server-side number and a balance patch could retune it, and this
- * is the only thing that would notice.
- *
- * 1.28.0 adds two arena features: Focus mode and the Bite indicator.
- *
- * FOCUS MODE hides everything the party DRAWS — minimap dots, in-world name
- * tags, the party list, party chat — for as long as you are one of the two
- * fighters in a 1v1 of your own, and gives P and Enter back to the game while
- * that lasts. It keeps SENDING the whole time, so the rest of the party still
- * sees your position and your health; the point is not to leave the party, it
- * is to stop being talked at during the ten seconds that decide the fight.
- *
- * THE BITE INDICATOR turns a bitten fighter's health bar purple for as long as
- * they cannot be bitten again. What the client actually knows, read out of
- * mope's own bundle rather than guessed at:
- *
- *   - The arena carries a per-fighter BITE COUNT, a server-sent uint8 printed
- *     on the arena's own labels. A bite landing is not inferred from damage;
- *     the server says so, exactly once.
- *   - Damage is a per-animal health byte, and mope detects being hurt by
- *     comparing the new one against the old. The same test says who was bitten.
- *   - There is NO invulnerability flag anywhere — not in the animal effects,
- *     not on the arena, not in the wire protocol. So the START of the window
- *     is exact and server-timed, and its LENGTH is the one thing that cannot
- *     be read off the client.
- *
- * That length is therefore MEASURED, not assumed. 1.28.0 shipped with a
- * placeholder and __lumiBiteDebug() to measure it; 1.28.1 above is the answer.
- *
- * Both features are off by default, both stand down completely outside a duel
- * of your own, and both share ONE reading of "which duel is mine" with the
- * starfield rather than deriving it again.
- *
- * 1.27.0 adds Customization: drag your HUD where you want it.
- *
- * A fifth category holding a scale model of your screen, with one chip per
- * movable thing. Drag a chip, and the real element follows in game; double-
- * click one to put it back where it was. Six things move: mope's own
- * leaderboard, minimap and score block, and this script's party list, HP bar
- * and party chat.
- *
- * Underneath it is the layout registry — one place that decides where every
- * overlay sits, replacing the same measure-gate-round-write sequence written
- * out longhand in five features. That unification saves about fifteen lines
- * and is not why it was done: drag needs pointer handling, clamping, a unit
- * conversion, persistence and a reset, and having those written once is the
- * difference between roughly 280 lines and roughly 900.
- *
- * Two things this changes that are worth knowing:
- *
- *   - mope's OWN elements can be moved, which the plan for this said could not
- *     be done. The obstacle was that Svelte rebuilds those nodes, and it turns
- *     out to be an obstacle only for inline styles. The RULE lives in our
- *     stylesheet and matches whatever node is there; the COORDINATES live as
- *     custom properties on <html>, which Svelte never touches. A rebuild
- *     inherits both with nothing to re-apply.
- *   - Positions are stored in dvmin, never pixels, so a layout arranged on one
- *     monitor is the same layout on another.
- *
- * The ability cooldown badges and the extras button are deliberately not in
- * it: a badge is glued to a button mope positions on a transform arc, so the
- * only thing to customise there is an offset rather than a position, and the
- * extras button only ever shows on the menu.
- *
- * 1.26.1 fixes the panel opening on NO category at all.
- *
- * On a fresh install or the first open after a reload, the panel came up with
- * all four category titles stacked over an empty body and no sidebar item lit.
- * Nothing was broken underneath — one click on any category fixed it for the
- * session — but it is the first thing a new user ever sees.
- *
- * The cause is a regression from 1.25.0's rebuild, and it is worth stating
- * because it is a whole class of bug. 1.24.0's first view was born selected:
- * `qolView.className = 'qolc-view active'`, with the literal 'active' in the
- * class string. `makeCategory()` builds every pane identically and correctly,
- * so nothing was born selected, and **the initial selection stopped being
- * inherited from the markup without anything taking over the job**. There is
- * no call to `setExtrasTab()` anywhere in the build.
- *
- * Two changes, because one of them should have made the symptom impossible in
- * the first place:
- *
- *   - `setExtrasTab('general')` now runs at the end of the build, right after
- *     the `extras` object it reads is assigned. That is the actual fix.
- *   - The category title is hidden by a CLASS rather than shown by default and
- *     hidden with an inline style. A panel that somehow never selects anything
- *     now shows an empty pane instead of four titles printed on top of each
- *     other — a quiet failure instead of a loud, ugly one.
- *
- * Verified by running BOTH builds through the same first-open harness: no
- * clicks, just `display = 'block'` as the launcher does. 1.26.0 reports 0 active
- * panes, 4 visible titles, 0 rows; 1.26.1 reports 1 active pane, 1 visible
- * title, the General item lit and 6 rows on screen.
- *
- * 1.26.0 reorganises the panel's categories: SIX become FOUR, the sidebar's
- * group separators are gone, and grouping moves inside the panes.
- *
- * WHY. 1.25.0's six categories split things that belong together — the name
- * colour from the sharing that carries it, the party from its own overlays —
- * and the three sidebar separators stood over one or two items each, which is
- * not a group. Captioning a handful of related ROWS is; captioning two
- * categories is a label pretending to be structure.
- *
- *   General    Detail (the two clutter switches) · Informative (cooldowns,
- *              damage indicator, HP bar) · Misc (camera zoom + its hook)
- *   Arena      Arena starfield · Turn speed
- *   Cosmetics  Name color · Sharing        (was two categories)
- *   Party      the connection and you · Overlays   (was two categories)
- *
- * THE PANES SCROLL NOW, and that is a deliberate reversal. 1.25.0 clipped
- * instead, on the argument that a row which does not fit should fail loudly
- * rather than hide behind a scrollbar. Merging six categories into four put
- * Cosmetics at 661px and Party at 712px against a 376px pane, and losing a
- * control is not a better outcome than scrolling to it. **The shell is still
- * fixed at 884x572** — that was always the property that mattered, and the
- * pane scrolls inside a panel whose size never changes.
- *
- * The scrollbar is themed rather than left to the browser: a default one is a
- * grey slab against turquoise glass and reads as a piece of the page showing
- * through the panel.
- *
- * ORDER HAD TO BE PINNED. Three panes are built out of order, because a row's
- * position in the pane is decided by when its element happens to be
- * CONSTRUCTED, and the construction order is historical. The camera zoom card
- * is built before the HP rows, so Misc landed above Informative; the party's
- * overlay rows are built before its connection card, so Overlays landed on
- * top; the turn card is built before the starfield. General and Party now
- * append into `.qolc-stack` divs created up front, and the starfield is
- * `insertBefore`d. Worth knowing before moving anything else: **appending in
- * the order you want it read is not enough here.**
- *
- * ALSO:
- *   - `Show dots` is now `Show party members on minimap`, and `Show names` is
- *     `Show names on minimap` and a SUB-OPTION of it — the names ride on the
- *     dots, since there is nothing to label if no dot is drawn, so they now
- *     dim when the dots are off as well as when the party is.
- *   - `Camera zoom` moved from its own category into General · Misc, and
- *     brought its Camera hook sub-option with it. The hook is the control that
- *     fixes the zoom; they stay one card.
- *
- * 1.25.0 rebuilds the panel to the "menu v2" design handoff: a left sidebar of
- * six categories, one column of single-line rows, and every description moved
- * into one bar at the foot of the panel that fills in while a row is hovered.
- *
- * WHY, in the author's own words about 1.24.0: columns ended at different
- * heights leaving dead space; the panel changed size between tabs; too many
- * switches were visible at once; the branch lines joining a setting to its
- * sub-options looked messy; and the 10px note text was too small to read.
- *
- * THE SHELL IS FIXED. 884x572 on every category, and the settings pane is a
- * fixed 376px box rather than something that grows with its contents. Nothing
- * about the panel moves when the category does — which is the whole point, and
- * is why the pane is `overflow: hidden` rather than `auto`. A row that does not
- * fit is CLIPPED, loudly, and the answer to that is a new category, not a
- * scrollbar. The six categories were balanced against that budget: measured off
- * the built script, all six now need exactly the 376px they are given.
- *
- * Two traps in getting the shell to hold still, both worth keeping:
- *
- *   - `.qolc-content` needs `min-height: 0`. It is a GRID item, and a grid item
- *     defaults to `min-height: auto` — so without it the content column grows
- *     to fit its tallest pane and pushes straight out of the panel, and the
- *     pane's own `overflow: hidden` never gets the chance to clip anything.
- *     The party category was 583px tall inside a 572px panel before this.
- *   - The panel is still shown and hidden with `style.display = 'block'`, as it
- *     has been since 1.1.0, because EIGHT places in this script test for that
- *     exact string. The column layout lives on a `.qolc-shell` inside it.
- *
- * DESCRIPTIONS MOVED OUT OF THE ROWS. Every row is one line: name, control,
- * nothing else. The description lives in QOLC_HINTS, keyed by the row's
- * `data-hint`, and is shown in the info bar at 12.5px — a size worth reading,
- * where the old 10px note was not. The bar's space is always reserved, so
- * showing and hiding it cannot change the panel's shape either.
- *
- * It is driven by ONE delegated `mouseover` listener on the panel, not a pair
- * per row. Thirty rows would otherwise be sixty listeners, and `closest()` also
- * means the hint stays up while the pointer is over a switch or a button INSIDE
- * the row — which per-row handlers have to special-case and usually get wrong.
- * `mouseover` bubbles; `mouseenter` does not.
- *
- * THE BRANCH IS GONE, and so is `markSubRows()` and every `.qolc-subrow`
- * spine/elbow rule that 1.24.0 spent a release getting to join up. A parent and
- * its dependent settings are now ONE CARD: the parent is its header, the
- * children sit inside it on a darker inset. Nesting carries the relationship,
- * so there is no line to draw and nothing to line up. Worth remembering the
- * next time a relationship needs showing — the fix for a fiddly connector is
- * usually containment, not a better connector.
- *
- * SIX CATEGORIES, not three tabs: In game, Camera & turning / Name color,
- * Sharing / Party, Overlays. `setExtrasTab()` still accepts the old 'qol',
- * 'cosmetics' and 'party' names and lands them on that group's first category,
- * so `openExtrasTab()`, the N hotkey and every existing caller keep working
- * against six categories without knowing there are six.
- *
- * ALSO IN THIS RELEASE, three changes asked for alongside the design:
- *
- *   - `Zoom level` is gone. The level is set with the wheel and the − and =
- *     keys; the panel row was a number that could only be watched. The hub
- *     still owns it and `syncZoomUI` no longer reaches for the readout.
- *   - `HP damage numbers` is now `Damage indicator`.
- *   - `Your HP bar` is now `HP bar` and a TOP-LEVEL row rather than a
- *     sub-option. It still greys out while the damage numbers are off, because
- *     it still reads their setting — but it is a separate thing you can want,
- *     and burying it made it hard to find.
- *   - `Camera hook` says when you would ever need it, and keeps its 1.24.0
- *     exception: never dimmed, because it is the control that fixes the thing
- *     that is broken.
- *   - The "Your in-game name (auto-detected)" field is gone. The name is read
- *     from the page; the box existed to fix a detection failure and spent its
- *     life showing a value nobody had to change.
- *
- * The party category needed real trimming to fit 376px — it wanted 583. The
- * relay, the dot palette and the handle each became ONE LINE (label left,
- * control right) instead of a heading with the control stacked under it, which
- * is what the design does and is worth 40px apiece in a fixed pane. The roster
- * gets `max-height` and its own scrollbar: it is the only thing in the panel
- * whose height depends on other people, so it is the one place a scrollbar
- * belongs. And the empty-roster line is a SIBLING of the roster, not a child —
- * `syncPartyUI` clears the roster with `textContent = ''`, so anything nested
- * inside it is destroyed on the first sync.
- *
- * 1.24.0 makes the panel WIDE instead of tall, and rebuilds the branch that
- * joins a setting to its sub-options.
- *
- * THREE COLUMNS. The panel was 326px wide with a view capped at
- * `min(500px, 100vh - 190px)`, and the tabs had long since outgrown it: the
- * QoL tab held 902px of content and the party tab 952px, so on both of them
- * roughly half of what the tab offered was behind a scrollbar. The half that
- * was hidden was the half you go looking for — the dot palette, the handle
- * field, the arena switch.
- *
- * Every tab now lays out into three columns inside the same grid, and the
- * panel is 884px. Measured off the built script rather than estimated: QoL
- * 448px, cosmetics 282px, party 457px. **Nothing scrolls on any tab any
- * more**, with 52px, 218px and 43px to spare under the cap that was already
- * there. The cap is unchanged — this buys its way under it rather than
- * raising it.
- *
- * Balance is not automatic and is worth re-measuring after any row is added.
- * The first cut of the QoL tab put Camera and Turning in one column and came
- * out at 504px — still scrolling, having moved the problem rather than solved
- * it. Two rows changed columns and it came down to 448px. Columns are also
- * `minmax(0, 1fr)` rather than `1fr`: a 1fr track has a min-content floor, so
- * one long word in a note would push its column past its share and shove the
- * others off the panel.
- *
- * It degrades. Two columns under 940px and one under 620px, because the panel
- * opens CENTRED while in game — which is where it has the least room to give —
- * and mope runs on laptops. The row gap in the grid exists only for those
- * collapsed layouts, where each column becomes its own row.
- *
- * THE BRANCH, which is the other half and was a real bug rather than a tidy-up.
- * A parent row draws a line down into its sub-options, and it was drawing that
- * line three different ways wrong:
- *
- *   - The vertical started at a hardcoded `-11px`, but what it has to cross is
- *     the row's own margin-top — and that is 7px inside a `.qolc-group` and
- *     10px outside one. So it overshot INTO the row above at every site, by
- *     4px or by 1px.
- *   - The elbow was 11px wide sitting 14px out, so its horizontal stopped 3px
- *     SHORT of the row it was pointing at and never touched it.
- *   - Each child drew its own independent elbow starting at its own `-11px`,
- *     which for a second child is a point in the gap below the FIRST child.
- *     Nothing joined it to the parent at all. It hung in mid-air.
- *
- * Three of the four clusters in the panel have two children, so the third
- * fault was on screen in three places.
- *
- * What it draws now is one tree: a single spine from the parent's bottom edge
- * down to the LAST child's centre, with a turn into each child off it — a
- * straight stub where the spine still has to get past, and the rounded elbow
- * on the one that ends it. The gap is a CSS variable that `.qolc-group`
- * redeclares, so it is the row's real margin at every site instead of one
- * number that was wrong at all of them.
- *
- * Two things to keep if this is touched again. The pieces ABUT rather than
- * overlap, because at 40% alpha any crossing would read as a brighter notch at
- * the join. And `markSubRows()` takes the children as a LIST: whether the
- * spine stops at a row or carries past it is the one thing that row cannot
- * know about itself, which is exactly what the old per-child version had no
- * way to express.
- *
- * 1.23.0 outlines the health bar while the arena starfield is up, so that the
- * health an animal has LOST can be seen against a night sky.
- *
- * THE PROBLEM. mope draws the bar as a full-width backing plate with the fill
- * on top of it, and the plate is what shows through as the fill retreats — so
- * the plate IS the missing health. Read out of the bundle, it is drawn exactly
- * once, like this:
- *
- *     wrapper.rectOrRoundRect(0, 0, 30, 7, 2.5, roundedCorners)
- *     wrapper.fill({ color: 'black', alpha: .25 })
- *
- * Black at a quarter alpha is a darkening of whatever is behind it, which is a
- * perfectly good way to draw a track over grass and a useless one over a night
- * sky. At 40% health the bar reads as a short green stub floating in space with
- * no indication of how long it is supposed to be.
- *
- * WHY NOT A TINT, which is what this was planned as. A tint MULTIPLIES the
- * colour a shape was drawn in, and this shape was drawn in black. Black times
- * anything is black, so `plate.tint` is not a weak lever here, it is not a
- * lever at all — it can be set to any of sixteen million values and the bar
- * will not change by one pixel. Worth writing down, because the plan said tint
- * and the plan was wrong for a reason that no amount of testing the tint would
- * have explained.
- *
- * WHAT IT DOES INSTEAD. A thin light outline, drawn on our own Graphics, added
- * as a child of mope's bar container. The whole bar becomes locatable — you can
- * see where the track ENDS, which is the reading that was missing — and mope's
- * own colour ramp is left alone, which matters because that ramp goes red at
- * low health and anything else red would be competing with it at exactly the
- * moment the bar has to be legible.
- *
- * Nothing of mope's is written to. The alternative was to redraw the plate's
- * own graphics context in a better colour, which is one fewer node and a much
- * worse idea: it means mutating a drawing this script does not own and then
- * having to put it back exactly, out of an engine-internal style object, on
- * every path out of the feature. Adding a node instead makes the undo a
- * destroy() — and mope destroys the animal's container with `{children: true}`,
- * so the outline is collected with it if we never get the chance.
- *
- * THE CHILD-COUNT TRAP, which this script has now walked into twice and is not
- * walking into a third time. hpBarParts() accepts a container of two to five
- * children; mope's bar has four. Adding ours takes it to five, which still
- * passes today and would stop passing the day mope adds a fifth part of its
- * own — and our outline is drawn at the plate's exact size, so the plate search
- * could settle on it and measure the wrong node. So the matcher is made blind
- * to it: hpVisibleKids() drops anything marked `__lumiHpEdge` before the parts
- * are worked out, the same trick `__lumiArenaSky` and `__lumiPartyDot` already
- * play, and it allocates nothing at all in the ordinary case where no bar on
- * screen carries one.
- *
- * SCOPE. It rides the starfield switch and has no setting of its own, because
- * the sky is the thing that makes the track unreadable. The gate is stronger
- * than "the starfield is on": it is whether the sky node is actually attached
- * and drawing, so an outline can never outlive the background it exists for.
- * It goes on every bar the HP scan is tracking rather than only the two
- * fighters — telling a duellist from a bystander is the reading that has
- * already been wrong twice (see 1.18.1), and with Arena Culling on there is
- * nothing else on screen to outline anyway.
- *
- * Geometry is copied from mope's own plate rather than assumed: the rectangle,
- * the corner radius and whether it is rounded at all are read back out of the
- * plate's drawing commands, through the same reader hpDrawnWidth() has always
- * used. If they cannot be read, no outline is drawn — a bar with a mismatched
- * ring around it would be worse than the one this fixes. The one stale case is
- * changing mope's Rounded Corners setting mid-duel, which the next duel
- * corrects.
- *
- * 1.22.0 rebuilds the party list row on TWO LINES, and adds two sub-options to
- * it, both asked for by players.
- *
- * THE ROW. Name and health on the first line, handle and XP on a quieter
- * second. This is the third attempt at the same problem and the first one that
- * addresses it rather than rebalancing it. 1.21.0 put the four things side by
- * side; 1.21.1 stacked the two numbers into one column to win width back; both
- * still produced a row where the name AND the handle were cut — "lui…" beside
- * "@luminosi…" in the report. The column is simply not wide enough for four
- * things, and the widest of them, the XP pair, was setting the width the name
- * had to pay for.
- *
- * A second line ends the competition. Each line carries one label and one
- * number, the name gets the full width of its own, and nothing truncates at
- * ordinary lengths. The cost is height and it is affordable: the row was
- * already as tall as the 2.1em animal picture, so two tight lines very nearly
- * fit inside the height it had anyway.
- *
- * The handle also loses its `flex-shrink: 20`. That existed to make it collapse
- * before the name when they shared a line; on its own line with only XP beside
- * it, ordinary ellipsis is enough. Worth knowing generally: a shrink weighting
- * is a workaround for two things sharing a line, and it stops being needed the
- * moment they do not.
- *
- * INCLUDE YOURSELF (default off). Leaving yourself off was a deliberate 1.16.1
- * decision and is still the better default — you know your own health, and mope
- * draws your XP bar for you. But the feedback is fair: a list showing everyone
- * BUT you reads as a list with a hole in it.
- *
- * Your row is PINNED FIRST rather than sorted in among the names. The rest is
- * alphabetical, so sorting yourself in would move your own row whenever anyone
- * joined, left or renamed — and your row is the one you look for by position.
- * First is also stable, which matters because the key ORDER is what decides
- * whether every node in the list gets re-hung.
- *
- * Everything on it is read through the same functions that PUBLISH, so your row
- * and the row your party sees for you cannot disagree — including health being
- * gated on partyNeedsSelfHealth(), so outside a game it is -1 here exactly as
- * it would be -1 on the wire.
- *
- * A BOX AROUND THE LIST (default off). The box is COPIED FROM `#leaderboard` at
- * runtime rather than written as a constant — background, radius, shadow,
- * border and padding, read off the computed style. mope's .HUDBox is its own
- * design and not ours to guess at: a hardcoded colour would be a near-miss the
- * day it was written and a visible mismatch the first time mope retunes its
- * HUD. Read this way it is mope's box by construction, in any theme or future
- * build. `getComputedStyle` forces layout, so it is read in partyListAnchor()
- * and nowhere else — that already ran once per list tick for the padding.
- *
- * Alignment flips with it. Unboxed, the list aligns to the leaderboard's TEXT
- * column so the names sit under the names above them. Boxed, our own padding
- * does that job, so the box aligns to the leaderboard's BOX — and the text
- * lands in the same column either way.
- *
- * Both sub-options are sub-rows of "Party list" and grey out with it, the same
- * treatment "Your HP bar" gets under the damage numbers. Neither does anything
- * with the list off, and a switch that silently achieves nothing is worse than
- * one that says why.
- *
- * 1.21.1 fixes the party list health figure, and stacks the two numbers.
- *
- * THE HEALTH BUG, reported from a real party: a member standing in LAVA, taking
- * continuous damage, whose health sat at 100% on everybody else's list for the
- * whole time. Not lagging — frozen.
- *
- * The cause is a value being borrowed by a second consumer that needed the
- * opposite thing from it. `hpTick` settles a reading by waiting for it to stop
- * moving: any reading differing from the last by more than 0.05 resets `rawAt`,
- * and only a value that has HELD for HP_SETTLE_MS becomes `settled`. That is
- * exactly right for damage NUMBERS, which must report one whole hit rather than
- * a frame of the game's tween. `partySelfHealth()` then published that same
- * settled figure.
- *
- * The trap is that the settle timer RESTARTS on every change. It is not that
- * 90ms is too long — it is that a bar which never stops moving never settles at
- * all, so `settled` keeps its pre-damage value indefinitely. Continuous damage
- * is precisely the input that can never satisfy "has this held still?", and
- * standing in lava is the purest form of it. Anything that made the reading
- * INTERMITTENT — a fight with pauses between hits — would have hidden this
- * completely, which is why it took a lava report to find.
- *
- * The fix is to publish `raw`, the freshest reading, and keep `settled` as the
- * fallback for the moment after a brief blind spell nulls it. Damage numbers go
- * on reading `settled` and are untouched — the settle logic was never wrong,
- * it was being asked the wrong question.
- *
- * It does not make the pacer chatty: the stamp compares the ROUNDED percent, so
- * a send happens when the whole number changes, which is bounded by how fast
- * health can actually drop rather than by the frame rate.
- *
- * THE LAYOUT. Health and XP now stack in one right-hand column, health over XP,
- * both a size smaller. Side by side they competed with the name for the row's
- * width, which is the one thing this list is short of — and the name losing
- * that competition is what produced the "myth…" truncation 1.16.1 had to fix.
- * Stacked, the pair costs the width of the wider of the two and no extra
- * height, because the row is already as tall as the animal picture.
- *
- * The auto margin that right-aligns them has now moved twice — percentage,
- * then XP cell, now the column. If a third figure ever joins them, move it
- * again rather than adding a second: two auto margins split the free space and
- * prise the group apart instead of pushing it right.
- *
- * ALSO WORTH KNOWING, from the debug paste that found this. mope does not hide
- * a full-health bar or detach it — it sets the bar's ALPHA to 0, leaving the
- * node visible and attached. `hpPercentOf()` already treats alpha <= 0.002 as
- * 100%, so full health reads correctly. But note what that branch actually is:
- * an INFERENCE that a faded bar means a full one. It holds only if mope never
- * fades a bar out for a damaged animal. Nobody has checked, and if it ever does,
- * the list will confidently report a hurt member as fine — a worse failure than
- * the em-dash it replaced. Unverified, deliberately not coded around.
- *
- * 1.21.0 adds an XP figure to the party list, and instrumentation for the
- * health figure beside it.
- *
- * XP — each member's "2.03M / 5M", mope's own two figures in mope's own units.
- * Three things are worth knowing about it.
- *
- * The numerator was never being read. `noteXpText()` has parsed the XP bar
- * since 1.8.3, but only ever kept the DENOMINATOR, because the only consumer
- * was `hpTierFromXp()` working out which animal you are. The numerator was
- * matched and discarded. It is now kept in `xpAmount`, in a SEPARATE regex —
- * folding both halves into one match would have made the denominator reading
- * require the numerator, and that reading has already survived mope splitting
- * the bar text across two elements. Anchoring on the slash keeps the
- * "( 2.97M XP until next upgrade )" tail out of the numerator.
- *
- * It is deliberately NOT in the pacer's stamp. The stamp exists to say that a
- * player who has not MOVED still has something worth sending, and it is
- * floored at 100ms rather than at the 2s heartbeat. Health earns that: it
- * changes in steps, in fights, and staleness during one is the whole
- * difference. XP does not — it ticks continuously the entire time you are
- * eating, so putting it in the stamp would turn every grinding member from one
- * message every two seconds into ten a second, permanently: twenty times the
- * traffic per member, on public brokers shared with strangers, to animate a
- * number nobody watches frame by frame. It rides the messages movement and
- * health were already sending.
- *
- * And it is cleared on the way back to the menu. mope starts the next run at
- * zero, so without that the first heartbeat of a new game publishes the last
- * game's total. The requirement is deliberately NOT cleared: it describes the
- * tier you are, `hpTierFromXp()` leans on it, and it is re-read immediately.
- *
- * HEALTH — not fixed here, instrumented. The user reports the party list's
- * health as inaccurate, and two of the three obvious suspects turn out to be
- * already handled, which is exactly why this is not a blind fix:
- *
- *   - "mope hides the bar at full health, and no bar reads as unknown" —
- *     `hpPercentOf()` already returns 100 for a bar that is `visible === false`
- *     or effectively transparent, the scene walk does not filter on `visible`,
- *     and neither does the bar matcher. A HIDDEN bar stays registered and
- *     reads as full. A bar mope DETACHES entirely is a different story and is
- *     the open question.
- *   - "a measured bar is only an estimate" — true, but `hpPercentOf()` already
- *     prefers mope's own printed percent whenever it is on screen, which is
- *     the exact number the server sent.
- *   - The sticky lock is untouched by either of those and remains the live
- *     suspect. It is the documented cause of the duck bot that "stole" the
- *     chat box in an earlier release.
- *
- * So `__lumiPartyDebug().selfHealthWhy` now reports the provenance rather than
- * just the figure: which of the two sources answered, the live reading against
- * the settled one, how long the settled figure has been frozen, whether the bar
- * is visible, and what the lock is actually holding versus what the ability
- * icon says you are riding. A wrong number and a missing number look nothing
- * alike in there, and neither can be diagnosed from the figure alone.
- *
- * 1.20.1 is two small things, neither of them reported by anyone: the second
- * half of a colour bug 1.20.0 only half fixed, and a diagnostic for a failure
- * mode that has never been seen but would be brutal to diagnose if it were.
- *
- * ONE — the white halo on Violet and Ultramarine, in the PARTY LIST this time.
- * 1.20.0 found it in party chat and fixed it there, and the list does the same
- * thing at a second site that was missed. The cause is identical: the name took
- * the dot's PAIRED OUTLINE as a halo, and those two presets carry a pale
- * outline on purpose, because on the MAP a dark fill on bright grass needs a
- * light ring.
- *
- * The fix is NOT the same, though, and that is the part worth writing down.
- * Chat could simply delete its halo, because chat draws on a dark box. The
- * list has no box by design — it hangs under the leaderboard straight over the
- * map — so it needs a halo, and what it needs is a DARK one. It already had
- * one: `#qolc-party-list` sets a dark pair for the whole row, and the name was
- * the only cell overriding it. So the override goes and the name inherits what
- * the handle and the percentage beside it were already using.
- *
- * The luminance lift comes across from chat unchanged (`partyLegibleColor`,
- * renamed from `partyChatHandleColor` now that two surfaces call it). A dark
- * halo does nothing for a near-black fill on dark water, which is the case the
- * pale ring existed to cover, so dropping the ring without the lift would have
- * traded a white smear for an unreadable name. Same floor, same two presets
- * moved, other nine untouched — though note the 0.16 figure was derived from
- * chat's box and the list borrows it as a value, not as a derivation.
- *
- * TWO — "no Pixi renderer was captured" now says WHY, when it can. mope ships
- * Pixi 8.19.0, which fires `__PIXI_RENDERER_INIT__` from an extension
- * registered for `[WebGLSystem, WebGPUSystem]` only. `CanvasSystem` is a
- * separate type and is not on that list, and mope never fires
- * `__PIXI_APP_INIT__` at all — so on Canvas2D there is no capture and no
- * fallback, and the entire per-frame path dies silently: in-world name colours,
- * party dots and tags, the party list, HP numbers, Your HP bar, the arena sky.
- * The panel, the leaderboard and menu colours, clutter, cooldown timers, camera
- * zoom, the party transport and chat expiry all keep working, which is what
- * makes it read as six unrelated faults instead of one setting.
- *
- * Nothing new is installed for this. The settings capture is already running
- * for Arena Culling and already holds the object, so it is one read of
- * `rendering.renderer` on a path that only runs when something has already
- * gone wrong. A value that is not canvas is printed verbatim rather than
- * interpreted. `__lumiArenaDebug().renderer` reports it at any time.
- *
- * 1.20.0 is five fixes for a set of faults that hit ONE player on a build two
- * others were running happily. That is the interesting part of all of them:
- * every one turned out to be a race, an interaction or a colour, not a thing
- * that was simply broken.
- *
- * ONE — the ability buttons "danced around and changed sizes". mope lays those
- * five buttons out on an ARC, entirely inside `transform`:
- *
- *     #ability1Button,#diveButton,#climbButton,#dropButton,#ability2Button {
- *       scale: none;
- *       transform: rotate(…) translateX(var(--arc-radius)) rotate(…)
- *                  scale(var(--press-scale, 1));
- *       transition: --press-scale .15s ease-out;
- *     }
- *
- * The clutter feature measured them with `getBoundingClientRect()`, which
- * includes that transform, and divided out only the scale IT had applied. So
- * pressing an ability animated `--press-scale` for 150ms, the card measured
- * small, this compensated by scaling it up, the press ended, the card measured
- * too big, and it scaled back down — a feedback loop with a 150ms period. It
- * only spins while abilities are actually being pressed, which is why it
- * showed for somebody in a fight and for nobody standing still.
- *
- * Sizes now come from `offsetWidth`/`offsetHeight`, which are layout boxes and
- * ignore transforms entirely — nothing to divide out and nothing to feed back.
- * Placement still needs rectangles (an arc position cannot be had any other
- * way), so the row is left alone for the few frames a press animation is
- * running. Sizing is quantised and given a dead band on top of that.
- *
- * TWO — dash and climb did not come back when the setting was switched off.
- * The hider marked one flag per ELEMENT, so the second property ever set on a
- * card was a silent no-op — and this feature sets two, `display` on the cards
- * it hides and `translate` on the cards it moves. Whichever call reached a
- * card first won and the other did nothing, and the undo list recorded one
- * entry per element, so restoring gave back only the winner. Which call got
- * there first depends on sweep order, and sweep order depends on a
- * MutationObserver — so another extension mutating the page is enough to
- * change the answer. Marked per element AND property now.
- *
- * THREE — party chat lines lingered for ever, on the menu and in game. Their
- * countdown ran on the render loop, which quietly assumes the game is still
- * drawing. It was not: the Pixi hook had been overwritten. This script chained
- * whatever hook was already installed but did nothing about one installed
- * AFTER it, and a plain assignment there wipes us out — no renderer captured,
- * no frame wrapper, so no dots, no list, no HP numbers, no arena sky, and no
- * message ever timing out. Chat kept RECEIVING throughout, because messages
- * arrive on the transport rather than on a frame, which is what makes this
- * look like a chat bug rather than the total loss of the render path that it
- * is. Load order between two userscripts is not deterministic, hence one
- * machine and not the next.
- *
- * The hook is now an accessor: reads get our wrapper, and a later assignment
- * is captured as the next link in the chain rather than replacing it. Everyone
- * still gets told about renderers. Message lifetime also moved onto its own
- * timer, so it cannot be lost with the render loop again, and the "no renderer
- * captured" warning now lists what that actually costs.
- *
- * FOUR — the party chat composer drew on top of the messages. Nothing in one
- * stack can do that: the input is its last child and the messages are above
- * it. Two stacks can, because both carry the same fixed anchor and both are
- * bottom-aligned to the same line. The stack was built with `createElement`
- * whenever the cached node was not connected, with nothing checking whether
- * one was already on the page. Every overlay this script owns is now adopted
- * by id instead, and a second copy of the script running alongside the first
- * says so in the console rather than quietly drawing two of everything.
- *
- * FIVE — a purple handle had a white shadow in chat. The handle carried the
- * dot's paired OUTLINE as a glow. On the map that pairing is right; a dark
- * fill on bright grass needs a light ring. Two presets take a deliberately
- * pale outline for exactly that reason — Violet (#8b2fff on #f2e8ff) and
- * Ultramarine (#0800ff on #cfd2ff) — so those two, and only those two, came
- * out ringed in white. The glow is gone; the fill is lifted to a luminance
- * floor against the dark box instead, and a preset already bright enough is
- * left untouched.
- *
- * 1.19.0 promotes the ARENA STARFIELD out of test, moves its hotkey to Z, and
- * stops it firing while you are SPECTATING.
- *
- * The hotkey was mouse button 5, which was a poor choice for two reasons. It
- * is a button plenty of mice simply do not have, and the ones that do have it
- * wire it to browser history at a level no listener sits above — so the
- * handler had to cancel the default on three separate events just to stop a
- * duel ending with the page navigating backwards. Z costs none of that. It is
- * unbound in mope's own defaults (which are W, A, X, S, Space, Enter, Escape,
- * the arrows and Q), and where a player HAS rebound something onto it this
- * stands down and says so rather than quietly stealing the key.
- *
- * The spectator bug is the more interesting half. mope's spectate mode renders
- * the world from somebody else's camera, and this script's "am I in a game?"
- * test is the absence of a visible Play button — which is exactly as true in
- * spectate as it is in a game. So watching a duel put the camera on a fighter,
- * the participation test read that fighter's hidden name, and the sky came up
- * over a fight that was not yours.
- *
- * The identity guard that exists for precisely this — is the animal we locked
- * onto actually ours? — could not catch it either. It compares the lock
- * against your own animal as read off the ability button, and in spectate
- * there IS no ability button, so it found nothing to disagree with and passed.
- * A guard that fails open is worth knowing about; this one now has a check
- * ahead of it that cannot.
- *
- * The check is mope's own screen state. The client is in exactly one of
- * `menu`, `HUD` and `spectating`, that state is module-scoped and out of
- * reach, but each screen renders its own root into the DOM — and `spectating`
- * renders `#spectateMenu`, with the Back button `#stopSpectating` inside it.
- * Neither id exists in a game. So the feature now needs the Play button gone
- * AND that element absent, which is "I am playing" rather than "I am not on
- * the menu". The hotkey stands down there too, and __lumiArenaDebug() reports
- * the screen it read.
- *
- * Out of test: the panel row drops its "(test)" tag. Nothing about the
- * implementation changed with it — it still depends on the shape of mope's
- * arena container and still turns itself off rather than breaking when that
- * shape moves — but two releases of firing when it should not were the reason
- * for the tag, and both causes are now gone.
- *
- * 1.18.1 replaces the arena sky's participation test, which was still firing
- * for a player walking THROUGH somebody else's duel — but only on a tier-15 or
- * higher animal, which is the clue that mattered: a mouse never triggered it, a
- * dragon always did.
- *
- * 1.17.3 gated on the duellist OUTLINE, mope's cyan and yellow. That is the
- * right fact — those colours go on `arena.player1` and `arena.player2` and on
- * nobody else — but READING it means scanning an animal's body parts for a tint
- * that means something, and on a big animal that scan was coming back cyan for
- * a bystander. A signal that has to be recognised by colour, out of a list of
- * parts that varies by species, was the wrong shape of answer.
- *
- * The right one is a boolean the game sets on one object every frame:
- *
- *     get isNameVisible() { return !this.shouldHideHUD && !this.arena }
- *
- * mope takes a duellist's NAME off their animal and puts it on the arena's own
- * two labels instead — which is why the animals inside a duel have nothing
- * written under them while everyone walking past still does. `this.arena` is
- * set on the two fighters alone, and `shouldHideHUD` is only true for an animal
- * that is despawned, zero-sized or fully transparent, never for a live player
- * (whose opacity bottoms out at 0.35 even down a hole). So on the animal we are
- * locked to, a hidden name means an arena and can mean nothing else.
- *
- * The container's shape is checked before the reading is trusted — children 1
- * and 2 must both be Text (name, arenaWins) — and where it is not recognised
- * the old tint test is still there as a fallback. __lumiArenaDebug() reports
- * both signals side by side either way.
- *
- * Worth knowing separately: if that tint really does read cyan on a tier-15+
- * animal, the HP feature's own duel privacy uses the same reading, so it may be
- * treating a bystander as a duellist and quietly withholding damage numbers.
- * That is a different feature and is not changed here.
- *
- * 1.18.0 tidies mope's own HUD corner while the arena sky is up.
- *
- * A culled arena leaves that corner laid out around something that is no longer
- * there. `#minimap` is a real 23 by 21dvmin div whether or not a map is drawn
- * in it, so the settings gear beside it sits a whole minimap's width in from
- * the edge, and the FPS/ping/players block below it is stranded in mid-air. So
- * for as long as the sky is drawing: the empty minimap box is collapsed, which
- * puts the gear back in the corner by itself, and the stats block moves to the
- * opposite corner where nothing else is competing for the space.
- *
- * All of it hangs off ONE class on <html> with static CSS, rather than inline
- * styles written onto mope's elements. Svelte rebuilds that corner whenever the
- * HUD changes and would drop anything written onto the nodes; a rule keyed on
- * an ancestor survives every rebuild for nothing, and removing the class puts
- * everything back in a single assignment with no bookkeeping to get wrong.
- *
- * The gear needs no positioning at all — collapsing the minimap leaves the
- * button column as the only thing in its row, and one `margin-left: auto` puts
- * it at that row's right-hand end, exactly where mope's own layout already
- * decided that row goes. Only the stats block is positioned, because it has to
- * cross the screen. `position: fixed` answers to a transformed ancestor rather
- * than to the viewport, and mope's HUD is not ours to make promises about, so
- * where it actually landed is MEASURED and __lumiArenaDebug() says whether it
- * crossed.
- *
- * It also dresses the button another extension parks under the settings gear as
- * a green star, to match the sky. That button is found as the child of mope's
- * own `#mapSideButtons` that is not one of the three mope puts there — no
- * coordinate guessing — and it is MASKED rather than clipped: clip-path clips
- * hit-testing too, so a clipped button silently loses every click landing on
- * the corners it used to fill, while a mask changes only what is painted.
- * Nothing about what that button DOES is touched, and the whole thing is a
- * class that comes off with the rest. The one cost is that its own contents are
- * hidden, so any count it was carrying goes with them.
- *
- * 1.17.3 stops the arena sky firing when you merely WALK THROUGH somebody
- * else's duel. 1.17.0 settled "which arena is mine" geometrically — the one you
- * are standing inside — on the assumption that the walls keep a passer-by out.
- * They do not.
- *
- * The game has its own answer and it is exact. An animal's `outlineColor`
- * getter ends in `this.arena ? (this.arena.player1 === this ? colors.arena
- * .player1 : this.arena.player2 === this ? colors.arena.player2 : ...)`, so the
- * cyan-or-yellow outline is painted on the two participants and on nobody at
- * all otherwise — a bystander gets the predator, prey or biome colour instead.
- * The HP feature has been reading that tint since long before this feature
- * existed, to keep other people's duels out of its damage numbers; it is now
- * the gate here too, and the geometry has been demoted to only saying WHICH
- * arena once the outline has said there is one.
- *
- * Two things about that signal. It is not continuous — healing, poison,
- * bleeding and freezing all outrank the arena colour in the same getter, so a
- * duellist who is on fire briefly stops looking like one — which is why
- * hpInArena() remembers the last sighting for thirty seconds instead of asking
- * fresh. And both fighters wear it, so the reading has to be pinned to YOUR
- * animal: inside an arena the two are a few pixels apart, and a lock on the
- * wrong one would pass while you stood outside watching. The locked animal is
- * therefore checked against the ability button's icon, throttled, with an
- * unreadable animal passing rather than failing.
- *
- * 1.17.2 rebuilds the arena sky's nebulae and adds a milky way, which is a
- * look that was picked from a set of rendered candidates rather than guessed
- * at. The old ones were ten concentric circles at 3.5% each, faking a gradient
- * out of stacked outlines — and the outlines showed. Measured across a smooth
- * patch of sky, neighbouring pixels stepped six luminance levels at a ring
- * boundary. That is the banding.
- *
- * The obvious fix does not work and the reason is worth keeping. Splitting each
- * cloud into forty-eight rings at 0.7% rendered COMPLETELY FLAT: a layer whose
- * alpha times the colour delta lands under one 8-bit level contributes nothing,
- * so the clouds did not soften, they vanished. No number of fainter steps can
- * smooth a gradient below the quantisation floor.
- *
- * So it goes the other way. Each blob stays opaque enough to register (3%) and
- * the COLOUR moves close to the ground instead — the wash is now twelve
- * luminance levels deep rather than forty-four, and the worst neighbour step is
- * three, one level per channel, which cannot be seen. The blobs are also
- * scattered rather than concentric, so there is no ring geometry left to band
- * on: the gradient is made of how many happen to overlap.
- *
- * The milky way is the other half, and it cannot band by construction because
- * it is made of stars rather than fills. Over half of them are pulled onto a
- * diagonal, with the scatter either side taken from three rolls added together
- * so the band has a dense core and soft edges instead of straight sides.
- *
- * Both generators are seeded with the values the chosen render used, and there
- * are deliberately TWO of them — one for cloud, one for stars — so neither can
- * shift the other by consuming a different number of rolls when a count
- * changes.
- *
- * 1.17.1 makes the arena starfield actually toggle mope's ARENA CULLING, which
- * is what the button was for and what 1.17.0 left out. Pressing it turned the
- * sky on and left the world exactly where it was.
- *
- * That setting — mope's own UI calls it "Arena Culling" — is
- * `gameplay.arena.outsideWorld`, and it cannot be faked from outside:
- * `Po.frameOutsideWorld` is re-read from it on every frame of the game loop, so
- * writing that static lasts exactly one frame. The setting itself is the only
- * lever, and `$.settings` is a Svelte 5 `$state` deep proxy over a
- * module-scoped object that never reaches window.
- *
- * So `Proxy` is hooked at document-start and the settings object is recognised
- * by the shape of its TARGET — `version === 1` rejects almost everything on the
- * first comparison, and reading the target rather than the proxy avoids
- * creating a signal for every `$state` on the page just to look at one. The
- * hook takes itself back out the instant it captures, which happens while
- * mope's bundle is still evaluating, and gives up after twenty seconds
- * regardless, so the page is never left wrapped. Assignment then goes THROUGH
- * the proxy, which is the only route that works: an accessor on the raw target
- * is silently ignored once a signal exists for the key, and `defineProperty` on
- * the proxy throws.
- *
- * The write is read back before it is believed, and if the capture failed the
- * sky still works — the toast and __lumiArenaDebug() both say the culling could
- * not be reached rather than leaving it to be inferred from the scenery.
- *
- * On means HIDE and off means SHOW. Off does NOT restore whatever the setting
- * was before, because for anyone already on HIDE that would be a toggle that
- * changes nothing visible.
- *
- * 1.17.0 adds the ARENA STARFIELD in the QoL tab. It shipped as a test feature
- * on mouse button 5; 1.19.0 above moved it to Z and took the tag off.
- *
- * mope's arena settings already include "outside world: hide", which fades out
- * every entity that would draw inside a duel — trees, food, everyone else.
- * What it does not touch is the GROUND: an entity is only culled when its
- * `showUnderArena` flag is false, and that flag defaults to `isStatic`, so
- * rivers, lakes, hills and rocks all stay put. That is why hiding the outside
- * world still leaves you duelling on ordinary terrain. This fills in that one
- * gap. Since 1.17.1 the same switch also flips that setting, so the two
- * halves move together: the culling clears what stands on the ground, this
- * replaces the ground.
- *
- * Where it draws is the whole difficulty, and it is worth writing down. mope
- * builds its world out of about forty named RenderLayers in a fixed order, and
- * `arenaBase` — where the arena's own floor sprite is attached — is the last
- * one before anything alive. That is the only depth at which a backdrop can
- * cover every piece of terrain without covering a fighter. A RenderLayer sets
- * draw order and nothing else, so the sky is added as a child of the arena's
- * container (for its transform) AND attached to that layer (for its depth);
- * the engine warns if you do only one of the two. If the layer cannot be
- * found, this draws NOTHING — the only other depth available is the arena
- * container's own, which is above the animals, and a black rectangle over both
- * duellists is far worse than an empty sky. __lumiArenaDebug() says which.
- *
- * Which arena is YOURS was settled geometrically here — the one you are
- * standing inside — on the assumption that its walls keep everybody else out.
- * They do not, and 1.17.3 above replaced that assumption with the game's own
- * marking of the two fighters. The geometry still runs, but only to say which
- * arena once the marking has said there is one.
- *
- * The sky is world-anchored, being a child of the arena, so it holds still as
- * you move the way a sky should. Stars are nevertheless SIZED in screen pixels
- * — the geometry is rebuilt from the live world-to-screen scale — so they stay
- * pin-sharp instead of swelling into discs as the camera zooms in.
- *
- * It hangs off the SHAPE of mope's arena container: six children, being the
- * floor, the walls graphic, two player labels, a timer and a message. That is
- * a lot of shape to depend on, and it is what the test tag was for. A build
- * that rearranges it turns the feature off rather than breaking anything, and
- * the debug hook says the container was not recognised.
- *
- * 1.16.1 fixes the party list's animal pictures and takes your own row off it.
- *
- * The pictures were the interesting one, because they worked for some players
- * and not others with nothing obviously different between them. What decided
- * it was which ANIMAL you were on. Your own animal is read off the ability
- * button's icon, and most animals have no ability icon at all — mouse, rabbit,
- * pig, deer, cheetah, kraken, trex, camel and pigeon among them. mope handles
- * that with an `onimgerror` that quietly rewrites the button's src to the
- * animal's own UI artwork, `<species>.ui.webp`, and THAT filename carries two
- * dots where every in-world texture carries one. HP_TEXTURE_RE allowed a
- * single extension, so it matched `.ui` and then failed on `.webp` — and the
- * animal came back unnamed, with nothing to publish. One character: `?` became
- * `*`. It also repairs the same silent miss in the HP feature, which has been
- * falling back to the artwork scan for those animals since long before this.
- *
- * Two things worth keeping in mind about that failure. It was never the path
- * BUILDING that was wrong — all 101 species and all 41 rare variants resolve —
- * so every test that checked the URLs passed. And an animal-dependent bug
- * looks exactly like an intermittent one from the outside, which is why the
- * report was "sometimes one player's icon works and the other's doesn't".
- *
- * Your own row is gone because in a real game it said nothing: mope already
- * shows you your own health, your own animal is in the middle of the screen,
- * and the row cost a full line of the leaderboard's width to repeat it. The
- * list is for the members you CANNOT see. Your health and animal still go out
- * on every publish — they are what fill in your row on everyone else's list.
- *
- * 1.16.0 is all party: five more dot colors, a party list under the
- * leaderboard, and party chat rewritten to read as "@handle: message".
- *
- * The list is the piece with real machinery behind it. It shows every member
- * with the animal they are on and how much health they have left, and both of
- * those have to travel — mope tells your client nothing at all about a player
- * who is off your screen, which is the same reason the map exists. They ride
- * on the position message rather than in one of their own, so the party still
- * costs one message per member per update.
- *
- * What paces that message changed with them. The pacer used to ask one
- * question — have you moved? — and a member standing still was down to one
- * heartbeat every two seconds, which is far too slow to watch someone's health
- * during a fight, exactly when it matters most. It now also carries a stamp of
- * the health and animal, and a change in either sends promptly. Nothing was
- * added to the idle cost: a parked member at full health still sends one
- * message every two seconds.
- *
- * Health comes from the HP feature's own reading of your health bar, which
- * means the scan behind it now runs whenever the list is on — but only the
- * READING. Everything the HP feature draws is still behind its own switch, and
- * with damage numbers off the per-frame loop skips every animal but you. See
- * hpReadingNeeded().
- *
- * The animal travels as species and rare variant, never as a URL. Each end
- * builds `assets/animals/<biome>/<species>/[<rare>/]<species>.ui.webp` from
- * its own table, so a peer can only ever name an animal that exists — the same
- * reasoning that has dot colors travel as an index. The biome is not in the
- * message because it is not the peer's to choose: it is a property of the
- * species, and PARTY_ART_BIOMES holds all 101 of them.
- *
- * Handles are read from the account, not typed. mope keeps its signed-in
- * profile in localStorage under `axis-auth-cache-v2`, so the handle is there
- * before any network call; `GET /users/me` and the profile card's own DOM are
- * the fallbacks, in that order, and there is a manual override in the panel
- * for an account that has none. A handle is NOT an in-game name and the two
- * are deliberately not interchangeable — several players can share a name, and
- * chat naming the wrong one is worse than chat naming nobody, so a member with
- * no handle is shown under their name and not under a guess.
- *
- * 1.14.0 fixes two things about name colours that both come down to the same
- * mistake: treating the visible letters of a name as if they identified a
- * player, and treating a name as if every glyph in it were a letter.
- *
- * EMOJI ARE LEFT ALONE. A Pixi tint MULTIPLIES the glyph's own texture, so a
- * colour-font emoji came out as a muddy silhouette of itself rather than as an
- * emoji — the tint that was complained about. There is no per-glyph tint on a
- * Text node, so the only way to exclude them is to draw the name as one node
- * per grapheme and tint only the ones that are not emoji. Gradient names were
- * already drawn that way; solid names now are too, but ONLY when the name
- * actually contains an emoji, because building clones for every plain name on
- * screen would be real work for no visible gain. The flow animation skips them
- * as well, or it would put the colour back a frame later. What counts as an
- * emoji is emoji PRESENTATION, not \p{Extended_Pictographic} — the latter also
- * covers (tm), (c) and the dingbat arrows, which are ordinary text characters
- * and should keep taking the name's colour like any other letter.
- *
- * In the leaderboard there is no per-glyph escape: a DOM gradient is painted
- * with background-clip:text over a transparent text fill, and a transparent
- * fill empties a colour emoji too. Cutting the game's own text nodes up is not
- * an option — they are Svelte-managed and would be rewritten underneath us —
- * so a name with an emoji in it takes a plain colour from the middle of its own
- * gradient there. CSS `color` is ignored by colour-font emoji, so they come out
- * untouched. In the game world, where the nodes are ours to cut up, the full
- * gradient is kept.
- *
- * A FRIEND PLAYING UNDER YOUR NAME KEEPS THEIR OWN COLOUR. The own-name branch
- * matched on the visible letters alone, so if you and a friend were both
- * "bird", every nameplate reading "bird" was painted with YOUR colour and
- * theirs was thrown away — and on their screen exactly the same thing happened
- * in reverse. Only one of those nameplates can be you, and there are two ways
- * to tell which:
- *
- *   The share suffix is invisible, but it is part of the text and it belongs
- *   to exactly one player. So a name carrying somebody else's tag is somebody
- *   else, whatever the letters say — and if this client is emitting no tag,
- *   then a name carrying ANY tag is not yours either, because yours would be
- *   carrying none. That settles it exactly, in the world and in the
- *   leaderboard alike.
- *
- *   Failing that — neither of you sharing, so the two names are character for
- *   character identical — the camera is centred on your own animal, so yours
- *   is the nameplate nearest the middle of the screen. The arena is the known
- *   exception, since it does not pin the camera to you, but an arena holds two
- *   players with both nameplates on screen, so the worst case there is the
- *   same coin-flip as before rather than a new failure.
- *
- * The online registry had the same bug one level down: it is keyed by the name
- * alone, so two players sharing a name share ONE entry and whoever published
- * last wins it. When a name is demonstrably being worn by more than one player
- * on screen, the registry now says nothing about it and each player's own
- * suffix decides instead — the same "ambiguous is ambiguous" rule it already
- * applied to two brokers disagreeing.
- *
- * The one case nothing can fix is two identical names where NEITHER player
- * shares a colour: there is then no signal anywhere that tells them apart, and
- * in the leaderboard (which has no positions to fall back on) both rows still
- * take yours. Switching sharing on removes the ambiguity outright.
- *
- * 1.13.0 fixes the zoom hook properly and adds a way to put it back mid-game.
- *
- * 1.12.0 rebuilt the zoom around a shared hub and hardened the way the camera
- * is caught, but it still caught the camera the one way it always had: by
- * trapping the assignment inside the camera's own constructor. That has a race
- * nothing can win from the inside. `new $()` — and with it the camera — runs
- * synchronously at module evaluation, while the Pixi renderer is only built
- * later inside an async init() that awaits the network first. So a userscript
- * that arrives a hair too late misses the camera and still catches Pixi, which
- * is precisely the "everything else works, only the zoom is dead" report. Ten
- * more repairs to a construction-time hook would not have helped: the object
- * had already been built.
- *
- * So there is now a SECOND, independent way in that has no race to lose. The
- * first thing mope's camera does every frame is
- *
- *     this.target.entity && this.target.position.set(...)
- *
- * and `entity` is not one of the keys the camera's target is built with, so
- * that read misses and walks the prototype chain. A getter for `entity` on
- * Object.prototype is therefore handed `camera.target` itself on the very next
- * frame the game draws, at ANY point in the session — and `camera.target` is
- * all this needs, because the hook goes on `target.zoom`, not on the camera.
- * It carries a setter too, and must: mope's bundle is a module, so strict mode
- * is on and `camera.target.entity = null` would throw against a getter-only
- * accessor. The probe stays armed afterwards at the cost of one reference
- * comparison per frame, which is also how a rebuilt camera now gets picked up.
- *
- * The practical effect is that the hook repairs itself within a frame of the
- * game drawing, at any time, from any state. On top of that the panel's zoom
- * section grew a **Camera hook** row: it says whether the camera is attached
- * and which of the two ways caught it, and its button re-arms everything on
- * demand and then MEASURES whether that worked before saying so. That row is
- * never greyed out — not while the camera is unhooked, which is when it
- * matters most, and not when Lumi's Moderator Extras is on the page, because
- * since 1.12.0 the two share one hook and there is nothing to defer to.
- *
- * The hub is revision 2, and a newer hub replaces an older one outright, so
- * **Lumi's Moderator Extras must be updated to 1.4.0 alongside this.** Running
- * one old and one new script leaves the old one driving a hub that nothing
- * reads; the console says so once if it detects that.
- *
- * 1.12.0 rewrote the camera zoom and removed two features.
- *
- * The zoom is the important part. It had been reported as unreliable for a
- * long time and no individual fix ever made it dependable, because the fault
- * was the ARRANGEMENT rather than any one line: two scripts, two hooks into
- * the game, two separate zoom numbers, and one of them standing down for the
- * other. Four different things could go wrong and all four looked the same
- * from the player's chair.
- *
- *   1. This script stood down whenever Lumi's Moderator Extras was installed,
- *      so on the one machine that has both, half the zoom UI on screen was
- *      inert BY DESIGN — while still showing a percentage as though it were
- *      applied.
- *   2. mope shipped its own wheel zoom on 2026-08-15. Any moment our wheel
- *      handler stood down, mope's got the notch instead. So scrolling moved a
- *      different zoom, middle click reset only that one, and the two
- *      multiplied together and drifted. This is the one that made it feel
- *      random rather than broken.
- *   3. The moderator script had a fallback that drove mope's own zoom number.
- *      mope clamps that number to at most 1 and DIVIDES by it, so the fallback
- *      could only zoom in, never out — and it fought mope's own wheel over the
- *      same value.
- *   4. Both scripts tore their camera hook down 60 seconds after load whether
- *      or not anything had been caught, so a player who read the changelog
- *      before pressing Play had no zoom for the rest of the session and no way
- *      to get it back.
- *
- * So the zoom now lives in ONE place: a shared hub, published on the page,
- * built by whichever Lumi script loads first and joined by the other. One hook
- * into the game, one zoom number that both panels read and write, one wheel
- * handler that takes the notch before mope's own can see it, one set of keys,
- * one middle-click reset. Nothing stands down for anything. The hook stays
- * armed for the whole session instead of expiring, checks the camera again on
- * a microtask so the order of the lines in mope's constructor cannot matter,
- * watches for anything replacing it, and puts itself back if something does.
- * The whole of it is at the top of this file, with the reasoning written out.
- *
- * The FPS cap and background antikick are GONE. Both worked, and neither is
- * missed enough to justify what it costs to keep: the cap sat in the render
- * path on every single frame, and antikick spoofed document.hidden, replaced
- * requestAnimationFrame and held a live AudioContext for as long as it was on.
- * Neither had anything to do with the rest of the script. If either is wanted
- * back, version 1.11.0 still has both.
- *
- * 1.11.0 adds the online color registry, which fixes a limit the invisible
- * suffix could never get around. A shared color has always ridden INSIDE the
- * nickname, and the nickname field holds 24 UTF-16 units; a color tag costs 4
- * to 8 of them, and decorative "maths alphabet" letters cost 2 units EACH. A
- * long fancy name therefore has nothing left to spend and its color was simply
- * not shared — the cosmetics tab has been warning about this for several
- * versions, because no encoding can conjure back a budget that is gone.
- *
- * So the color now travels BESIDE the name instead of inside it. An MQTT
- * broker with the retain flag set is a key-value store — the broker keeps the
- * last message published to a topic and hands it to anyone who subscribes
- * afterwards — and one topic per name turns that into a lookup table. The
- * topic is a hash of the name and the payload is encrypted under a key derived
- * from the same name, so an entry can only be read by somebody who already
- * knows whose it is. Names are looked up on sight, so a client only ever asks
- * for the handful of players actually on its screen. Nothing is sent to mope's
- * servers and the nickname itself is left completely alone.
- *
- * The invisible suffix is still emitted whenever it fits: friends on older
- * versions can only read that, and it costs nothing to keep. The registry wins
- * where both are present, since it is fresher and carries an exact color
- * rather than the suffix's 4-bits-per-channel approximation.
- *
- * 1.10.0 added the turn-speed feel setting, which lives entirely on this side
- * of the wire — it sends nothing, and it does not change what the server is
- * told:
- *
- *   Turn speed changes the RATE at which a rendered animal rotates toward the
- *   angle the server has already given it, and is clamped so it can never turn
- *   past that angle. The rendered angle therefore always stays somewhere
- *   between where the animal was and where the server says it is, which is the
- *   property that keeps this an interpolation setting rather than a fabricated
- *   heading. mope is told nothing about it and the server's own angle is what
- *   everybody else sees.
- *
- * The auto-upgrade timer was REMOVED in 1.9.0. mope's 2026-08-15 build shows
- * how long you have before the upgrade menu picks for you, so the feature had
- * become a second, less accurate copy of the game's own countdown. Everything
- * that existed only to drive it went with it: the countdown overlay, the
- * keyword matching the canvas text hook ran on every single draw call, the
- * stacked-menu tier tracking, and the DOM scan for "upgrade" elements. Two
- * things it used are kept because other features need them — the DOM observer
- * (clutter hiding) and the XP-requirement reading (HP damage numbers name your
- * own animal from it), so the canvas hook survives cut down to one indexOf.
- * Version 1.8.3 is the last one with the timer, if a friend on an older client
- * still wants it.
- *
- * Menu-clutter hiding works by text/attribute heuristics since the game DOM
- * is obfuscated; enable Debug logging (Tampermonkey menu) to see exactly
- * which elements get hidden.
- *
- * Ability cooldown timers: every ability cooldown in mope.io is different
- * (per animal AND per slot), and the numbers move with balance patches, so
- * a hard-coded table would rot. Instead the countdown is read back out of
- * the game's OWN cooldown indicator. Each ability button renders a
- * <div class="cooldownRing"> whose conic sweep is driven by a Web Animations
- * API animation created with `duration = endsAt - now` — i.e. the animation's
- * remaining play time IS the remaining cooldown, in ms, straight from the
- * server. See cdRemaining(). Nothing is hooked or patched: the ring is only
- * read, and the numbers are drawn on a separate fixed overlay so the game's
- * DOM is never touched. Hold-style abilities are driven with an endless ring
- * animation, so their remaining time really is Infinity — those show as ∞.
- *
- * Dive air rides along with that feature, since diving is just another
- * ability: the dive box shows air remaining while you are under (green, the
- * way an ability shows its uptime) and its cooldown once you surface. Air is
- * the one figure the game does not hand over directly — oxygen arrives as a
- * plain 0-100 and drains at a per-animal rate, so the rate is measured off
- * the oxygen bar's own slope rather than assumed. What is measured is WHEN the
- * air will run out; the readout then counts down to that moment in real time,
- * rather than re-dividing oxygen by rate every frame, which made the display
- * skip seconds. See diveAirLeft().
- *
- * HP damage numbers, in the "Hit points" mode 1.31.0 made the SECOND of two —
- * everything in the rest of this paragraph is what that mode does, and what
- * Percentage mode exists to avoid. mope.io only ever tells the client a HEALTH PERCENT —
- * one whole byte, 0-100 — and draws it as the little bar over an animal's
- * head. It never sends a hit points figure, and there is nothing in the
- * client that knows one. So the percent is read back off that bar (its fill
- * is redrawn to `value / 100 * barWidth` every time it changes) and turned
- * into real HP with a table of per-tier maximums supplied by a mope.io
- * developer. Numbers are shown for a drop only, never for regen, and only
- * for animals whose HP is actually known — see HP_TIER_MAX and hpMaxFor().
- * Each number is coloured by what caused it — fire, poison, bleeding, a dry
- * resource meter, or a plain hit — and anything happening to YOU rather than
- * to what you are fighting glows. See hpDamageKind().
- * Animals wearing a shop skin lose the species from their artwork paths, so
- * they are named from the skin's own id instead (`trex_gold` and friends),
- * with the XP bar as a last resort for your own animal. If it still cannot
- * work out what it is looking at, __lumiHpDebug() in the console says which
- * stage came up empty.
- *
- * Camera zoom was rebuilt in 1.9.0, because mope's 2026-08-15 build gave the
- * game its own zoom (wheel, pinch, middle click to reset) and took over the
- * number this feature used to drive. settings.rendering.zoom is no longer a
- * multiplier the camera reads: it is a DIVISOR, and every read of it is
- * clamped to 0.35 - 1. The camera works its scale out as
- *
- *     camera.zoom = camera.target.zoom / clamp(rendering.zoom, 0.35, 1)
- *
- * so through that number a script can only zoom IN — above 1 is thrown away by
- * the clamp — and mope's own wheel handler reads it, scales it and writes it
- * back, which compounds anything a script is scaling it by. The old approach
- * could not be repaired: the clamp sits on the far side of it.
- *
- * So the zoom moved one step closer to the camera, onto camera.target.zoom —
- * the number mope's own zoom is then divided into. Neither side shares a value
- * with the other any more: mope keeps its wheel, its pinch and its whole
- * range, this script keeps its own range in both directions, and the camera
- * ends up scaled by both. Nothing has to win. target.zoom is written in one
- * place (the camera's synchronize(), from the server's camera packet) and read
- * in one (the interpolation in update()), so an accessor there is consumed the
- * same frame it is read and the camera's culling box stays in step with what
- * is drawn. Scaling a Pixi container instead would look right and then cull
- * against the unscaled view — and hand back wrong coordinates for every click.
- * Nothing outside the regular render distance is drawn either way: the server
- * decides what to stream, so a zoomed-out view has an empty margin rather than
- * extra information. The camera eases toward a new value over about a second,
- * so a step is smooth rather than instant; that is mope's own interpolation.
- *
- * Getting hold of the camera is the awkward part: it lives on a module-scope
- * singleton, is never put on window, and is not in the scene graph the Pixi
- * hooks reach. Two independent ways in, both on Object.prototype, both in the
- * shared zoom hub at the top of this file with the full reasoning: the
- * camera's constructor assignments (`syncPosition` / `syncZoom`), and — since
- * 1.13.0 — a live probe on `entity`, the one property the camera reads every
- * frame and never owns. The first is exact but can be arrived at too late; the
- * second cannot be, and repairs the first.
- *
- * As of 1.12.0 camera zoom no longer defers to Lumi's Moderator Extras, and
- * that script no longer carries a zoom of its own: the two share one. See the
- * 1.12.0 note above for why the old arrangement could not be made reliable.
- *
- * Party map: back in 1.4.0, rebuilt rather than restored. mope never sends
- * your client the position of an off-screen player, so unlike shared name
- * colors this genuinely cannot be derived locally — party members have to
- * exchange positions through something. Three things are different from the
- * 1.2.1 version that was pulled:
- *
- *   1. The projection is exact instead of learned. mope's own minimap does
- *      `dotX = x * t - spriteWidth, dotY = y * t` with `t = spriteWidth /
- *      worldWidth`, and its container holds the map sprite and your own dot as
- *      its first two children. (The container is NOT findable by name: mope
- *      strips `label` in every display-object wrapper it defines, so the
- *      'minimap' label in its source never reaches the instance. It is found
- *      by shape instead — see partyFindMinimap.) Normalising that
- *      dot by the sprite width cancels `t` entirely, leaving a pure fraction
- *      of the map that depends on no local state whatsoever. Publish the
- *      fraction; multiply by YOUR sprite width on the way back in. That is
- *      why there is no calibration step, no learned bounds, no wandering
- *      around to align, and no fudge factor — the old build had all four, and
- *      the fudge factor (1.09) existed only to paper over the learning error.
- *      See partySelfPosition() and partyProjectPeer().
- *   2. Positions are ENCRYPTED, not merely posted to an obscure topic. The
- *      old build hashed the party code into the topic, which hides whose data
- *      a message is but not what it says: a public broker lets anyone
- *      subscribe to '#' and read every message on it. Now the party code
- *      derives an AES-GCM key (PBKDF2, because a typed code is low-entropy)
- *      and the topic derives from a separate domain-separated hash, so
- *      holding one reveals nothing about the other. A message that does not
- *      decrypt cannot have come from a code holder, so it is dropped.
- *   3. Publishing backs off when you are still. The old build sent at a flat
- *      10 Hz forever; a parked player now costs about one message every two
- *      seconds instead of twenty.
- *
- * The relay is selectable (1.5.1), and that is a fix rather than a preference.
- * The three brokers are unrelated servers with nothing bridging them, so two
- * members holding the same code but sitting on different ones never see each
- * other — while both panels show a green light, because each connection really
- * is fine. Before 1.5.1 the relay was picked by a per-machine index that
- * rotated on ANY dropped connection, so two clients drifted apart on their own
- * and a working party could break in the middle of a session with no symptom
- * but an empty roster. Choosing a relay now pins it: rotation is skipped and a
- * relay that is down says so instead of silently moving. Note this cannot be
- * reproduced on one machine — two tabs share the stored index, so they always
- * agree.
- *
- * Dot colors (1.5.0) are cosmetic and one-way: the color you pick is what the
- * REST of the party sees for you, and your own marker stays the game's own,
- * untouched. What travels is an INDEX into the preset table rather than a
- * color, which keeps a peer inside the set instead of letting it publish any
- * tint it likes, and lets each end pair its own outline — a black ring only
- * separates a light dot from the map, so the darker presets carry a pale one
- * instead. That index is a position, so PARTY_DOT_COLORS is append-only:
- * reordering it would repaint everyone in a mixed-version party.
- *
- * 1.16.0 added five more, taking the table to eleven. They were chosen to fill
- * the gaps the first six left rather than to shade them further: the first six
- * are all pinks, purples and cyans, so the new ones are a yellow-green, a red,
- * a yellow, a violet and a mid blue. Everything said above still holds — the
- * index still travels, the table is still append-only, and every new pairing
- * clears the same 4:1 fill-against-outline that keeps a nine-pixel dot legible.
- *
- * Party chat (1.7.0). P switches between public and party chat; Enter then
- * opens a party input and sends over the party's own encrypted transport.
- *
- * It deliberately does NOT go through mope's own chat. The moderator script
- * shows how to drive that — dispatch Enter, fill #chatInput, submit the form —
- * and it would have been less code. But intercepting the real chat means
- * cancelling a send that mope has already started, and any failure there puts
- * a party message in PUBLIC chat, in front of everyone. A separate input over
- * a separate transport cannot leak that way whatever else breaks, so that is
- * what this is. Nothing typed in party chat ever reaches mope's server.
- *
- * Where a message is DRAWN is the unusual part, and it is deliberate: every
- * member sees it above their OWN animal, never above the sender's. With three
- * members, one message appears in three places, each above the player reading
- * it. That sounds odd next to mope's own chat until you notice what it buys —
- * your own animal is the one thing guaranteed to be on screen, so no message
- * can ever be missed. Drawing above the SENDER would need the name-to-animal
- * lookup, and would silently drop everything said by a member out of render
- * distance or on another server, which for chat is the worst possible failure.
- * The sender is identified by name instead of by position, and since 1.16.0
- * that name is their HANDLE — a line reads "@handle: message", the handle in
- * that member's own party dot colour and the message itself plain white. The
- * whole line used to be the dot colour, which tied it to a dot on the map but
- * made the darker presets hard to read and gave the message no emphasis of its
- * own. Colouring only the handle does both jobs: the map link is kept exactly
- * where it identifies somebody, and what they actually said is the part that
- * reads first. A member whose handle is not known falls back to their in-game
- * name, without the @, so the two can never be mistaken for one another.
- *
- * The anchor is hpState.player — the animal the HP feature has locked onto as
- * you — rather than the middle of the screen, because the ARENA does not keep
- * the camera pinned to you and the centre is simply wrong there. The centre is
- * the fallback for when no lock is available at all.
- *
- * Party list (1.16.0). A row per member under mope's own leaderboard: the
- * animal they are on, their name and handle, and their health as a percentage.
- * It is a plain overlay with no panel of its own — measured off #leaderboard's
- * rectangle, sized in the same dvmin units mope sizes that box in, and drawn
- * as text with a shadow rather than on a scrim. That was asked for and it is
- * also the honest choice: the leaderboard already sits on a HUDBox, and a
- * second dark box hung underneath it would read as an overlay bolted on rather
- * than as more of the same HUD.
- *
- * Health is a PERCENTAGE and not a figure, which is a deliberate downgrade
- * from what the HP bar shows you about yourself. Absolute HP needs the animal's
- * maximum, and the tables behind hpMaxFor() come up empty for unclassified
- * rares, skinned animals and King Dragon — so a party of five would show three
- * numbers and two blanks, and the blanks would land on exactly the animals
- * somebody is most likely to be worried about. A percentage is available for
- * every member, always, and it is the same reading for all of them.
- *
- * A member is dropped from the list on the same timer as their dot, so leaving
- * the game takes a row off it within fifteen seconds. You are NOT on it — see
- * the 1.16.1 note above — so a list with nobody else in the party is empty,
- * and an empty list is hidden rather than drawn as a gap under the HUD.
- *
- * Two things it deliberately does not do. The PBKDF2 salt is a fixed constant,
- * because both ends must derive the same key from the code ALONE with nothing
- * exchanged out of band — so keep using generated codes rather than typing
- * `PARTY1`, which precomputation would make short work of. And within a party
- * anyone holding the code can publish under someone else's name: GCM
- * authenticates the key, not the individual. That is fine among friends and is
- * not a trust boundary.
- *
- * The original 1.2.1 feature is still kept alongside the script as a record of
- * what was replaced and why.
+ * 1.1.0 — THE REBUILD. Every feature that touches the game was rewritten on a
+ * new foundation, and every way the old one found the game is gone: no
+ * Object.prototype setters, no Map.prototype.set trap, no Proxy wrapper, no
+ * Pixi devtools hook, no scene-graph shape matching, no guessing which animal
+ * is yours, no canvas fillText hook for the XP bar.
+ *
+ * The foundation is in "the game bridge" below, and it is one observation:
+ * mope's game code is split into modules that import from each other, so the
+ * game module EXPORTS its own internals — the game object, the entity
+ * registry, the animal class and the HUD's data stores. Importing that module
+ * again from the page hands back the very instance the game is running on.
+ * There is no race to win and nothing to be early for, which is what every
+ * "mis-hook" since August came down to, and nothing is pinned to one mope
+ * build, which is what breaks the modpacks that swap mope's file for an
+ * edited copy.
+ *
+ * What came across unchanged, because it never touched the game: the party
+ * relay protocol and its encryption (wire-compatible with 1.0.x), the online
+ * colour registry, the name-tag encoding, the clutter hiders, quick chat, the
+ * panel's look and every setting's stored value. What each game-facing
+ * feature reads now:
+ *
+ *   cooldown timers   mope's HUD store (exact start/end times, no CSS ring)
+ *   damage numbers    each animal's server health and its effects flags
+ *   HP bar            your animal's server health, tier and effects
+ *   camera zoom       $.camera.target.zoom, through the shared zoom hub
+ *   turn speed        the Animal class's own update()
+ *   arena features    $.player.arena and its fighters, directly
+ *   draw order        $.player and the animal render layers
+ *   name colours      the entity registry's animals and their name nodes
+ *   party             $.player, $.minimap and the HUD stores
+ *
+ * The 1.0.x history (and the long notes on why each workaround existed) is
+ * in the git history of github.com/Luminosity67/lumis-extras.
  */
 
 (function () {
   'use strict';
 
-  const PAGE = (typeof unsafeWindow !== 'undefined' && unsafeWindow) || window;
+  const PAGE = window;
   const TAG = '[LumisExtras]';
 
-  // How this copy was loaded. The Chrome extension and the userscript are the
-  // SAME FILE: the extension's manifest runs it straight in the page, at
-  // document_start, with nothing wrapped around it. Every userscript manager
-  // defines GM_info for every script it runs, even under @grant none, and
-  // nothing defines it for an extension's page-world script — so that one
-  // check is the whole test.
+  // How this copy was loaded. The extension and the userscript are the SAME
+  // FILE: the extension's manifest runs it straight in the page. Every
+  // userscript manager defines GM_info for every script it runs, even under
+  // @grant none, and nothing defines it for an extension's page-world script.
   const QOLC_VIA = typeof GM_info !== 'undefined' ? 'userscript' : 'extension';
 
-  // 1.0.24. With both installed, the extension is the copy to keep. Chrome
-  // runs an extension's document_start script before any of the page's own,
-  // and every hook this script depends on — the game singleton, the camera,
-  // the renderer — is caught while mope's code is BUILDING them. A userscript
-  // manager cannot promise to be that early, and when it is late those hooks
-  // miss, which is where the mis-hooks came from.
-  //
-  // So a userscript copy that finds the extension already on the page does
-  // nothing at all: this runs before the zoom hub, before any trap and before
-  // anything is drawn. The other order (the userscript first) cannot be
-  // settled from here — the extension cannot unload a copy that has already
-  // hooked things — so that case is left to the warning further down.
+  // With both installed, the extension is the copy to keep. A userscript that
+  // finds it already running does nothing at all.
   if (QOLC_VIA === 'userscript') {
     let extensionRunning = false;
     try {
@@ -2328,135 +92,886 @@
     }
   }
 
-  // Announced on the page, not in the sandbox, so a sibling script can see it.
-  // Lumi's FOV stands down against this; camera zoom below stands down against
-  // the moderator script's equivalent flag.
+  // Lumi's FOV and older sibling scripts stand down against this flag.
   try { PAGE.__LUMI_EXTRAS_V1_RUNNING__ = true; } catch (e) { /* sealed page */ }
+
+  const VERSION = (() => {
+    try {
+      const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
+      if (v) return String(v);
+    } catch (e) { /* not exposed */ }
+    return '1.1.0';
+  })();
+
+  /* ---------------------------------------------- one instance, one layer */
+
+  // Every fixed overlay this script owns is adopted by id rather than created
+  // blindly, so two copies on one page share one of each instead of drawing
+  // two of everything on top of each other.
+  function qolcOwnLayer(id) {
+    const host = document.body || document.documentElement;
+    if (!host) return null;
+    let layer = document.getElementById(id);
+    if (layer) {
+      if (layer.parentNode !== host) host.appendChild(layer);
+      return layer;
+    }
+    layer = document.createElement('div');
+    layer.id = id;
+    host.appendChild(layer);
+    return layer;
+  }
+
+  // A second copy is not a supported setup, so it is said out loud: in the
+  // console at once, on screen once the page is up (see onReady).
+  const QOLC_INSTANCE = {
+    version: VERSION,
+    via: QOLC_VIA,
+    at: (function () { try { return performance.now(); } catch (e) { return 0; } })(),
+  };
+
+  const qolcInstances = (function () {
+    let list = null;
+    try {
+      list = PAGE.__lumiExtrasInstances;
+      if (!Array.isArray(list)) list = PAGE.__lumiExtrasInstances = [];
+    } catch (e) { list = []; }
+    list.push(QOLC_INSTANCE);
+    if (list.length > 1) {
+      console.warn(TAG, 'ANOTHER COPY OF THIS SCRIPT IS ALREADY RUNNING on ' +
+        'this page (' + list.map((i) => i.version + ' ' + (i.via || 'userscript')).join(' + ') +
+        '). Keep the extension and uninstall any Tampermonkey copy.');
+    }
+    return list;
+  })();
+
+  /* ------------------------------------------------------------- settings */
+
+  // Settings live in localStorage under `maut:<key>` as JSON — the same keys
+  // every 1.0.x build wrote, so nothing is lost moving to 1.1.0. 1.0.x also
+  // wrote Tampermonkey's own storage; that is still read first when a
+  // userscript manager exposes it, so a value only it holds is not lost.
+  const store = {
+    get(key, fallback) {
+      try {
+        if (typeof GM_getValue === 'function') {
+          const v = GM_getValue(key);
+          if (v !== undefined) return v;
+        }
+      } catch (e) { /* sandbox variations */ }
+      try {
+        const v = localStorage.getItem('maut:' + key);
+        if (v !== null) return JSON.parse(v);
+      } catch (e) { /* ignore */ }
+      return fallback;
+    },
+    set(key, value) {
+      try {
+        if (typeof GM_setValue === 'function') GM_setValue(key, value);
+      } catch (e) { /* ignore */ }
+      try { localStorage.setItem('maut:' + key, JSON.stringify(value)); } catch (e) { /* ignore */ }
+    },
+    remove(key) {
+      try {
+        if (typeof GM_deleteValue === 'function') GM_deleteValue(key);
+      } catch (e) { /* ignore */ }
+      try { localStorage.removeItem('maut:' + key); } catch (e) { /* ignore */ }
+    },
+  };
+
+  // Settings that no longer exist. Cleared on every load so a leftover can
+  // never be mistaken for a live one. `hookLog` was 1.0.25's record of how
+  // the old traps fared; there are no traps left to record.
+  for (const key of ['layoutPos', 'layoutSeen', 'layoutHidden', 'layoutMapFixed',
+    'gameStats', 'statsHidden', 'statsColor', 'hookLog']) {
+    store.remove(key);
+  }
+
+  // 120 is NEUTRAL, not a middle: at that value the multiplier is exactly 1
+  // and every animal turns at mope's own rate, so the setting reads as a
+  // percentage of native (30 is a quarter speed, 480 four times).
+  const TURN_MIN = 30;
+  const TURN_MAX = 480;
+  const TURN_STEP = 30;
+  const TURN_NEUTRAL = 120;
+  const TURN_STYLES = [
+    ['linear', 'Linear'],
+    ['ease-out', 'Ease out'],
+    ['ease-in', 'Ease in'],
+    ['instant', 'Instant'],
+  ];
+
+  function normalizeTurnSpeed(value) {
+    const number = Math.round(Number(value));
+    if (!Number.isFinite(number)) return TURN_NEUTRAL;
+    return Math.min(Math.max(number, TURN_MIN), TURN_MAX);
+  }
+
+  function normalizeTurnStyle(value) {
+    const name = String(value);
+    for (const [id] of TURN_STYLES) if (id === name) return id;
+    return 'linear';
+  }
+
+  const HP_UNIT_MODES = [
+    ['percent', 'Percentage'],
+    ['hp', 'Hit points'],
+  ];
+
+  const CHAT_SLOTS = 5;
+  const CHAT_MAX_LEN = 35;
+
+  function chatCleanSlots(value) {
+    const out = [];
+    const list = Array.isArray(value) ? value : [];
+    for (let i = 0; i < CHAT_SLOTS; i++) {
+      const raw = typeof list[i] === 'string' ? list[i] : '';
+      out.push(raw.replace(/[\r\n\t]+/g, ' ').slice(0, CHAT_MAX_LEN));
+    }
+    return out;
+  }
+
+  const settings = {
+    masterEnabled: !!store.get('masterEnabled', true),
+    menuClutter: !!store.get('menuClutter', false),
+    gameClutter: !!store.get('gameClutter', false),
+    abilityCooldown: !!store.get('abilityCooldown', true),
+    hpNumbers: !!store.get('hpNumbers', true),
+    hpBar: !!store.get('hpBar', true),
+    hpUnits: store.get('hpUnits', 'percent') === 'hp' ? 'hp' : 'percent',
+    quickChat: !!store.get('quickChat', false),
+    boostCounter: !!store.get('boostCounter', false),
+    chatSlots: chatCleanSlots(store.get('chatSlots', null)),
+    cameraZoom: !!store.get('cameraZoom', false),
+    turnSpeed: !!store.get('turnSpeed', false),
+    arenaSky: !!store.get('arenaSky', false),
+    arenaTheme: String(store.get('arenaTheme', 'starfield') || 'starfield'),
+    panelTheme: String(store.get('panelTheme', 'teal') || 'teal'),
+    zorderMode: (() => { const v = Number(store.get('zorderMode', 0)); return v === 1 || v === -1 ? v : 0; })(),
+    arenaFocus: !!store.get('arenaFocus', false),
+    biteIndicator: !!store.get('biteIndicator', false),
+    turnSpeedValue: normalizeTurnSpeed(store.get('turnSpeedValue', TURN_NEUTRAL)),
+    turnStyle: normalizeTurnStyle(store.get('turnStyle', 'linear')),
+    debug: !!store.get('debug', false),
+    updateCheck: store.get('updateCheck', true) !== false,
+  };
+
+  function dbg(...args) { if (settings.debug) console.log(TAG, ...args); }
+
+  // Exposes a console helper on the page. Every debug function goes through
+  // here so a locked-down page costs one try, not twenty.
+  function expose(name, fn) {
+    try { PAGE[name] = fn; } catch (e) { /* page is locked down */ }
+  }
+
+  /* ------------------------------------------------- overlay placement */
+
+  function layoutVmin() {
+    return Math.max(1, Math.min(innerWidth, innerHeight) / 100);
+  }
+
+  function layoutStyle(el, prop, value) {
+    if (el.style[prop] !== value) el.style[prop] = value;
+  }
+
+  function layoutPlace(el, anchored) {
+    if (!anchored) return null;
+    const left = Math.round(anchored.left);
+    const top = Math.round(anchored.top);
+    layoutStyle(el, 'left', left + 'px');
+    layoutStyle(el, 'top', top + 'px');
+    return {left, top};
+  }
+
+  // Every surface this script owns has an id starting `qolc-`, and colour
+  // sweeps and clutter hiders skip anything inside one.
+  const QOLC_OWN_UI = '[id^="qolc-"]';
+
+  // The panel. Declared up here because many features re-sync their row
+  // when they change, long before the panel code further down is reached.
+  let extras = null;
+
+  // Row re-syncs, assigned when the panel is built. Until then they exist and
+  // do nothing, so a hotkey pressed before the panel was ever opened is safe.
+  let syncHpBarRow = () => {};
+  let syncHpUnitsRow = () => {};
+  let syncPartyListSubRows = () => {};
+  let syncArenaSkyRow = () => {};
+  let syncArenaThemeRow = () => {};
+  let syncZorderRows = () => {};
+  let syncKeybinds = () => {};
+  let syncChatRows = () => {};
+  let syncTroubleshootingUI = () => {};
+  // Called from every path that takes the panel off screen, so a half-done
+  // rebind can never leave every hotkey dead.
+  let kbCancelCapture = () => {};
+
+  /* ------------------------------------------------- the on-screen toast */
+
+  const qolcToastState = {el: null, timer: 0};
+  const QOLC_TOAST_MS = 2600;
+
+  // One line, centred above the middle of the screen. Default pink; 'is-bad'
+  // and 'is-info' recolour it, 'quiet' is a softer neutral.
+  function qolcToast(text, cls, ms) {
+    try {
+      if (!qolcToastState.el || !qolcToastState.el.isConnected) {
+        const host = document.body || document.documentElement;
+        if (!host) return;
+        qolcToastState.el = document.getElementById('qolc-party-toast') ||
+          document.createElement('div');
+        qolcToastState.el.id = 'qolc-party-toast';
+        host.appendChild(qolcToastState.el);
+      }
+      const el = qolcToastState.el;
+      el.textContent = text;
+      el.className = cls || '';
+      el.style.display = 'block';
+      clearTimeout(qolcToastState.timer);
+      qolcToastState.timer = setTimeout(() => {
+        if (qolcToastState.el) qolcToastState.el.style.display = 'none';
+      }, ms || QOLC_TOAST_MS);
+    } catch (e) { /* the message is a courtesy; never let it break the caller */ }
+  }
+
+  /* ------------------------------------------------------ feature errors */
+
+  // A feature that throws inside the frame loop is recorded and switched off
+  // for that frame only — it never takes the game's own drawing down with it.
+  const featureErrors = new Map();   // name -> {count, last, at}
+
+  function frameFailed(name, error) {
+    const row = featureErrors.get(name) || {count: 0, last: '', at: 0};
+    row.count += 1;
+    row.last = String(error && error.stack || error).slice(0, 400);
+    row.at = Math.round(performance.now());
+    featureErrors.set(name, row);
+    if (row.count === 1 || settings.debug) console.warn(TAG, name + ' failed:', error);
+  }
+
+  /* ============================ the game bridge ============================
+   *
+   * HOW THIS SCRIPT REACHES THE GAME.
+   *
+   * mope's client is a Vite build: an entry module plus a handful of chunks
+   * that import from each other. The game chunk (the camera, the network and
+   * every entity class) is imported by the UI chunk, so it EXPORTS what the
+   * UI needs — and that includes the game singleton `$` itself, the base
+   * Entity class with its live registry (`Entity.list`, a Map of every entity
+   * the client knows), the Animal class, and the Svelte stores behind the HUD
+   * (ability cooldowns, XP and resources, the arena, the leaderboard).
+   *
+   * A module is evaluated once per page, and `import(url)` with a URL that is
+   * already in the page's module map hands back THAT instance. So this script,
+   * running in the page (the extension's MAIN world, or a userscript under
+   * @grant none), imports the game chunk after mope has loaded it and gets the
+   * very `$` the game is running on. Nothing is patched or trapped, nothing has
+   * to be in place before mope starts, and the import can happen a millisecond
+   * or an hour after the page loads with the same answer.
+   *
+   * The modpacks (Nova, angelwings) instead swap mope's game chunk for a copy
+   * edited to put `$` on window. That copy is pinned to one build, so every
+   * mope deploy leaves them running stale game code until their author ships
+   * a new copy. This reads the build that is actually running, whatever its
+   * file names are this week.
+   *
+   * WHAT COULD STILL BREAK IT, said plainly. The exports are recognised by
+   * SHAPE — the game is the object with camera + network + settings + loop;
+   * Entity is the class with `list` and `dynamicList` Maps and static
+   * `create`/`get` — never by their minified names, which change every build.
+   * If mope renames one of those properties the fingerprint misses, and
+   * bridge.status() (Settings → Troubleshooting, or __lumi.status()) names
+   * exactly which piece is missing. Nothing guesses around a miss.
+   */
+
+  // How the bridge recognises each piece of mope, by SHAPE. Top-level so the
+  // tests can run them against fixtures and against mope's real classes.
+  function mopeHasKeys(value, keys) {
+    for (const key of keys) {
+      if (!(key in value)) return false;
+    }
+    return true;
+  }
+
+  function mopeIsGame(value) {
+    return !!value && typeof value === 'object' &&
+      mopeHasKeys(value, ['camera', 'network', 'settings', 'loop']) &&
+      !!value.loop && typeof value.loop === 'object';
+  }
+
+  // The BASE entity class. Every entity subclass inherits these statics
+  // (and declares a `list` of its own), so the test is that `dynamicList`
+  // is the class's OWN property — only the base declares it.
+  function mopeIsEntityClass(value) {
+    const own = Object.prototype.hasOwnProperty;
+    return typeof value === 'function' &&
+      own.call(value, 'dynamicList') && value.dynamicList instanceof Map &&
+      value.list instanceof Map &&
+      typeof value.create === 'function' && typeof value.get === 'function';
+  }
+
+  // The base Animal class, not a species subclass: it is the one that
+  // declares these methods itself.
+  function mopeIsAnimalClass(value) {
+    const own = Object.prototype.hasOwnProperty;
+    const proto = typeof value === 'function' && value.prototype;
+    return !!proto && own.call(proto, 'isUsingAbility1') &&
+      own.call(proto, 'setOutlineColor') && typeof proto.update === 'function';
+  }
+
+  // The animal config table: one entry per species, keyed by name, each with
+  // comfortZones, biome and subspeciesEnum.
+  function mopeIsConfigTable(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const mouse = value.mouse;
+    return !!mouse && typeof mouse === 'object' && 'comfortZones' in mouse &&
+      'subspeciesEnum' in mouse && 'king_dragon' in value;
+  }
+
+  const bridge = (function () {
+    const state = {
+      phase: 'waiting for the page',
+      modules: [],          // same-origin module URLs that were examined
+      failures: [],         // {url, error}
+      game: null,           // mope's `$`
+      Entity: null,         // base entity class; .list is the live registry
+      Animal: null,         // animal class (prototype has isUsingAbility1)
+      configs: null,        // species name -> animal config
+      stores: {},           // named Svelte stores, see STORE_SHAPES
+      foundAt: 0,           // performance.now() when the game was found
+      attempts: 0,
+    };
+    const waiters = [];
+
+    // Svelte `$state` stores the HUD is built from, recognised by their keys.
+    // Each is a deep proxy; reading through it is safe and cheap.
+    const STORE_SHAPES = {
+      // {..., hasAbility1, animalBiome, equippedItemId, cooldowns: {ability1,
+      //  ability2, dive, arena: {startsAt, endsAt, active, disabled}}}
+      // The times are performance.now() milliseconds.
+      hud: ['cooldowns', 'hasAbility1', 'animalBiome', 'equippedItemId'],
+      // {oxygen, resource, xp, coins, coinsEarnedThisLife, gems, ...}
+      stats: ['oxygen', 'resource', 'xp', 'coins'],
+      // {show1v1Button, request, showUI}
+      arena: ['show1v1Button', 'request', 'showUI'],
+      // {serverName, entries}
+      leaderboard: ['serverName', 'entries'],
+      // {currentScreen: 'menu' | 'HUD' | 'spectating' | 'banned', ...}
+      ui: ['currentScreen', 'showSettings'],
+      // {visible, timeAlive, kills, ...} — the death screen
+      death: ['timeAlive', 'kills', 'killerName'],
+    };
+
+
+    // Every same-origin module the page has asked for: the entry script and
+    // the modulepreload links Vite writes for its static imports. Their URLs
+    // change on every deploy, which is why they are read off the page rather
+    // than written down here.
+    function moduleUrls() {
+      const urls = [];
+      const nodes = document.querySelectorAll(
+        'script[type="module"][src], link[rel="modulepreload"][href]');
+      for (const node of nodes) {
+        try {
+          const url = new URL(node.getAttribute('src') || node.getAttribute('href'),
+            location.href);
+          if (url.origin !== location.origin) continue;
+          if (urls.indexOf(url.href) === -1) urls.push(url.href);
+        } catch (e) { /* a malformed attribute is not ours to fix */ }
+      }
+      return urls;
+    }
+
+    function examine(namespace) {
+      for (const key of Object.keys(namespace)) {
+        let value;
+        // An export still in its temporal dead zone throws on read.
+        try { value = namespace[key]; } catch (e) { continue; }
+        if (!value || (typeof value !== 'object' && typeof value !== 'function')) continue;
+        try {
+          if (!state.game && mopeIsGame(value)) state.game = value;
+          else if (!state.Animal && mopeIsAnimalClass(value)) state.Animal = value;
+          else if (!state.Entity && mopeIsEntityClass(value)) state.Entity = value;
+          else if (!state.configs && mopeIsConfigTable(value)) state.configs = value;
+          else if (typeof value === 'object') {
+            for (const name of Object.keys(STORE_SHAPES)) {
+              if (!state.stores[name] && mopeHasKeys(value, STORE_SHAPES[name])) {
+                state.stores[name] = value;
+                break;
+              }
+            }
+          }
+        } catch (e) { /* a getter that throws is simply not a match */ }
+      }
+    }
+
+    function complete() {
+      return !!(state.game && state.Entity && state.Animal && state.configs &&
+        Object.keys(STORE_SHAPES).every((name) => state.stores[name]));
+    }
+
+    // Every module namespace imported so far. Exports are LIVE bindings, so a
+    // piece assigned after the first look shows up when the same namespace is
+    // examined again — which is why each attempt re-examines all of them
+    // rather than only the URLs it has not seen.
+    const namespaces = [];
+
+    async function discover() {
+      state.attempts++;
+      if (!state.game) state.phase = 'importing mope\'s modules';
+      const urls = moduleUrls();
+      for (const url of urls) {
+        if (state.modules.indexOf(url) !== -1) continue;
+        state.modules.push(url);
+        try {
+          // The SAME instance the page is running, because the URL is the
+          // module map's key. See the block comment above.
+          namespaces.push(await import(url));
+        } catch (error) {
+          state.failures.push({url, error: String(error && error.message || error)});
+        }
+      }
+      for (const namespace of namespaces) {
+        examine(namespace);
+        if (complete()) break;
+      }
+      if (state.game) {
+        if (!state.foundAt) {
+          state.foundAt = performance.now();
+          dbg('bridge: game found after', Math.round(state.foundAt), 'ms;', status());
+        }
+        state.phase = complete() ? 'ready' : 'ready (some optional pieces missing)';
+        while (waiters.length) {
+          const resolve = waiters.shift();
+          try { resolve(state.game); } catch (e) { /* one listener cannot stop the rest */ }
+        }
+        return complete();
+      }
+      state.phase = urls.length ? 'the game was not among ' + urls.length + ' modules'
+        : 'no modules on the page yet';
+      return false;
+    }
+
+    // DOMContentLoaded comes after every non-async module script has run, so
+    // by then the entry (and through it the game chunk) has been evaluated.
+    // Until EVERYTHING is found — the game and every optional piece — it keeps
+    // looking, backing off to once every five seconds: a redeploy that moved
+    // something behind a dynamic import shows up as modules appearing later.
+    let started = false;
+    function start() {
+      if (started) return;
+      started = true;
+      let delay = 250;
+      const attempt = () => {
+        discover().then((done) => {
+          if (done) return;
+          delay = Math.min(delay * 2, 5000);
+          setTimeout(attempt, delay);
+        }, (error) => {
+          state.failures.push({url: '(discover)', error: String(error)});
+          setTimeout(attempt, 5000);
+        });
+      };
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', attempt, {once: true});
+      } else {
+        attempt();
+      }
+    }
+
+    function status() {
+      return {
+        phase: state.phase,
+        game: !!state.game,
+        entityRegistry: !!state.Entity,
+        animalClass: !!state.Animal,
+        animalConfigs: !!state.configs,
+        stores: Object.keys(STORE_SHAPES).map((name) =>
+          name + (state.stores[name] ? ' ok' : ' MISSING')).join(', '),
+        modulesExamined: state.modules.length,
+        failures: state.failures.slice(-5),
+        foundAfterMs: state.foundAt ? Math.round(state.foundAt) : null,
+        attempts: state.attempts,
+      };
+    }
+
+    return {
+      start,
+      status,
+      complete,
+      // Resolves with `$` once it is known — immediately if it already is.
+      ready() {
+        if (state.game) return Promise.resolve(state.game);
+        return new Promise((resolve) => waiters.push(resolve));
+      },
+      get game() { return state.game; },
+      get Entity() { return state.Entity; },
+      get Animal() { return state.Animal; },
+      get configs() { return state.configs; },
+      store(name) { return state.stores[name] || null; },
+    };
+  })();
+
+  /* ---------------------------------------------------- reading the game */
+
+  // mope's settings object (a Svelte deep proxy). Plain assignment through it
+  // is how mope's own settings UI writes, and mope persists the result.
+  function mopeSettingsProxy() {
+    const game = bridge.game;
+    const value = game && game.settings;
+    return value && typeof value === 'object' ? value : null;
+  }
+
+  // The name of mope's own action bound to a key code, or null.
+  function mopeBindFor(code) {
+    const proxy = mopeSettingsProxy();
+    if (!proxy) return null;
+    try {
+      const binds = proxy.binds;
+      if (!binds || typeof binds !== 'object') return null;
+      for (const action of Object.keys(binds)) {
+        const list = binds[action];
+        if (!Array.isArray(list)) continue;
+        for (const bind of list) {
+          if (bind && bind.code === code) return action;
+        }
+      }
+    } catch (e) { return null; }
+    return null;
+  }
+
+  // Which screen mope says it is on: 'menu', 'HUD' (playing), 'spectating'
+  // or 'banned'. Before the bridge is up the answer is 'menu', which is the
+  // screen every page load starts on.
+  function mopeScreen() {
+    const ui = bridge.store('ui');
+    if (ui) {
+      try {
+        const screen = ui.currentScreen;
+        if (typeof screen === 'string') return screen;
+      } catch (e) { /* fall through */ }
+    }
+    const game = bridge.game;
+    return game && game.player ? 'HUD' : 'menu';
+  }
+
+  function inGame() { return mopeScreen() === 'HUD'; }
+  function onMenu() { return mopeScreen() === 'menu'; }
+
+  // Your own animal while you are playing, otherwise null. mope sets
+  // `$.player` when the server tells it which entity is yours and clears it
+  // on death, so this is authoritative — nothing here ever infers it.
+  function myAnimal() {
+    const game = bridge.game;
+    const player = game && game.player;
+    if (!player || player.destroyed || player.spawned === false) return null;
+    if (!player.container || player.container.destroyed) return null;
+    return player;
+  }
+
+  // Every live animal the client knows about, yours included. The registry
+  // holds every entity — food, trees, all of it — so the filtered list is
+  // built once per frame and shared by every feature that asks.
+  const animalCache = {frame: -1, at: -Infinity, list: []};
+
+  function liveAnimals() {
+    const now = performance.now();
+    if (animalCache.frame === frame.frames && now - animalCache.at < 50) return animalCache.list;
+    const out = [];
+    const Entity = bridge.Entity;
+    if (Entity) {
+      for (const entity of Entity.list.values()) {
+        if (!entity || entity.type !== 'animal') continue;
+        if (entity.spawned === false || !entity.container || entity.container.destroyed) continue;
+        out.push(entity);
+      }
+    }
+    animalCache.frame = frame.frames;
+    animalCache.at = now;
+    animalCache.list = out;
+    return out;
+  }
+
+  // An animal's server health, 0-100. mope receives one byte per animal and
+  // never anything finer; there is no hit-point figure anywhere client-side.
+  function healthOf(entity) {
+    const target = entity && entity.target;
+    const value = target && target.health;
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  }
+
+  /* ----- what animal is this ----- */
+
+  // Every species with a known tier, which doubles as the list a shop skin id
+  // is matched against (skin ids are `<species>_<skin>`).
+  const SPECIES_BY_TIER = [
+    ['mouse', 'shrimp', 'chipmunk', 'kangaroo_rat', 'lemming'],
+    ['rabbit', 'pigeon', 'trout', 'arctic_hare', 'desert_chipmunk'],
+    ['mole', 'chicken', 'crab', 'penguin', 'meerkat', 'baby_duck'],
+    ['pig', 'woodpecker', 'sea_horse', 'seal', 'armadillo'],
+    ['deer', 'flamingo', 'squid', 'reindeer', 'gazelle', 'girabie'],
+    ['hedgehog', 'fox', 'peacock', 'jellyfish', 'arctic_fox', 'fennec_fox', 'bee', 'momaffie'],
+    ['zebra', 'donkey', 'macaw', 'turtle', 'muskox', 'warthog', 'frog', 'duck', 'angry_duck'],
+    ['cobra', 'cheetah', 'stingray', 'snowy_owl', 'wolf', 'camel', 'snail'],
+    ['toucan', 'gorilla', 'pufferfish', 'snow_leopard', 'rattle_snake'],
+    ['bear', 'lion', 'pelican', 'swordfish', 'walrus', 'hyena', 'gobi_bear'],
+    ['tiger', 'crocodile', 'falcon', 'octopus', 'markhor', 'wolverine', 'vulture'],
+    ['rhinoceros', 'eagle', 'giraffe', 'shark', 'polar_bear', 'bison'],
+    ['hippopotamus', 'boa', 'ostrich', 'ostrich_baby', 'orca', 'sabertooth_tiger', 'komodo_dragon'],
+    ['elephant', 'cassowary', 'giant_spider', 'blue_whale', 'mammoth', 'black_widow'],
+    ['dragon', 'trex', 'phoenix', 'king_crab', 'kraken', 'yeti', 'pterodactyl'],
+    ['dino_monster', 'lava_monster', 'sea_monster', 'ice_monster', 'giant_scorpion'],
+    ['black_dragon', 'king_dragon'],
+  ];
+  const KNOWN_SPECIES = new Set([].concat(...SPECIES_BY_TIER));
+
+  // mope's species enum (number -> name) is not exported, so the names are
+  // learned: an unskinned animal's texturePath spells its species out, and a
+  // skinned one's item id starts with it. Learned once per species number.
+  const speciesNames = new Map();
+  const TEXTURE_SPECIES_RE = /animals\/([a-z_]+)\/([a-z_0-9]+)\/(?:([a-z_0-9]+)\/)?$/;
+
+  function speciesFromItemId(id) {
+    let best = '';
+    for (const species of KNOWN_SPECIES) {
+      if (species.length <= best.length) continue;
+      if (id === species || id.indexOf(species + '_') === 0) best = species;
+    }
+    return best;
+  }
+
+  function speciesOf(entity) {
+    if (!entity || typeof entity.species !== 'number') return '';
+    const known = speciesNames.get(entity.species);
+    if (known) return known;
+    let name = '';
+    try {
+      if (!entity.equippedItemId) {
+        const m = TEXTURE_SPECIES_RE.exec(String(entity.texturePath || ''));
+        if (m) name = m[2];
+      } else {
+        name = speciesFromItemId(String(entity.equippedItemId));
+      }
+    } catch (e) { name = ''; }
+    // Only a texture path is proof of the number -> name pairing; a skin id
+    // prefix is a good guess for this animal but is not cached for others.
+    if (name && !entity.equippedItemId) speciesNames.set(entity.species, name);
+    return name;
+  }
+
+  // The rare variant's directory name ('fiery', 'harpy'), or '' for the
+  // default. mope's own rule: the subspecies enum name, lowercased, unless it
+  // is DEFAULT. (A few species name their default — the toucan's is TOCO —
+  // so `rareOf` can be non-empty on an animal that is not a rare roll; see
+  // isRareRoll.)
+  function rareOf(entity) {
+    try {
+      const config = entity && entity.animalConfig;
+      const names = config && config.subspeciesEnum;
+      const name = names && names[entity.subspecies];
+      if (!name || name === 'DEFAULT') return '';
+      return String(name).toLowerCase();
+    } catch (e) { return ''; }
+  }
+
+  function isRareRoll(entity) {
+    return !!entity && typeof entity.subspecies === 'number' && entity.subspecies > 0;
+  }
+
+  // The biome mope files the animal's art under.
+  function artBiomeOf(entity) {
+    try {
+      const config = entity.animalConfig;
+      const resource = config && config.animalResource;
+      if (resource && resource.type === 1) return 'volcano';   // lava
+      return config && typeof config.biome === 'string' ? config.biome : '';
+    } catch (e) { return ''; }
+  }
+
+  // 'species' or 'species/rare' — the identity the party list sends, so the
+  // receiver can draw the animal's own art.
+  function artKeyOf(entity) {
+    const species = speciesOf(entity);
+    if (!species) return '';
+    const rare = rareOf(entity);
+    return rare ? species + '/' + rare : species;
+  }
+
+  /* ------------------------------------------------------ the frame hook */
+
+  // Features that draw run once per frame the game draws, straight after
+  // mope's own renderer.render() — so a DOM overlay is positioned against the
+  // frame that was just put on screen. mope does not draw in a hidden tab, so
+  // neither do these; anything that must keep going there uses a timer.
+  //
+  // The wrapper goes on the renderer INSTANCE, found at $.loop.renderer. If
+  // mope rebuilds its renderer (switching WebGL/WebGPU in its settings), the
+  // watchdog below notices the new instance within a second and wraps that.
+  const frame = {
+    hooks: [],            // {name, fn}
+    renderer: null,       // the instance currently wrapped
+    original: null,
+    wrapper: null,
+    frames: 0,
+    lastAt: 0,
+    fallbackRaf: 0,
+  };
+
+  function onFrame(name, fn) {
+    frame.hooks.push({name, fn});
+  }
+
+  function runFrameHooks(now) {
+    frame.frames++;
+    frame.lastAt = now;
+    if (!bridge.game) return;
+    for (const hook of frame.hooks) {
+      try { hook.fn(now); } catch (e) { frameFailed(hook.name, e); }
+    }
+  }
+
+  // Each renderer instance is wrapped ONCE, and the wrapper runs every
+  // runner registered on the page — so two copies of this script (or the
+  // watchdog firing again) can never stack wrapper on wrapper and run every
+  // feature twice per frame. The flag lives on the renderer itself, so a
+  // rebuilt renderer is a fresh instance and gets wrapped in its turn.
+  function frameRunners() {
+    let runners = null;
+    try {
+      runners = PAGE.__lumiFrameRunners;
+      if (!Array.isArray(runners)) runners = PAGE.__lumiFrameRunners = [];
+    } catch (e) { runners = []; }
+    if (runners.indexOf(runFrameHooks) === -1) runners.push(runFrameHooks);
+    return runners;
+  }
+
+  function wrapRenderer() {
+    const game = bridge.game;
+    const loop = game && game.loop;
+    const renderer = loop && loop.renderer;
+    if (!renderer || typeof renderer.render !== 'function') return false;
+    const runners = frameRunners();
+    if (renderer.__lumiFrameWrapped) { frame.renderer = renderer; return true; }
+    const original = renderer.render;
+    const wrapper = function () {
+      const result = original.apply(this, arguments);
+      const now = performance.now();
+      for (let i = 0; i < runners.length; i++) {
+        try { runners[i](now); } catch (e) { /* one copy cannot stop another */ }
+      }
+      return result;
+    };
+    try {
+      renderer.render = wrapper;
+      Object.defineProperty(renderer, '__lumiFrameWrapped', {value: true, configurable: true});
+    } catch (e) {
+      return false;
+    }
+    frame.renderer = renderer;
+    frame.original = original;
+    frame.wrapper = wrapper;
+    dbg('frame hook: wrapped the renderer');
+    return true;
+  }
+
+  // The canvas mope draws into, and how renderer units map onto CSS pixels.
+  const screenCache = {at: -Infinity, rect: null, w: 0, h: 0};
+
+  function canvasRect(now) {
+    if (now - screenCache.at < 250 && screenCache.rect) return screenCache;
+    const game = bridge.game;
+    const loop = game && game.loop;
+    const canvas = loop && loop.canvas;
+    const renderer = loop && loop.renderer;
+    if (!canvas || !canvas.getBoundingClientRect) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) return null;
+    const screen = renderer && renderer.screen;
+    screenCache.w = screen && screen.width > 0 ? screen.width : rect.width;
+    screenCache.h = screen && screen.height > 0 ? screen.height : rect.height;
+    screenCache.rect = rect;
+    screenCache.at = now;
+    return screenCache;
+  }
+
+  // Where a Pixi node is drawn, in CSS pixels of the viewport. Uses the
+  // transform from the frame just rendered.
+  function screenPosOf(node, now) {
+    const wt = node && node.worldTransform;
+    if (!wt || !Number.isFinite(wt.tx) || !Number.isFinite(wt.ty)) return null;
+    const view = canvasRect(now || performance.now());
+    if (!view) return null;
+    return {
+      x: view.rect.left + wt.tx * (view.rect.width / view.w),
+      y: view.rect.top + wt.ty * (view.rect.height / view.h),
+    };
+  }
+
+  function startFrameHook() {
+    // Checked once a second: cheap, and it is what picks up a rebuilt
+    // renderer. Until a renderer exists (the menu, before the first game
+    // loads its assets) there is simply nothing to wrap.
+    setInterval(() => {
+      try { wrapRenderer(); } catch (e) { frameFailed('frame hook', e); }
+      // Also picks up the Animal class if the bridge found it late.
+      try { turnInstall(); } catch (e) { frameFailed('turn speed', e); }
+    }, 1000);
+    wrapRenderer();
+  }
+
+  // Whether a Pixi node is actually drawn: it and every ancestor visible and
+  // not fully transparent, all the way up to a stage.
+  function nodeShown(node) {
+    let n = node;
+    for (let depth = 0; n && depth < 32; depth++) {
+      if (n.destroyed || n.visible === false || n.renderable === false || n.alpha === 0) return false;
+      if (!n.parent) return true;
+      n = n.parent;
+    }
+    return !!n;
+  }
 
   /* ==================== shared camera-zoom hub ====================
    *
    * ONE zoom, owned by ONE piece of code, shared by every Lumi script on the
-   * page. This block is byte-identical in Lumi's Extras and Lumi's Moderator
-   * Extras; whichever of them runs first builds the hub and the other simply
-   * joins it. **Both scripts must be on the same hub revision** — a newer one
-   * replaces an older one outright, and a script still holding the old hub is
-   * left driving nothing.
+   * page (Lumi's Extras and Lumi's Moderator Extras). Whichever runs first
+   * builds the hub on `window.__lumiZoomHub`; the other joins it. A newer
+   * revision replaces an older hub outright and calls its retire().
    *
-   * That design exists because the previous arrangement — two scripts, two
-   * hooks, two zoom numbers, one standing down for the other — failed in four
-   * different ways that all looked the same from the player's chair:
+   * REVISION 4 (Extras 1.1.0) keeps revision 3's public API exactly —
+   * join(id, {onChange, showToast, ignoreEvent, toastPriority, zoomPriority,
+   * panelSource}) -> {setActive, leave}, getLevel/setLevel, hooked, rehook,
+   * status, note, preemptedBy, ownerId — so Moderator Extras joins it
+   * unchanged. What changed is how the camera is found: revision 3 trapped
+   * it with Object.prototype setters and a per-frame probe, because the
+   * camera was unreachable. It is reachable now — the game bridge hands over
+   * `$` and `$.camera` comes with it — so there is no trap, no probe and no
+   * race: the hook goes on the moment the bridge is ready.
    *
-   *   1. Extras stood down whenever Moderator Extras was on the page, so half
-   *      the zoom UI on the screen was inert by design and the wheel did
-   *      nothing, while the panel still showed a percentage.
-   *   2. mope shipped its OWN wheel zoom on 2026-08-15. Whenever our wheel
-   *      handler stood down, that one got the notch instead — so scrolling
-   *      changed a DIFFERENT zoom, middle click reset only that one, and the
-   *      two multiplied together and drifted apart.
-   *   3. Moderator Extras had a fallback that drove mope's own zoom number.
-   *      mope clamps that number to at most 1 and DIVIDES by it, so the
-   *      fallback could only ever zoom in, and it fought mope's wheel over the
-   *      same value.
-   *   4. Both scripts removed their camera trap 60 seconds after load, whether
-   *      or not anything had been caught. Nothing could recover after that.
+   * WHERE THE HOOK GOES. mope's camera does, every frame,
    *
-   * WHERE THE HOOK GOES, and why it is the right place. mope's camera is
+   *     this.zoom = lerp(this.zoom, this.target.zoom / clamp(rendering.zoom)
+   *                                  * resolution, ...)
    *
-   *     update(...) { ...
-   *       this.zoom = lerp(this.zoom, this.target.zoom / clamp(rendering.zoom)
-   *                                    * resolution, ...);
-   *       this.boundingBox.set(...) }
+   * so `camera.target.zoom` is the one number the whole view is derived
+   * from. It is written in exactly one place (synchronize(), from the
+   * server's camera packet) and read in exactly one (the line above). An
+   * accessor there scales the view, and everything downstream follows —
+   * including the pointer position SENT TO THE SERVER, which toGlobalPoint()
+   * divides by camera.zoom. Scaling the Pixi container instead would look
+   * right and aim wrong.
    *
-   * so `camera.target.zoom` is the one number the whole camera is derived
-   * from. It is written in exactly one place (synchronize(), from the server's
-   * camera packet) and read in exactly one (the interpolation above), which is
-   * what makes an accessor there safe. Everything downstream — the world
-   * container's scale, the arena overlay's culling box, and the pointer
-   * position that gets SENT TO THE SERVER (`toGlobalPoint` divides by
-   * camera.zoom) — all follow from it and stay in step automatically. Scaling
-   * the Pixi container instead would look right and aim wrong, which is why
-   * that tempting shortcut is not taken.
-   *
-   * GETTING HOLD OF THE CAMERA. It lives on a module-scope singleton, is never
-   * put on window, and is reachable from nothing a userscript can see. There
-   * are TWO independent ways in, and hub revision 2 exists because the first
-   * one alone was not enough.
-   *
-   * (a) THE CONSTRUCTOR TRAP. The camera's constructor does
-   *
-   *       this.zoom = 1, ..., this.syncPosition = !0, this.syncZoom = !0, ...
-   *
-   *     and a plain assignment to a fresh object walks its prototype chain
-   *     looking for a setter before it defines anything. So a setter for
-   *     either of those keys on Object.prototype hands over the camera itself,
-   *     mid-construction. Both are trapped (each appears exactly twice in
-   *     mope's whole bundle, both times on the camera), the object is checked
-   *     again on a microtask so the order of the constructor's own lines
-   *     cannot matter, and the trap is never taken down.
-   *
-   *     What it CANNOT survive is arriving late. `new $()` — and with it the
-   *     camera — runs synchronously at module evaluation, while the Pixi
-   *     renderer is built later inside an async init() that awaits the network
-   *     first. So a userscript that loses the document-start race by a hair
-   *     misses the camera and still catches Pixi, which is exactly the
-   *     "everything works except the zoom" report. No amount of repairing a
-   *     construction-time hook fixes a hook that arrives after construction.
-   *
-   * (b) THE LIVE PROBE — the fix for that, and new in revision 2. Look at the
-   *     first thing update() does, every single frame:
-   *
-   *       this.target.entity && this.target.position.set(...)
-   *
-   *     `entity` is NOT one of the keys the camera's target is built with, so
-   *     that read misses and walks the prototype chain. A getter for `entity`
-   *     on Object.prototype is therefore handed `camera.target` itself on the
-   *     very next frame the game draws — at any point in the session, with no
-   *     race to lose. And `camera.target` is all this needs: the hook goes on
-   *     `target.zoom`, not on the camera.
-   *
-   *     It carries a SETTER as well, and must: mope's bundle is a module, so
-   *     strict mode is on, and `$.camera.target.entity = null` (which it does
-   *     on death and on leaving a game) would THROW against a getter-only
-   *     accessor and take the game down with it. The setter defines the plain
-   *     own property first, exactly like the constructor traps do.
-   *
-   *     After adoption the probe stays installed and costs one reference
-   *     comparison per frame, which is what makes a rebuilt camera get picked
-   *     up automatically instead of needing to be noticed.
-   *
-   * A watchdog then checks every two seconds that the accessor is still the
-   * one we installed, and puts it back if anything replaced it. rehook() does
-   * all of the above on demand, for the panel's "re-hook" button.
-   *
-   * WHO OWNS THE CAMERA WHEN BOTH ARE ON — new in revision 3. Until now every
-   * active member counted the same, which was right while the two scripts were
-   * peers. They are not any more: Lumi's Extras owns the zoom outright, and
-   * Moderator Extras defers to it whenever Extras' own zoom switch is on. Each
-   * member declares a `zoomPriority`; the active one with the highest value is
-   * the OWNER, and anyone active below it is PREEMPTED and stops counting
-   * toward the factor.
-   *
-   * Be precise about what preemption does with ONE shared level, because it is
-   * not what "disabled" sounds like: it does NOT send the camera back to 1x.
-   * The owner is still zooming, to the same number, so what is given up is the
-   * preempted script's CLAIM on the camera rather than the zoom itself. The
-   * hand-back is the same rule read backwards — when the owner's switch goes
-   * off, ownership falls to the next member down on that very setActive() and
-   * the lower script has the camera again with nothing else to do.
-   *
-   * The hub also owns the INPUT, for the same "exactly one of everything"
-   * reason: one capture-phase wheel listener on the window, which swallows the
-   * notch before it can reach mope's own listener on the canvas, plus the
-   * minus/equals keys and the middle-click reset. Panels register a veto so
-   * the wheel still scrolls their lists.
+   * mope's own wheel zoom (`rendering.zoom`) is a divisor clamped to at most
+   * 1, so it can only zoom IN, and mope saves it. The hub owns the wheel on
+   * the window at capture phase so a notch never reaches mope's listener on
+   * the canvas, and Extras holds mope's value at 1 while its zoom is on.
    */
 
   const ZOOM_HUB_KEY = '__lumiZoomHub';
-  const ZOOM_HUB_REV = 3;
+  const ZOOM_HUB_REV = 4;
 
   function buildZoomHub(previous) {
-    // Shared, so both panels always read the same number and neither can be
-    // showing a percentage the camera never received.
+    // Shared, so both panels always read the same number.
     const LEVEL_STORAGE_KEY = 'lumi:zoom:v1:level';
     const MIN = 0.5, MAX = 1.5, STEP = 0.1;
 
@@ -2481,20 +996,13 @@
       holder: null,
       getter: null,
       hookedVia: '',
-      trapKeys: [],
-      trapHits: 0,
-      probeInstalled: false,
-      probeHits: 0,
-      sawCamera: false,
       reHooks: 0,
       rehookRequests: 0,
       tookOverForeignHook: false,
-      installedAt: document.readyState,
-      scriptsAtInstall: document.getElementsByTagName('script').length,
+      retired: false,
     };
 
-    // A hub from an older revision, if this page had one. Its level is worth
-    // carrying over; its hook is not, because this one replaces it.
+    // An older hub's level is worth carrying over; its hook is not.
     if (previous) {
       try {
         const carried = normalize(previous.getLevel());
@@ -2506,11 +1014,8 @@
     //        zoomPriority, panelSource}
     const members = new Map();
 
-    // The active member with the highest zoomPriority drives the camera; see
-    // the ownership note in the block comment above. Ties keep the first
-    // joiner, so members left at the default priority behave exactly as they
-    // did before priorities existed — which is what keeps a single-script
-    // install identical to how it was.
+    // The active member with the highest zoomPriority drives the camera.
+    // Ties keep the first joiner.
     function owner() {
       let best = null;
       for (const member of members.values()) {
@@ -2525,9 +1030,6 @@
     }
 
     // Which member, if any, has taken the camera off `id` — '' for nobody.
-    // Deliberately independent of whether `id` is itself active: a panel wants
-    // to lock its zoom row the moment something above it takes the camera,
-    // whatever its own switch happens to say at the time.
     function preemptedBy(id) {
       const member = members.get(id);
       if (!member) return '';
@@ -2541,62 +1043,13 @@
       return top;
     }
 
-    // Master switch off everywhere, or the feature off everywhere, collapses
-    // to 1 — which is why nothing has to be un-applied when a switch is turned
-    // off: the next frame the camera draws simply reads the native value back.
+    // Off everywhere collapses to 1, which is why nothing has to be un-applied
+    // when a switch goes off: the next frame simply reads the native value.
     function factor() {
       return anyActive() ? state.level : 1;
     }
 
     /* ----- the camera hook ----- */
-
-    // The camera as it stands once its constructor has run: a scale, an angle,
-    // a position, the culling box, and the target it interpolates toward.
-    function looksLikeCamera(value) {
-      try {
-        if (!value || typeof value !== 'object') return false;
-        const target = value.target;
-        if (!target || typeof target !== 'object') return false;
-        return (
-          typeof value.zoom === 'number' &&
-          typeof value.angle === 'number' &&
-          typeof target.zoom === 'number' &&
-          !!value.position &&
-          !!value.boundingBox
-        );
-      } catch (e) { return false; }
-    }
-
-    // The camera's target, recognised WITHOUT the camera. It is built as
-    // {position, angle, zoom} and only ever grows an `entity` key, so the
-    // own-key set is an exact fingerprint rather than a guess — which matters,
-    // because the probe below offers this every object on the page that reads
-    // a missing `.entity`.
-    const TARGET_KEYS = ['position', 'angle', 'zoom', 'entity'];
-
-    function looksLikeCameraTarget(value) {
-      try {
-        if (!value || typeof value !== 'object') return false;
-        const own = Object.prototype.hasOwnProperty;
-        // Cheap, allocation-free, and reads no accessors: three checks that
-        // reject essentially everything before the exact test below.
-        if (!own.call(value, 'zoom') || !own.call(value, 'angle') ||
-            !own.call(value, 'position')) return false;
-        for (const key of Object.keys(value)) {
-          if (TARGET_KEYS.indexOf(key) === -1) return false;
-        }
-        if (typeof value.zoom !== 'number' || typeof value.angle !== 'number') return false;
-        const position = value.position;
-        // mope's target.position is one of its own vector instances — built as
-        // `this.position.clone()` and written with `target.position.set(x, y)`
-        // — never a plain {x, y}. Asking for the method as well as the numbers
-        // is what makes this a fingerprint rather than a guess, since the probe
-        // is offered every object on the page that reads a missing `.entity`.
-        return !!position && typeof position === 'object' &&
-          typeof position.x === 'number' && typeof position.y === 'number' &&
-          typeof position.set === 'function';
-      } catch (e) { return false; }
-    }
 
     function hookTarget(camera, target, via) {
       if (!target || typeof target !== 'object') return false;
@@ -2605,21 +1058,22 @@
       try { existing = Object.getOwnPropertyDescriptor(target, 'zoom'); } catch (e) { return false; }
       if (existing && typeof existing.get === 'function') {
         if (existing.get === state.getter) return true;   // already ours
-        // Somebody else's accessor — an older build of the sibling script that
-        // has not been updated yet, most likely. Read the value through it so
-        // the baseline is right, then take over: one owner is the entire point.
+        // Someone else's accessor (an older Lumi hub that did not let go).
+        // Its current reading is the best guess at the native value.
         state.tookOverForeignHook = true;
         try { native = Number(existing.get.call(target)); } catch (e) { native = NaN; }
       } else if (existing && 'value' in existing) {
         native = Number(existing.value);
       }
       if (!Number.isFinite(native) || native <= 0) native = 1;
-
       const holder = {native};
       const getter = function () {
         const scaled = holder.native * factor();
         return Number.isFinite(scaled) && scaled > 0 ? scaled : holder.native;
       };
+      // A setter as well as a getter: mope's bundle is a strict-mode module,
+      // and its synchronize() writing target.zoom would THROW against a
+      // getter-only accessor and take the game down.
       const setter = function (value) {
         const number = Number(value);
         if (Number.isFinite(number) && number > 0) holder.native = number;
@@ -2629,8 +1083,7 @@
           configurable: true, enumerable: true, get: getter, set: setter,
         });
       } catch (e) { return false; }
-
-      if (camera) state.camera = camera;
+      state.camera = camera;
       state.target = target;
       state.holder = holder;
       state.getter = getter;
@@ -2638,125 +1091,33 @@
       return true;
     }
 
-    function consider(value) {
-      try {
-        if (state.target && value === state.camera) return;
-        if (!looksLikeCamera(value)) return;
-        state.sawCamera = true;
-        // A camera whose target we already own needs nothing; a DIFFERENT one
-        // means mope rebuilt it, and the old hook is now driving nothing.
-        if (value.target === state.target && state.getter) return;
-        hookTarget(value, value.target, 'constructor');
-      } catch (e) { /* a capture must never break the page's own work */ }
-    }
-
-    function considerTarget(value) {
-      try {
-        if (value === state.target && state.getter) return;
-        if (!looksLikeCameraTarget(value)) return;
-        hookTarget(null, value, 'live probe');
-      } catch (e) { /* a capture must never break the page's own work */ }
-    }
-
-    // Both halves of the same pair of assignments. Only one script owns this
-    // hub, so there is no longer any need to leave a key for anybody else.
-    const TRAP_KEYS = ['syncPosition', 'syncZoom'];
-    const PROBE_KEY = 'entity';
-
-    function pageObjectPrototypes() {
-      const prototypes = [];
-      for (const candidate of [Object.prototype, PAGE.Object && PAGE.Object.prototype]) {
-        if (candidate && !prototypes.includes(candidate)) prototypes.push(candidate);
-      }
-      return prototypes;
-    }
-
-    // The plain own property the object was assigning, given to it before
-    // anything else happens, so the page carries on exactly as it would have.
-    function passThrough(object, key, value) {
-      try {
-        Object.defineProperty(object, key, {
-          value, writable: true, enumerable: true, configurable: true,
-        });
-      } catch (e) { /* frozen: not ours to fix */ }
-    }
-
-    function installHooks() {
-      for (const prototype of pageObjectPrototypes()) {
-        for (const key of TRAP_KEYS) {
-          // Never take a key something on the page has already claimed.
-          if (Object.prototype.hasOwnProperty.call(prototype, key)) continue;
-          try {
-            Object.defineProperty(prototype, key, {
-              configurable: true,
-              get() { return undefined; },
-              set(value) {
-                passThrough(this, key, value);
-                try {
-                  state.trapHits += 1;
-                  const object = this;
-                  consider(object);
-                  // ...and again once the constructor has finished, so the
-                  // order of the lines inside it can never matter.
-                  if (!state.target) queueMicrotask(() => consider(object));
-                } catch (e) { /* never break the page's own work */ }
-              },
-            });
-            if (!state.trapKeys.includes(key)) state.trapKeys.push(key);
-          } catch (e) { /* sealed prototype: nothing else to try */ }
-        }
-
-        // The live probe. Left installed for good: once the target is known
-        // the getter is a single reference comparison, and leaving it armed is
-        // what makes a rebuilt camera get picked up on its first frame rather
-        // than never.
-        if (Object.prototype.hasOwnProperty.call(prototype, PROBE_KEY)) continue;
-        try {
-          Object.defineProperty(prototype, PROBE_KEY, {
-            configurable: true,
-            get() {
-              if (this === state.target) return undefined;   // the hot path
-              try {
-                state.probeHits += 1;
-                considerTarget(this);
-              } catch (e) { /* never break the page's own work */ }
-              return undefined;
-            },
-            // Required, not optional: mope's bundle is a module, so
-            // `camera.target.entity = null` runs in strict mode and would
-            // throw against a getter-only accessor.
-            set(value) {
-              passThrough(this, PROBE_KEY, value);
-              try { considerTarget(this); } catch (e) { /* as above */ }
-            },
-          });
-          state.probeInstalled = true;
-        } catch (e) { /* sealed prototype */ }
-      }
-    }
-    installHooks();
-
-    // Everything the panel's "re-hook" button does, and what the watchdog does
-    // on its own every two seconds: put back anything that was removed, repair
-    // the accessor if something replaced it, and re-arm the probe so the next
-    // frame the game draws hands the target over again.
+    // The camera is `$.camera`, straight from the game bridge. Called every
+    // two seconds: it hooks the camera the first time it can, notices a
+    // rebuilt camera or target, and puts the accessor back if anything
+    // replaced it.
     function repair() {
+      if (state.retired) return;
       try {
-        installHooks();
-        if (state.target) {
-          const descriptor = Object.getOwnPropertyDescriptor(state.target, 'zoom');
-          if (!descriptor || descriptor.get !== state.getter) {
-            state.reHooks += 1;
-            state.getter = null;
-            hookTarget(state.camera, state.target, state.hookedVia || 'repair');
+        const game = bridge.game;
+        const camera = game && game.camera;
+        const target = camera && camera.target;
+        if (!target || typeof target !== 'object') return;
+        if (target !== state.target) {
+          state.getter = null;
+          if (hookTarget(camera, target, 'the game bridge ($.camera)') && state.camera) {
+            dbg('zoom hub: hooked $.camera.target.zoom');
           }
+          return;
+        }
+        const descriptor = Object.getOwnPropertyDescriptor(target, 'zoom');
+        if (!descriptor || descriptor.get !== state.getter) {
+          state.reHooks += 1;
+          state.getter = null;
+          hookTarget(camera, target, state.hookedVia || 'repair');
         }
       } catch (e) { /* a repair attempt must never be the thing that breaks */ }
     }
 
-    // The same work on demand, for the panel's re-hook button. The counter is
-    // only so the panel can tell a button press apart from the watchdog's own
-    // two-second pass, which is doing this anyway.
     function rehook() {
       state.rehookRequests += 1;
       repair();
@@ -2764,6 +1125,7 @@
     }
 
     setInterval(repair, 2000);
+    bridge.ready().then(repair);
 
     /* ----- the number itself ----- */
 
@@ -2776,15 +1138,9 @@
       }
     }
 
-    // Exactly one readout, and never a silent one. The script whose own panel
-    // asked gets first refusal, so a change is acknowledged where it was made;
-    // otherwise the highest priority goes first. A readout that CANNOT be drawn
-    // at this moment — the moderator script's is measured against mope's own
-    // game-stats block, which is not on screen in the menu — says so by
-    // returning false, and the next one along draws instead. Nothing is decided
-    // up front, because whether a readout can be drawn depends on when it is
-    // asked, and a zoom step that moves the camera with nothing on screen to
-    // say so is exactly the kind of silence this rewrite is getting rid of.
+    // Exactly one readout. The script whose own panel asked gets first
+    // refusal; otherwise the highest toastPriority goes first. A readout that
+    // cannot be drawn right now returns false and the next one draws instead.
     function announce(source) {
       const ordered = [...members.values()]
         .sort((a, b) => b.toastPriority - a.toastPriority);
@@ -2796,9 +1152,8 @@
       }
     }
 
-    // `changed` is passed through rather than swallowed so a step taken at the
-    // end of the range still shows a readout — pressing zoom-out at 50% should
-    // say 50%, not look like a dead key.
+    // `changed` is passed through so a step taken at the end of the range
+    // still shows a readout: zoom-out at 50% should say 50%, not look dead.
     function setLevel(value, source) {
       const next = normalize(value);
       const changed = next !== state.level;
@@ -2830,10 +1185,8 @@
       return false;
     }
 
-    // The game surface and nothing else. An event that landed on a panel, a
-    // menu or a list belongs to whatever it landed on — which is both the
-    // correct behaviour and cheaper than walking up the tree measuring
-    // scrollHeight, since reading that forces layout on every notch.
+    // The game surface and nothing else: an event that landed on a panel, a
+    // menu or a list belongs to whatever it landed on.
     function onGameSurface(target) {
       if (!(target instanceof Element)) return false;
       return target.tagName === 'CANVAS' ||
@@ -2841,14 +1194,12 @@
     }
 
     function ready() {
-      return anyActive() && !!document.querySelector('canvas');
+      return !state.retired && anyActive() && !!document.querySelector('canvas');
     }
 
-    // Trackpads emit many tiny deltas, so a step is only taken once enough
-    // scroll distance has built up in one direction. The threshold sits below
-    // a single mouse notch (48 in Firefox line mode, 100 in Chrome) so every
-    // notch counts, and each event is capped at one step so a notch never
-    // zooms twice.
+    // Trackpads emit many tiny deltas, so a step is taken only once enough
+    // distance has built up in one direction — below one mouse notch, and at
+    // most one step per event.
     const WHEEL_THRESHOLD = 40;
     let wheelDelta = 0;
 
@@ -2856,21 +1207,16 @@
       if (!event.isTrusted || event.ctrlKey || event.altKey || event.metaKey) return;
       if (!ready() || inputBusy()) return;
       if (!onGameSurface(event.target) || vetoed(event)) return;
-
-      // Taken whether or not this notch ends up moving our own number, because
-      // the alternative is mope's own wheel zoom quietly taking it instead —
-      // which is the drift this whole rewrite exists to remove.
+      // Taken whether or not it moves our number: otherwise mope's own wheel
+      // zoom quietly takes the notch instead and the two drift apart.
       event.preventDefault();
       event.stopPropagation();
-
       const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 100 : 1;
       const delta = event.deltaY * scale;
       if (delta === 0) return;
       if ((delta > 0) !== (wheelDelta > 0)) wheelDelta = 0;
       wheelDelta += delta;
       if (Math.abs(wheelDelta) < WHEEL_THRESHOLD) return;
-      // Leftover distance is dropped so a big notch cannot bank credit toward
-      // a second step on the next one.
       const step = wheelDelta > 0 ? -1 : 1;
       wheelDelta = 0;
       setLevel(state.level + step * STEP, 'wheel');
@@ -2879,11 +1225,8 @@
     PAGE.addEventListener('keydown', (event) => {
       if (!event.isTrusted || event.repeat) return;
       if (event.ctrlKey || event.altKey || event.metaKey) return;
-      // The panel is waiting for a key to bind, so this one is not ours to
-      // take. Without this the zoom keys could never BE bound: this handler
-      // registers at document-start, long before the panel's capture listener,
-      // and stopImmediatePropagation below would eat the press first.
-      if (kbCapturing()) return;
+      // The panel is waiting for a key to bind, so this one is not ours.
+      if (typeof kbCapturing === 'function' && kbCapturing()) return;
       const out = event.code === 'Minus' || event.key === '-';
       const into = event.code === 'Equal' || event.key === '=' || event.key === '+';
       if (!out && !into) return;
@@ -2893,9 +1236,8 @@
       setLevel(state.level + (out ? -STEP : STEP), 'key');
     }, true);
 
-    // mope resets its OWN zoom on a middle click, and its handler is left to
-    // run exactly as it always did. Ours goes back to 100% alongside it, so the
-    // one gesture puts the whole view back rather than half of it.
+    // mope resets its OWN zoom on a middle click and its handler still runs.
+    // Ours goes back to 100% alongside it, so one gesture resets the view.
     PAGE.addEventListener('auxclick', (event) => {
       if (!event.isTrusted || event.button !== 1) return;
       if (!ready() || state.level === 1) return;
@@ -2910,13 +1252,7 @@
         rev: ZOOM_HUB_REV,
         hooked: !!state.target,
         hookedVia: state.hookedVia || '(not hooked)',
-        installedAt: state.installedAt +
-          ', ' + state.scriptsAtInstall + ' script tags already present',
-        trap: (state.trapKeys.length ? 'armed on ' + state.trapKeys.join(' + ')
-          : 'NOT armed') + ', ' + state.trapHits + ' objects seen, camera ' +
-          (state.sawCamera ? 'recognised' : 'never seen'),
-        probe: (state.probeInstalled ? 'armed' : 'NOT armed') +
-          ', ' + state.probeHits + ' objects offered',
+        bridge: bridge.status().phase,
         mopeOwnZoom: state.holder ? state.holder.native : '(camera not hooked)',
         level: state.level,
         factor: factor(),
@@ -2932,16 +1268,12 @@
       };
     }
 
-    // One short sentence for a settings row to sit under.
     function note() {
       if (state.target) return 'Scroll, or − and =, while in game';
-      if (!state.trapKeys.length && !state.probeInstalled) {
-        return 'The page would not accept the hook — reload the tab';
-      }
-      return 'Waiting for the game camera — it is picked up on the next frame';
+      return 'Waiting for the game — it is picked up as soon as mope has loaded';
     }
 
-    const hub = {
+    return {
       rev: ZOOM_HUB_REV,
       MIN, MAX, STEP,
       normalize,
@@ -2949,15 +1281,15 @@
       setLevel,
       hooked() { return !!state.target; },
       hookedVia() { return state.hookedVia; },
-      // '' when nothing outranks this member, otherwise the id that does.
       preemptedBy,
       ownerId() { const top = owner(); return top ? top.id : ''; },
       rehook,
       status,
       note,
-      // Called on an old hub when a newer revision takes over, so the accessor
-      // it installed stops competing with the new one's.
+      // Called on this hub when a newer revision takes over, so this
+      // accessor stops competing with the new one's.
       retire() {
+        state.retired = true;
         try {
           if (state.target && state.holder) {
             Object.defineProperty(state.target, 'zoom', {
@@ -2978,340 +1310,60 @@
           showToast: options && options.showToast,
           ignoreEvent: options && options.ignoreEvent,
           toastPriority: (options && options.toastPriority) || 0,
-          // Who defers to whom for the camera itself. Not the same thing as
-          // toastPriority, which only decides which panel draws the readout.
           zoomPriority: (options && options.zoomPriority) || 0,
           panelSource: (options && options.panelSource) || '',
         };
         members.set(id, member);
-        // A change of OWNER changes what every other panel is allowed to do,
-        // so it is announced like a level change is. Without this the
-        // deferring script would sit with a locked row long after the script
-        // above it was switched off.
-        //
-        // This can re-enter — a panel's onChange re-syncs its own seat — but
-        // it cannot loop: the re-entrant call sets the same value, so the
-        // owner is unchanged the second time and nothing further is sent.
-        const announce = (before) => {
+        // A change of OWNER changes what every other panel may do, so it is
+        // announced like a level change. It can re-enter but cannot loop.
+        const announceOwner = (before) => {
           if (owner() !== before) notify('owner', false);
         };
         return {
           setActive(on) {
             const before = owner();
             member.active = !!on;
-            announce(before);
+            announceOwner(before);
           },
           leave() {
             const before = owner();
             members.delete(id);
-            announce(before);
+            announceOwner(before);
           },
         };
       },
     };
-    return hub;
   }
 
   // Whichever Lumi script runs first builds it; the rest join. A newer
-  // revision replaces an older hub outright rather than layering on top of it,
-  // which is the same "exactly one owner" rule applied to the hub itself — so
-  // the two scripts have to be updated together.
+  // revision replaces an older hub outright.
   const zoomHub = (function () {
     let existing = null;
     try { existing = PAGE[ZOOM_HUB_KEY]; } catch (e) { /* sealed page */ }
     if (existing && typeof existing.rev === 'number' && existing.rev >= ZOOM_HUB_REV) {
       return existing;
     }
-    // Retired FIRST: its accessor has to come off before this one goes on, or
-    // the two would take turns replacing each other every watchdog pass.
     if (existing) {
       if (typeof existing.retire === 'function') {
         try { existing.retire(); } catch (e) { /* an old hub that will not let go */ }
-        // It let go cleanly, so the camera is safe — but the script that BUILT
-        // that hub is still holding the object it built, and nothing here can
-        // reach into it and re-point it. Its zoom controls are now inert, which
-        // is a silent failure unless it is said out loud.
         try {
-          console.warn('[Lumi] The other Lumi script on this page was built ' +
-            'against zoom hub revision ' + existing.rev + ' and this one is ' +
-            ZOOM_HUB_REV + '. The older script\'s zoom controls will do ' +
-            'nothing until BOTH scripts are updated.');
+          console.warn(TAG, 'Another Lumi script on this page brought zoom hub ' +
+            'revision ' + existing.rev + ' and this one is ' + ZOOM_HUB_REV + '. Its zoom ' +
+            'controls will do nothing until it is updated (Moderator Extras: join ' +
+            'the hub rather than building one). Extras\' zoom works either way.');
         } catch (e) { /* console is not essential */ }
       } else {
-        // Revision 1 had no way to stand down, so it will keep re-hooking on
-        // its own watchdog and the two will fight over the camera every two
-        // seconds. There is no fixing that from this side; say so instead.
         try {
-          console.warn('[Lumi] The other Lumi script on this page is an older ' +
-            'version and still has a zoom of its own. Update BOTH scripts ' +
-            '(Extras 1.13.0 and Moderator Extras 1.4.0 or later) — until then ' +
-            'the two will keep taking the camera off each other.');
+          console.warn(TAG, 'Another Lumi script on this page is a very old version ' +
+            'with a zoom of its own. Update it — until then the two will take the ' +
+            'camera off each other.');
         } catch (e) { /* console is not essential */ }
       }
     }
     const built = buildZoomHub(existing);
-    try { PAGE[ZOOM_HUB_KEY] = built; } catch (e) {
-      try { window[ZOOM_HUB_KEY] = built; } catch (e2) { /* nothing left to try */ }
-    }
+    try { PAGE[ZOOM_HUB_KEY] = built; } catch (e) { /* nothing left to try */ }
     return built;
   })();
-
-  // Read back from the installed metadata so the panel can never disagree
-  // with what Tampermonkey actually has; the literal is only a fallback for
-  // engines that do not expose GM_info.
-  const VERSION = (() => {
-    try {
-      const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
-      if (v) return String(v);
-    } catch (e) { /* not exposed */ }
-    return '1.0.26';
-  })();
-
-  // ---------------------------------------------------------------- settings
-
-  // ---------------------------------------------- one instance, one layer
-
-  // Every fixed overlay this script owns goes through here.
-  //
-  // Each of them used to `createElement` whenever its cached node was not
-  // connected, with nothing looking to see whether one was already on the
-  // page. That is fine for one copy of the script and silently wrong for two:
-  // the second copy builds its own `#qolc-party`, its own `#qolc-party-chat`
-  // and its own `#qolc-cd`, all of them `position: fixed` at exactly the same
-  // coordinates as the first copy's, and the result is two of everything drawn
-  // on top of each other. Adopting an existing element by id makes that
-  // impossible regardless of how many copies are running.
-  //
-  // It also repairs the ordinary single-copy case where a layer was removed
-  // from the DOM by something else and a stale reference was left behind.
-  function qolcOwnLayer(id) {
-    const host = document.body || document.documentElement;
-    if (!host) return null;
-    let layer = document.getElementById(id);
-    if (layer) {
-      if (layer.parentNode !== host) host.appendChild(layer);
-      return layer;
-    }
-    layer = document.createElement('div');
-    layer.id = id;
-    host.appendChild(layer);
-    return layer;
-  }
-
-  // A second copy of this script on the same page is not a supported setup and
-  // never has been, but until 1.20.0 nothing said so — it just produced two of
-  // every overlay and two features writing the same elements from opposite
-  // directions, which reads as a pile of unrelated glitches on one machine and
-  // nothing at all on the next. The fixes above make the duplicates harmless;
-  // this makes them VISIBLE, which matters more, because the second copy is
-  // still doing twice the work and still publishing to the party twice.
-  //
-  // Not fatal on purpose: refusing to run would leave somebody with the newer
-  // copy disabled and the older one in charge. Both keep working; the console
-  // says what is going on, and __lumiInstances() answers it on demand. The one
-  // exception is a userscript meeting the extension, settled at the very top.
-  //
-  // 1.0.24 also says it ON SCREEN, once the page is up (see onReady), because
-  // the likeliest way to get here now is somebody who installed the extension
-  // and has not removed Tampermonkey's copy — and the console is not where
-  // that person is looking.
-  const QOLC_INSTANCE = {
-    version: VERSION,
-    via: QOLC_VIA,
-    at: (function () { try { return performance.now(); } catch (e) { return 0; } })(),
-  };
-
-  const qolcInstances = (function () {
-    let list = null;
-    try {
-      list = PAGE.__lumiExtrasInstances;
-      if (!Array.isArray(list)) list = PAGE.__lumiExtrasInstances = [];
-    } catch (e) { list = []; }
-    list.push(QOLC_INSTANCE);
-    if (list.length > 1) {
-      console.warn(TAG, 'ANOTHER COPY OF THIS SCRIPT IS ALREADY RUNNING on ' +
-        'this page (' + list.map((i) => i.version + ' ' + (i.via || 'userscript')).join(' + ') +
-        '). Two copies draw two of every overlay, publish to the party twice, ' +
-        'and fight over mope\'s ability buttons. Keep the extension and ' +
-        'uninstall any Tampermonkey copy. Run __lumiInstances() for details.');
-    }
-    return list;
-  })();
-
-  try {
-    PAGE.__lumiInstances = () => qolcInstances.map((i, n) => ({
-      copy: n + 1, version: i.version, via: i.via || 'userscript (before 1.0.24)',
-      startedAtMs: Math.round(i.at),
-    }));
-  } catch (e) { /* page is locked down; the console warning still stands */ }
-
-  const store = {
-    get(key, fallback) {
-      try {
-        if (typeof GM_getValue === 'function') {
-          const v = GM_getValue(key);
-          if (v !== undefined) return v;
-        }
-      } catch (e) { /* sandbox variations */ }
-      try {
-        const v = localStorage.getItem('maut:' + key);
-        if (v !== null) return JSON.parse(v);
-      } catch (e) { /* ignore */ }
-      return fallback;
-    },
-    // Written to BOTH stores, not just the first that works. Tampermonkey
-    // keys GM storage by script name, so renaming the script hands it a fresh
-    // empty store and every setting silently reverts to its default. The
-    // localStorage copy is the safety net for that: get() already falls back
-    // to it, so a future rename or reinstall keeps your settings.
-    set(key, value) {
-      try {
-        if (typeof GM_setValue === 'function') GM_setValue(key, value);
-      } catch (e) { /* ignore */ }
-      try { localStorage.setItem('maut:' + key, JSON.stringify(value)); } catch (e) { /* ignore */ }
-    },
-    // For settings that no longer exist. Both stores again, for the same
-    // reason as set(): a key left behind in either one is still a leftover.
-    remove(key) {
-      try {
-        if (typeof GM_deleteValue === 'function') GM_deleteValue(key);
-      } catch (e) { /* ignore */ }
-      try { localStorage.removeItem('maut:' + key); } catch (e) { /* ignore */ }
-    },
-  };
-
-  // Camera-zoom bounds. These live here rather than with the rest of the zoom
-  // code because normalizeZoom() is called from the settings object below:
-  // the function itself hoists, but a const does not, so declaring these next
-  // to the feature would leave them in the temporal dead zone at that moment.
-  const ZOOM_MIN = 0.5;
-  const ZOOM_MAX = 1.5;
-  const ZOOM_STEP = 0.1;
-
-  // Same reason as the zoom bounds above: normalizeTurnSpeed and
-  // normalizeTurnStyle are called while `settings` is being built, so the
-  // numbers they clamp against have to already exist. The functions themselves
-  // hoist and can stay down with their features.
-  // 120 is NEUTRAL, not a middle: at that value the multiplier is exactly 1 and
-  // every animal turns at mope's own rate, so the slider reads as a percentage
-  // of native (30 is a quarter speed, 480 is four times). Keeping the neutral
-  // point on a step means it can always be returned to exactly.
-  const TURN_MIN = 30;
-  const TURN_MAX = 480;
-  const TURN_STEP = 30;
-  const TURN_NEUTRAL = 120;
-  const TURN_STYLES = [
-    ['linear', 'Linear'],
-    ['ease-out', 'Ease out'],
-    ['ease-in', 'Ease in'],
-    ['instant', 'Instant'],
-  ];
-
-  // 1.31.0. Percent is listed first because it is the default and the
-  // complete one; "Hit points" is labelled plainly rather than warned about in
-  // its own button, because a two-word caption is not where a caveat belongs —
-  // the info bar carries it.
-  const HP_UNIT_MODES = [
-    ['percent', 'Percentage'],
-    ['hp', 'Hit points'],
-  ];
-
-  // 1.33.0's quick chat keeps the rest of its constants down with the feature,
-  // but THESE TWO HAVE TO BE HERE, above `settings`, and the reason cost a
-  // release that would not have started at all.
-  //
-  // `settings` calls chatCleanSlots() as it is being built, which happens the
-  // moment this IIFE is evaluated. The FUNCTION hoists, so the call is fine —
-  // but a `const` it closes over does not: declared eleven thousand lines
-  // further down, it is still in its temporal dead zone when the call runs,
-  // and the whole script dies on load with "Cannot access 'CHAT_SLOTS' before
-  // initialization". Nothing builds, no panel, no features, no error anyone
-  // would connect to a chat setting.
-  //
-  // Worth knowing that a PARSE check cannot find this. The file parses
-  // perfectly; it throws on the first line that runs. Only a harness that
-  // actually loads the built script catches it, which is what §4's "assert on
-  // outcomes" is for.
-  const CHAT_SLOTS = 5;
-  // mope's own input carries maxlength="35". Enforced here as well, because
-  // maxlength constrains TYPING and not a value set from script — a longer
-  // string would sail into the box and be refused somewhere we cannot see.
-  const CHAT_MAX_LEN = 35;
-
-  // Whatever storage held, turned into exactly five trimmed strings.
-  function chatCleanSlots(value) {
-    const out = [];
-    const list = Array.isArray(value) ? value : [];
-    for (let i = 0; i < CHAT_SLOTS; i++) {
-      const raw = typeof list[i] === 'string' ? list[i] : '';
-      // Newlines and tabs would be typed into a single-line input and mean
-      // nothing; collapsing them keeps what somebody pasted rather than
-      // refusing it.
-      out.push(raw.replace(/[\r\n\t]+/g, ' ').slice(0, CHAT_MAX_LEN));
-    }
-    return out;
-  }
-
-  const settings = {
-    masterEnabled: !!store.get('masterEnabled', true), // panel-wide power switch
-    menuClutter: !!store.get('menuClutter', false),
-    gameClutter: !!store.get('gameClutter', false),
-    abilityCooldown: !!store.get('abilityCooldown', true),
-    hpNumbers: !!store.get('hpNumbers', true),
-    hpBar: !!store.get('hpBar', true),
-    // 1.31.0. Which unit the damage indicator and the HP bar are read in.
-    // 'percent' is the default because it is the only one the game actually
-    // sends: health arrives as a whole percent and nothing else has to be
-    // known to print it. 'hp' multiplies that percent by a maximum this
-    // script has to work out for itself, and is the incomplete half — see the
-    // header comment. Anything that is not 'hp' reads as percent, so a
-    // corrupted or future value fails into the honest mode.
-    hpUnits: store.get('hpUnits', 'percent') === 'hp' ? 'hp' : 'percent',
-    // 1.33.0. Quick chat: five messages on the number row. Off by default,
-    // because it takes five keys away from mope's upgrade menu while it is on
-    // and that is not something to do to somebody who never asked for it.
-    quickChat: !!store.get('quickChat', false),
-    // 1.35.0. The 1v1 boost counter. Off by default like every arena feature.
-    boostCounter: !!store.get('boostCounter', false),
-    // Cleaned on the way IN as well as on the way out. Anything at all can be
-    // in storage — an older build's shape, a hand-edited value, a string where
-    // a list should be — and the sender must never be handed something it has
-    // to defend against at the moment it is about to type into a live game.
-    chatSlots: chatCleanSlots(store.get('chatSlots', null)),
-    cameraZoom: !!store.get('cameraZoom', false),
-    // Stored as the raw number rather than a step index so a future change to
-    // ZOOM_STEP cannot silently reinterpret everyone's saved zoom.
-    zoomLevel: normalizeZoom(store.get('zoomLevel', 1)),
-    turnSpeed: !!store.get('turnSpeed', false),
-    // Off by default and toggled in game with Z. It stays opt-in because it
-    // writes one of mope's OWN game settings (Arena Culling), which is not
-    // something to switch on for somebody who never asked for it.
-    arenaSky: !!store.get('arenaSky', false),
-    // 1.0.5. Which backdrop the arena uses. Stored as the id rather than an
-    // index so reordering or removing a theme cannot silently reinterpret
-    // somebody's choice — arenaThemeOf() falls back to the first entry for an
-    // id it does not recognise, which is what an uninstalled theme should do.
-    arenaTheme: String(store.get('arenaTheme', 'starfield') || 'starfield'),
-    // 1.0.7. Which palette the PANEL wears. Same id-not-index reasoning as
-    // arenaTheme, and the same fallback to the first entry.
-    panelTheme: String(store.get('panelTheme', 'teal') || 'teal'),
-    // 1.0.6. Draw-order override: 1 above every other animal, -1 below them,
-    // 0 off. Not remembered as two booleans, because "above and below" is not
-    // a state that means anything.
-    zorderMode: (() => { const v = Number(store.get('zorderMode', 0)); return v === 1 || v === -1 ? v : 0; })(),
-    // 1.28.0. Both are arena-only and both stand down completely outside a
-    // duel of your own, so neither costs anything in an ordinary game.
-    arenaFocus: !!store.get('arenaFocus', false),
-    biteIndicator: !!store.get('biteIndicator', false),
-    // Stored as the raw rate rather than a step index, for the same reason the
-    // zoom level is: changing TURN_STEP later must not reinterpret it.
-    turnSpeedValue: normalizeTurnSpeed(store.get('turnSpeedValue', TURN_NEUTRAL)),
-    turnStyle: normalizeTurnStyle(store.get('turnStyle', 'linear')),
-    debug: !!store.get('debug', false),
-    // 1.0.25. The extension's hourly look for a newer release. On unless
-    // switched off; a Tampermonkey copy never checks.
-    updateCheck: store.get('updateCheck', true) !== false,
-  };
 
   /* ================= keybinds (1.0.7) =================
    *
@@ -3634,60 +1686,7 @@
       mopeSettingsProxy() ? 'yes' : 'NO - bound-key clashes cannot be detected');
     return rows;
   }
-  try { PAGE.__lumiKeybindDebug = kbDebug; }
-  catch (e) { window.__lumiKeybindDebug = kbDebug; }
-
-  function dbg(...args) { if (settings.debug) console.log(TAG, ...args); }
-
-  // ------------------------------------------------------- overlay placement
-  //
-  // Where the party list and the HP bar are put on screen. Each works out its
-  // own anchor — the list hangs under #leaderboard, the bar sits above the
-  // ability cards — and these three helpers are the part they share.
-  //
-  // 1.0.23 removed the Customization category and everything behind it: the
-  // drag-to-position preview, the "Show on screen" switches that hid mope's
-  // own HUD pieces, and the separate game stats. mope is adding HUD
-  // customization of its own, and two systems moving the same elements would
-  // fight. So nothing here moves or hides anything of mope's any more; it only
-  // places what this script draws, at the anchor each feature chose.
-  //
-  // Sizes are in dvmin — hundredths of the shorter viewport axis — which is
-  // the unit mope sizes its own HUD in.
-
-  function layoutVmin() {
-    return Math.max(1, Math.min(innerWidth, innerHeight) / 100);
-  }
-
-  // Style writes are compared against the current value first: these run
-  // several times a second but the boxes only move when the HUD is resized,
-  // and a redundant style write dirties layout for free.
-  function layoutStyle(el, prop, value) {
-    if (el.style[prop] !== value) el.style[prop] = value;
-  }
-
-  // Place one of OUR overlays at the {left, top} its feature worked out.
-  // Returns the placement used, or null when there is nothing to place
-  // against, which is the feature's signal to hide rather than to guess.
-  function layoutPlace(el, anchored) {
-    if (!anchored) return null;
-    const left = Math.round(anchored.left);
-    const top = Math.round(anchored.top);
-    layoutStyle(el, 'left', left + 'px');
-    layoutStyle(el, 'top', top + 'px');
-    return {left, top};
-  }
-
-  // Everything Customization stored. Nothing reads these any more, so they
-  // are dropped rather than left in storage for ever — the same treatment
-  // 1.30.0 gave the party-chat position when that stopped being movable.
-  // Removing a key that is already gone costs nothing, so this simply runs on
-  // every load rather than keeping a flag to say it has run.
-  for (const key of ['layoutPos', 'layoutSeen', 'layoutHidden', 'layoutMapFixed',
-    'gameStats', 'statsHidden', 'statsColor']) {
-    store.remove(key);
-  }
-
+  expose('__lumiKeybindDebug', kbDebug);
   // ------------------------------------------------ cosmetic name-color engine
 
   // ---------------- settings (persisted) ----------------
@@ -4009,65 +2008,6 @@
     return isSelf === true ? ownStyle() : sharedStyleFor(text);
   }
 
-  // Adapter verified against mope's entity constructors, 2026-09-08.
-  // Empty is different from unavailable; neither licenses a guessed identity.
-  function gameModels(type) {
-    try {
-      const cls = gameCapture.game && gameCapture.game.classes && gameCapture.game.classes.global[type];
-      const list = cls && cls.list;
-      return list && typeof list.values === 'function' ? Array.from(list.values()) : [];
-    } catch (e) { return []; }
-  }
-
-  function nameOwners() {
-    const owners = new Map();
-    const models = gameModels('animal');
-    const me = hpGameModel();
-    if (me && models.indexOf(me) < 0) models.push(me);
-    for (const model of models) {
-      const node = model && model.name;
-      if (!model || model.spawned === false || !model.container || model.container.destroyed ||
-          !node || node.destroyed || node.__lumiNameOverlay ||
-          node.parent !== model.container || typeof node.text !== 'string') continue;
-      owners.set(node, model);
-    }
-    return owners;
-  }
-
-  function sceneNameStyle(node, owners) {
-    if (!node || node.__lumiNameOverlay || node.destroyed || !node.parent) return null;
-    const owner = owners.get(node);
-    if (owner) {
-      nameBindings.set(node, {owner, parent: node.parent, text: node.text, self: owner === hpGameModel()});
-      return styleFor(node.text, owner === hpGameModel());
-    }
-    // Late renderer capture can lack the singleton. Only a positive animal
-    // nameplate shape may use its own tag; never infer self from text/position.
-    if (gameCapture.game) return null;
-    const parent = node.parent;
-    if (!hpIdentify(parent)) return null;
-    const kids = parent.children || [];
-    const texts = kids.filter(k => k && !k.__lumiNameOverlay && typeof k.text === 'string');
-    if (texts.length !== 2 || texts[0] !== node) return null;
-    nameBindings.set(node, {owner: null, parent: node.parent, text: node.text, self: false});
-    return styleFor(node.text);
-  }
-
-  function nameReconcile() {
-    // Recycled text nodes can change between the 500ms discovery passes.
-    // Revoke old styling before the very next native render in that case.
-    const validate = node => {
-      const b = nameBindings.get(node);
-      const owner = b && b.owner;
-      if (!settings.masterEnabled || !nameColorState.enabled || !b || node.destroyed ||
-          node.parent !== b.parent || node.text !== b.text ||
-          (owner && (owner.spawned === false || owner.name !== node || owner.container !== node.parent)) ||
-          (b.self && owner !== hpGameModel())) applyNameStyle(node, null);
-    };
-    for (const node of tinted) validate(node);
-    for (const node of overlays.keys()) validate(node);
-  }
-
   // How much room the nickname box actually has. The field's own maxlength is
   // the authority; the HTML spec measures it in UTF-16 code units, which is
   // exactly what String#length counts. This matters for decorative "maths
@@ -4129,13 +2069,6 @@
     if (t && t.closest && t.closest('#playButton')) injectSuffix();
   }, true);
 
-  // ---------------- Pixi hook ----------------
-  const renderers = [];
-  const nameOriginals = new WeakMap();
-  const nameBindings = new WeakMap();
-  const tinted = new Set();        // nodes we solid-tinted (to restore)
-  const overlays = new Map();      // node -> {key, clones, laidOut} for gradient overlays
-  let lastSweep = -Infinity;   // discover immediately, then use the paced interval
 
   function destroyOverlay(node, m) {
     for (const c of m.clones) {
@@ -4261,9 +2194,14 @@
     if (!st) {
       const m = overlays.get(node);
       if (m) destroyOverlay(node, m);
+      // Bookkeeping first: if restoring the node throws (it was destroyed under
+      // us), it must not stay listed and fail again on every frame.
       const original = nameOriginals.get(node);
-      if (original) { node.tint = original.tint; node.renderable = original.renderable; nameOriginals.delete(node); }
+      nameOriginals.delete(node);
       tinted.delete(node);
+      if (original && !node.destroyed) {
+        try { node.tint = original.tint; node.renderable = original.renderable; } catch (e) { /* gone */ }
+      }
       return;
     }
     if (!nameOriginals.has(node)) nameOriginals.set(node, {tint: node.tint, renderable: node.renderable});
@@ -4372,1330 +2310,101 @@
     }
   }
 
-  // Reused across sweeps. A fresh array here grew to hold thousands of nodes
-  // five times a second and was thrown away each time — one of the larger
-  // sources of steady garbage in the script, and GC pauses are exactly what a
-  // stutter complaint turns out to be. sweep() is only ever called from the
-  // render hook and never re-enters, so a single shared stack is safe.
-  const sweepStack = [];
+
+  /* ----- painting the names in the world -----
+   *
+   * Which nodes are names, and whose: mope's entity registry answers both.
+   * Every animal entity owns its nameplate (`entity.name`, a Pixi Text), and
+   * `$.player` is yours. Nothing here walks the scene graph or matches a
+   * shape — a node is styled because the game says it is an animal's name,
+   * and it is styled as YOURS only because the game says that animal is you.
+   *
+   * The two rules learned the hard way still hold:
+   *   - a name's visible letters never identify a player; a remote name is
+   *     coloured only if it carries a valid share tag (see sharedStyleFor);
+   *   - emoji are never tinted (see ensureNameOverlay).
+   */
+
+  const nameOriginals = new WeakMap();   // node -> {tint, renderable} before we touched it
+  const nameBindings = new WeakMap();    // node -> {owner, parent, text, self}
+  const tinted = new Set();              // nodes we solid-tinted (to restore)
+  const overlays = new Map();            // node -> {key, clones, ...} per-grapheme overlays
+  // Names worn by more than one nameplate on screen right now. The registry
+  // is keyed by the name alone, so it refuses to answer for these.
   let ambiguousNames = new Set();
 
-  function sweep(root) {
-    let visited = 0;
-    const owners = nameOwners();
+  const NAME_SWEEP_MS = 250;      // discovery: new animals, changed names
+  const NAME_OVERLAY_MS = 15;     // animation and layout of gradient clones
+  const nameFrameState = {sweptAt: -Infinity, animatedAt: -Infinity, styled: 0};
+
+  function nameSweep() {
+    const me = myAnimal();
+    const owners = new Map();
     const counts = new Map();
-    // Decide ambiguity before any lookup, not one sweep after colouring it.
-    for (const node of owners.keys()) {
+    for (const animal of liveAnimals()) {
+      const node = animal.name;
+      if (!node || node.destroyed || node.__lumiNameOverlay ||
+          typeof node.text !== 'string' || !node.parent) continue;
+      owners.set(node, animal);
       const key = baseKey(node.text);
       counts.set(key, (counts.get(key) || 0) + 1);
     }
     ambiguousNames = new Set([...counts].filter(([, n]) => n > 1).map(([key]) => key));
-    sweepStack.length = 0;
-    sweepStack.push(root);
-    const seen = new Set();
-    while (sweepStack.length) {
-      const n = sweepStack.pop();
-      if (!n || ++visited > 60000) break;
-      if (n.__lumiNameOverlay) continue;
-      // Each discovery consumer is isolated: a malformed text or HP node
-      // cannot prevent the arena scanner from completing the same walk.
-      if (hpScan.active) {
-        try { hpConsiderNode(n); } catch (e) { frameFailed('HP discovery', e); }
-      }
-      if (arenaScan.active) {
-        try { arenaConsiderNode(n); } catch (e) { frameFailed('arena discovery', e); }
-      }
-      if (typeof n.text === 'string') {
-        seen.add(n);
-        try { applyNameStyle(n, sceneNameStyle(n, owners)); }
-        catch (e) { frameFailed('name discovery', e); }
-      }
-      const ch = n.children;
-      if (ch) for (let i = 0; i < ch.length; i++) sweepStack.push(ch[i]);
+    let styled = 0;
+    for (const [node, animal] of owners) {
+      const self = animal === me;
+      nameBindings.set(node, {owner: animal, parent: node.parent, text: node.text, self});
+      const style = styleFor(node.text, self);
+      applyNameStyle(node, style);
+      if (style) styled++;
     }
-    sweepStack.length = 0;
-    for (const n of new Set([...tinted, ...overlays.keys()])) {
-      if (!seen.has(n)) applyNameStyle(n, null);
+    // Anything still styled that is no longer an animal's live nameplate goes
+    // back to exactly how mope left it.
+    for (const node of [...tinted, ...overlays.keys()]) {
+      if (!owners.has(node)) applyNameStyle(node, null);
     }
+    nameFrameState.styled = styled;
   }
 
-  // Feature work follows the rate at which its DATA can change, not the rate at
-  // which the monitor asks Pixi to redraw the same scene. In 1.8.2 the whole
-  // block still ran at 240 Hz on a 240 Hz display. That meant repeated DOM
-  // layout reads for HP/party UI and repeated Map walks with no new input.
-  // Names remain animated at display-smooth speed; HP and party data are read
-  // at 30+ Hz, already much faster than their server/DOM sources update.
-  const FRAME_WORK_MIN_MS = 12;       // render-hook ceiling: about 83 Hz
-  const HP_WORK_MIN_MS = 30;          // health settles over 90ms
-  const PARTY_WORK_MIN_MS = 30;       // positions arrive no faster than 10 Hz
-  const OVERLAY_WORK_MIN_MS = 15;     // smooth animated gradients
-  const SCENE_SWEEP_MIN_MS = 500;     // discovery, not animation
-  let lastFrameWork = -Infinity;
-  let lastHpWork = -Infinity;
-  let lastPartyWork = -Infinity;
-  let lastOverlayWork = -Infinity;
-  let lastArenaWork = -Infinity;
-  let framePerfCalls = 0;      // render() calls seen
-  let framePerfRuns = 0;       // of those, ones that did work
-  let framePerfSince = 0;
-  const frameFailures = Object.create(null);
-
-  // A userscript must never throw through mope's render loop, but "silent"
-  // must not mean "unknowable". Each feature boundary below records its own
-  // failure and lets the rest of the frame continue. Logging is throttled so
-  // a per-frame fault cannot flood the console at 240 Hz.
-  function frameFailed(feature, error) {
-    const now = performance.now();
-    let row = frameFailures[feature];
-    if (!row) row = frameFailures[feature] = {count: 0, lastAt: 0, lastLoggedAt: -Infinity, message: ''};
-    row.count++;
-    row.lastAt = now;
-    row.message = String(error && error.message || error || 'unknown error');
-    if (row.count === 1 || now - row.lastLoggedAt >= 10000) {
-      row.lastLoggedAt = now;
-      try { console.warn(TAG, feature + ' failed; later frame features still ran:', error); } catch (e) {}
-    }
-  }
-
-  function frameFailureReport() {
-    const report = {};
-    for (const feature of Object.keys(frameFailures)) {
-      const row = frameFailures[feature];
-      report[feature] = {count: row.count, lastAt: Math.round(row.lastAt), message: row.message};
-    }
-    return report;
-  }
-
-  function sceneSweepNeeded() {
-    return hpReadingNeeded() || arenaNeeded() ||
-      (settings.masterEnabled && nameColorState.enabled) ||
-      tinted.size > 0 || overlays.size > 0;
-  }
-
-  // The HP feature has two halves and 1.16.0 separated them. hpActive() is
-  // whether it DRAWS — damage numbers, the bar — and is still exactly the
-  // panel switch. This is whether anything needs it to READ, which the party
-  // list also does: a member's health has to be measured before it can be
-  // published, and that measurement is the health-bar scan.
-  //
-  // Turning the party on with damage numbers off therefore starts the scene
-  // sweep. What it does not start is any of the per-frame work that scan
-  // feeds: hpTick skips every animal but you, and every drawing path is still
-  // behind hpActive() or hpBarOn().
-  // 1.0.10 adds draw order to this list, and it is a FIX rather than a tidy.
-  // zorderApply() rides the HP budget because it reorders the same animals the
-  // HP scan is already holding — but nothing here said so, so with damage
-  // numbers, the party and every arena feature switched off, the scan never
-  // ran, hpState.bars stayed empty, and the ] and [ keys toasted "Drawing above
-  // other players" and reordered nothing, for ever. The feature worked only as
-  // long as something ELSE happened to keep the scan alive, which is the worst
-  // kind of dependency: invisible, and it looks like the keys are broken.
-  //
-  // zorderOn() is masterEnabled && mode !== 0, so this costs exactly nothing
-  // for anyone not using it.
-  function hpReadingNeeded() {
-    return hpActive() || partyNeedsSelfHealth() || arenaNeeded() || zorderOn();
-  }
-
-  function hpWorkNeeded() {
-    return hpReadingNeeded() || hpState.bars.size > 0 || !!hpState.player;
-  }
-
-  function partyWorkNeeded() {
-    return partyActive() || party.peers.size > 0 ||
-      partyChat.open || partyChat.lines.length > 0;
-  }
-
-  // Kept running for one more pass after the feature goes off, so the sky is
-  // taken back out of the scene rather than left hanging there — the same
-  // shape as hpWorkNeeded() and for the same reason.
-  function arenaSkyWorkNeeded() {
-    return arenaSkyNeeded() || !!arenaSky.node;
-  }
-
-  const rendererHooks = new WeakMap();
-
-  function hookRenderer(r) {
-    if (!r || typeof r.render !== 'function') return;
-    const previous = rendererHooks.get(r);
-    if (previous && r.render === previous.wrapper) return;
-    const orig = r.render;
-    const hook = {wrapper: null};
-    hook.wrapper = function (arg) {
-      // A later script may chain our old wrapper. Only the newest owner does
-      // feature work; every wrapper still forwards the game's call exactly.
-      if (rendererHooks.get(this) !== hook) return orig.apply(this, arguments);
-      try {
-        const now = performance.now();
-        if (!framePerfSince) framePerfSince = now;
-        framePerfCalls++;
-        // 1.28.x re-applied the bite tint here, outside the frame budget,
-        // because mope re-tints a moving health bar on every frame and a
-        // colour written at 83Hz onto a bar redrawn at 240Hz is a flicker
-        // rather than a colour. 1.29.0 draws its own node instead, which mope
-        // never touches — and then 1.35.1 put something back, for a version of
-        // the same reason: the boost counter FOLLOWS a moving animal, and a
-        // position written at 16Hz behind a target drawn at 240 does not read
-        // as lag, it reads as vibration. It is affordable because it is not a
-        // scan: two property reads and one transform write, and it returns on
-        // the first line whenever the counter is not on screen.
-        try { boostPlace(this); } catch (e) { frameFailed('boost placement', e); }
-        if (now - lastFrameWork >= FRAME_WORK_MIN_MS) {
-          lastFrameWork = now;
-          framePerfRuns++;
-          const stage = (arg && arg.container) ? arg.container : arg;
-          if (stage && sceneSweepNeeded() && now - lastSweep >= SCENE_SWEEP_MIN_MS) {
-            let hpScanStarted = false;
-            let arenaScanStarted = false;
-            try {
-              lastSweep = now;
-              hpBeginScan();
-              hpScanStarted = true;
-              arenaBeginScan();
-              arenaScanStarted = true;
-              sweep(stage);
-            } catch (e) {
-              frameFailed('scene discovery', e);
-            } finally {
-              if (arenaScanStarted) {
-                try { arenaEndScan(); } catch (e) { frameFailed('arena scan finalise', e); }
-              }
-              if (hpScanStarted) {
-                try { hpEndScan(); } catch (e) { frameFailed('HP scan finalise', e); }
-              }
-            }
-          }
-          if (stage && hpWorkNeeded() && now - lastHpWork >= HP_WORK_MIN_MS) {
-            lastHpWork = now;
-            hpLastStage = stage;
-            try { hpTick(this, now); } catch (e) { frameFailed('HP', e); }
-          }
-          // Party dots still update before Pixi draws; redundant intervening
-          // renders are skipped because peers publish at only 10 Hz.
-          if (stage && partyWorkNeeded() && now - lastPartyWork >= PARTY_WORK_MIN_MS) {
-            lastPartyWork = now;
-            try { partyTick(stage, this, now); } catch (e) { frameFailed('party', e); }
-          }
-          // Which duel is yours, before anything that depends on the answer.
-          // Shares the sky's budget deliberately: it reads the same things,
-          // through the same function, and nothing it feeds changes faster.
-          if (now - lastArenaWork >= ARENA_SKY_WORK_MIN_MS) {
-            lastArenaWork = now;
-            try { arenaDuelTick(this, now); } catch (e) { frameFailed('arena duel', e); }
-            // The boost counter rides the same budget, and for the same
-            // reason the duel tick does: it reads the duel state that call
-            // just filled in, and the meter behind it changes a couple of
-            // times a second at most.
-            try { boostTick(this, now); } catch (e) { frameFailed('boost counter', e); }
-            // The arena sky. Nothing it reads changes faster than the camera
-            // moves, and the work is a handful of transform reads plus, very
-            // occasionally, a repaint.
-            if (arenaSkyWorkNeeded()) {
-              try { arenaSkyTick(this, now); } catch (e) { frameFailed('arena theme', e); }
-            }
-          }
-          // keep gradient overlays glued to the (possibly animating) name node
-          // at a smooth visual rate, independent of high-refresh render spam.
-          if (overlays.size && now - lastOverlayWork >= OVERLAY_WORK_MIN_MS) {
-            lastOverlayWork = now;
-            // Iterating the Map itself yields a fresh [key, value] array per
-            // entry per frame. keys() does not, and the get() is cheaper than
-            // the allocation it replaces.
-            for (const n of overlays.keys()) {
-              if (!n.parent) continue;
-              const m = overlays.get(n);
-              if (!m) continue;
-              try {
-                syncOverlayLayout(n, m);
-                syncOverlayVisibility(n, m);
-                animateOverlayTints(m, now);
-              } catch (e) { frameFailed('name overlay', e); }
-            }
-          }
-        }
-      } catch (e) { frameFailed('frame wrapper', e); }
-      // Reconcile after every game update, including frames skipped by HP budgets.
-      try { nameReconcile(); } catch (e) { frameFailed('name ownership', e); }
-      try { zorderApply(performance.now(), false); } catch (e) { frameFailed('draw order', e); }
-      // Rest + spread allocated two arrays on EVERY frame. Every Pixi v8 path
-      // calls render() with a single argument; the apply() branch exists only
-      // so an unusual caller cannot silently lose one.
-      return arguments.length > 1 ? orig.apply(this, arguments) : orig.call(this, arg);
+  // Between sweeps a nameplate can be recycled (new text, new owner, the
+  // animal died). Revoke on the very next frame rather than up to 250ms late.
+  function nameReconcile() {
+    const me = myAnimal();
+    const validate = (node) => {
+      const b = nameBindings.get(node);
+      const owner = b && b.owner;
+      if (!b || node.destroyed || node.parent !== b.parent || node.text !== b.text ||
+          !owner || owner.spawned === false || owner.name !== node ||
+          (b.self && owner !== me)) applyNameStyle(node, null);
     };
-    // Commit ownership only after assignment succeeds. A foreign __mncHooked
-    // flag says nothing about whether THIS script is receiving frames.
-    r.render = hook.wrapper;
-    if (r.render !== hook.wrapper) return;
-    rendererHooks.set(r, hook);
-    if (!renderers.includes(r)) renderers.push(r);
+    for (const node of [...tinted]) validate(node);
+    for (const node of [...overlays.keys()]) validate(node);
   }
 
-  // THE PIXI HOOK, AND WHY IT DEFENDS ITSELF.
-  //
-  // Everything drawn in the world hangs off catching a renderer through one of
-  // Pixi's devtools globals. Chaining whatever was already there was only half
-  // the job: a script that installs ITS hook after ours does a plain
-  // assignment, and a plain assignment overwrites us outright. Nothing then
-  // calls hookRenderer, no renderer is ever captured, and the frame wrapper —
-  // which is what drives the party dots, the party list, the HP numbers, the
-  // arena sky AND party chat's message lifetime — simply never runs.
-  //
-  // That failure is very quiet from the outside. Party chat still RECEIVES,
-  // because messages arrive on the transport rather than on a frame, so
-  // somebody can be chatting normally while every message stays on screen for
-  // ever, in game and on the menu alike, because nothing is counting them
-  // down. That is the report this fixes, and 1.20.0 also moves the countdown
-  // onto its own timer so the symptom cannot come back by this route.
-  //
-  // Load order between two userscripts is NOT deterministic — it varies with
-  // install order, with @run-at, and between managers — which is exactly why
-  // this reproduced on one machine and not on two others running the same
-  // pair of scripts.
-  //
-  // So the property is an ACCESSOR. Reads get our wrapper; a later plain
-  // assignment is captured as the next link in the chain instead of replacing
-  // us. Everyone's hook still runs, ours included, whoever arrives last.
-  function defendHook(key, take) {
-    let downstream = null;
-    try { downstream = PAGE[key]; } catch (e) { downstream = null; }
-
-    const wrapper = function (...args) {
-      try { take(...args); } catch (e) { /* never break another hook */ }
-      // Called rather than returned through: these are notifications, and a
-      // downstream hook that throws must not stop the ones after it.
-      if (typeof downstream === 'function') {
-        try { return downstream.apply(this, args); } catch (e) { /* theirs */ }
-      }
-      return undefined;
-    };
-
-    try {
-      Object.defineProperty(PAGE, key, {
-        configurable: true,
-        get() { return wrapper; },
-        set(next) {
-          // Chained, not obeyed. Someone assigning here wants to be told about
-          // renderers, which they still will be.
-          if (typeof next === 'function' && next !== wrapper) downstream = next;
-        },
-      });
-      return 'accessor';
-    } catch (e) {
-      // A page that will not take an accessor here still gets the old
-      // behaviour, which is better than none.
-      try { PAGE[key] = wrapper; return 'plain'; } catch (e2) { return 'failed'; }
-    }
+  function nameClearAll() {
+    for (const node of [...tinted]) applyNameStyle(node, null);
+    for (const node of [...overlays.keys()]) applyNameStyle(node, null);
   }
 
-  const rendererHookMode = defendHook('__PIXI_RENDERER_INIT__',
-    (renderer) => hookRenderer(renderer));
-  const appHookMode = defendHook('__PIXI_APP_INIT__',
-    (app) => hookRenderer(app && app.renderer));
-
-  // ------------------------------------------------- the game loop route
-  //
-  // 1.36.0, and it is what finally makes Canvas2D work.
-  //
-  // THE PROBLEM. Everything this script draws in the world hangs off catching
-  // a renderer, and until now the only way in was Pixi's devtools global.
-  // That global is fired by an extension mope's Pixi registers for
-  // `[WebGLSystem, WebGPUSystem]` and nothing else — CanvasSystem is a
-  // separate extension type and is not on the list. mope's Pixi is a custom
-  // 8.19.0 build WITH a canvas renderer, and it selects it automatically for a
-  // weak GPU or a mobile device. So on Canvas nothing was ever captured and
-  // the whole per-frame set died at once: in-world name colours, party dots
-  // and tags, the party list, HP numbers, the HP bar, the arena starfield, the
-  // bite indicator and the boost counter. 1.20.1 could only make it SAY so.
-  //
-  // THE WAY IN. mope's game singleton is built once, in a constructor that
-  // assigns eighteen plain properties onto a fresh object:
-  //
-  //   this.classes = {...}, this.animalStats = {...}, this.settings = Vr,
-  //   this.network = ..., this.loop = new jo, this.camera = ..., this.map = ...,
-  //   ... this.closestObjects = { enabledByType: {}, byType: {} }
-  //
-  // An `Object.prototype` accessor on one of those keys hands the object over
-  // mid-construction — the same mechanism the camera zoom hub has used since
-  // 1.12.0 on `syncPosition`, and route 2 of the handoff's three ways in.
-  //
-  // `closestObjects` is the key because it is assigned EXACTLY ONCE in the
-  // whole bundle, appears in neither the Pixi nor the Svelte chunk, and is the
-  // LAST line of the constructor — so by the time it fires, `loop`, `camera`,
-  // `settings` and the rest are already on the object. It is also free: the
-  // moderator script uses neither it nor anything near it, which matters
-  // because only one script can own a prototype key.
-  //
-  // From there the renderer is not polled for. `loop.renderer` is assigned
-  // after an await inside `loop.init()` and has no own property before that,
-  // so an accessor on the loop INSTANCE catches the assignment at the instant
-  // it happens and hands it straight to hookRenderer().
-  //
-  // WHY THIS IS BETTER THAN THE HOOK IT BACKS UP, and not merely equal to it:
-  // it does not care which renderer mope built. It would survive Pixi dropping
-  // the devtools global, and it works on WebGPU, WebGL and Canvas alike. The
-  // devtools hook is still tried first and still wins where it fires, because
-  // it is the documented route and it fires earlier.
-  //
-  // What it does NOT do is make the canvas renderer capable of things it is
-  // not. Its whole list of refusals is four warnings — non-`source-over` blend
-  // modes, filters, inverse masks, and masks that are not Graphics — and none
-  // of those is anything this script draws. RenderLayers, which the arena
-  // starfield's depth depends on, live in Pixi's shared scene chunk rather
-  // than in a backend, so they are not a backend's to refuse.
-  const gameCapture = {
-    game: null,        // mope's own singleton
-    loop: null,
-    trapHits: 0,
-    installed: false,
-    stoodDown: false,
-    rendererVia: '',   // which route actually produced the renderer
-    hookedAt: 0,
-    loopProbeInstalled: false,
-    loopProbeHits: 0,
-    repairs: 0,
-  };
-
-  const gameLoopProbes = [];
-
-  function gameLooksLikeLoop(loop) {
-    if (!loop || typeof loop !== 'object') return false;
-    return !!(loop.canvas && loop.canvas.tagName === 'CANVAS' &&
-      loop.stage && Array.isArray(loop.stage.children) &&
-      loop.world && Array.isArray(loop.world.children) &&
-      loop.HUD && Array.isArray(loop.HUD.children) &&
-      typeof loop.render === 'function' && loop.renderer &&
-      typeof loop.renderer.render === 'function');
-  }
-
-  function gameStopLoopProbe() {
-    for (const probe of gameLoopProbes.splice(0)) {
-      try {
-        // Do not overwrite another extension's later wrapper.
-        if (probe.proto.bind === probe.wrapper) {
-          Object.defineProperty(probe.proto, 'bind', probe.descriptor);
-        }
-      } catch (e) { /* a sealed prototype is not ours to repair */ }
-    }
-    gameCapture.loopProbeInstalled = false;
-  }
-
-  function gameInstallLoopProbe() {
-    if (gameCapture.loopProbeInstalled) return;
-    // mope schedules every frame with this.render.bind(this). Unlike the
-    // constructor assignment and Pixi's devtools event, this is still available
-    // after slow loading, the 20s trap ceiling, or late userscript injection.
-    // No callback is executed by the probe: native bind creates it as usual.
-    for (const proto of new Set([Function.prototype,
-      PAGE.Function && PAGE.Function.prototype])) {
-      if (!proto) continue;
-      try {
-        const descriptor = Object.getOwnPropertyDescriptor(proto, 'bind');
-        if (!descriptor || typeof descriptor.value !== 'function') continue;
-        const original = descriptor.value;
-        const wrapper = function bind(receiver) {
-          const bound = Reflect.apply(original, this, arguments);
-          try {
-            if (gameCapture.loopProbeInstalled && receiver &&
-                this === receiver.render && gameLooksLikeLoop(receiver)) {
-              gameCapture.loopProbeHits++;
-              gameWatchLoop(receiver);
-              if (gameCapture.loop === receiver) {
-                gameCapture.rendererVia = 'running game loop (bind recovery)';
-              }
-            }
-          } catch (e) { /* never affect the game's native bind */ }
-          return bound;
-        };
-        Object.defineProperty(proto, 'bind', {...descriptor, value: wrapper});
-        gameLoopProbes.push({proto, descriptor, wrapper});
-      } catch (e) { /* devtools and construction remain independent routes */ }
-    }
-    gameCapture.loopProbeInstalled = gameLoopProbes.length > 0;
-  }
-
-  // The key is taken only if nothing on the page has claimed it, and given
-  // back the moment it has done its job — this is a page-wide accessor and it
-  // has no business outliving the one assignment it exists for.
-  const GAME_TRAP_KEY = 'closestObjects';
-  const GAME_TRAP_CEILING_MS = 20000;
-
-  function gameLooksLikeSingleton(object) {
-    if (!object || typeof object !== 'object') return false;
-    const stats = object.animalStats;
-    const loop = object.loop;
-    return !!(
-      stats && typeof stats === 'object' && stats.resource &&
-      typeof stats.resource === 'object' &&
-      loop && typeof loop === 'object' && 'stage' in loop && 'canvas' in loop &&
-      object.settings && object.camera && object.classes
-    );
-  }
-
-  // The renderer, the moment mope assigns it. An accessor on the loop rather
-  // than a poll: `renderer` has no own property until `loop.init()` awaits its
-  // way to one, so there is nothing to collide with and nothing to wait for.
-  function gameWatchLoop(loop) {
-    if (!loop) return;
-    // Already built — we arrived late, which is the ordinary case if the
-    // devtools hook fired first and this is only confirming.
-    if (loop.renderer) {
-      gameCapture.rendererVia = gameCapture.rendererVia || 'game loop (already built)';
-      gameCapture.hookedAt = performance.now();
-      hookRenderer(loop.renderer);
-      if (rendererHooks.has(loop.renderer)) {
-        gameCapture.loop = loop;
-        gameStopLoopProbe();
-      }
+  function nameFrame(now) {
+    if (!settings.masterEnabled || !nameColorState.enabled) {
+      if (tinted.size || overlays.size) nameClearAll();
       return;
     }
-    if (gameCapture.loop === loop) return;
-    gameCapture.loop = loop;
-    let held;
-    try {
-      Object.defineProperty(loop, 'renderer', {
-        configurable: true, enumerable: true,
-        get() { return held; },
-        set(value) {
-          held = value;
-          try {
-            if (!gameCapture.rendererVia) {
-              gameCapture.rendererVia = 'game loop';
-              gameCapture.hookedAt = performance.now();
-            }
-            hookRenderer(value);
-            if (rendererHooks.has(value)) gameStopLoopProbe();
-          } catch (e) { /* a capture must never break the page's own work */ }
-        },
-      });
-    } catch (e) { /* not ours to fix; the devtools hook may still fire */ }
-  }
-
-  function gameStandDown() {
-    if (gameCapture.stoodDown || !gameCapture.installed) return;
-    gameCapture.stoodDown = true;
-    for (const prototype of [Object.prototype, PAGE.Object && PAGE.Object.prototype]) {
-      if (!prototype) continue;
-      try {
-        const descriptor = Object.getOwnPropertyDescriptor(prototype, GAME_TRAP_KEY);
-        // Only ours comes off. Something else's accessor is something else's.
-        if (descriptor && descriptor.get && descriptor.get.__lumiGameTrap) {
-          delete prototype[GAME_TRAP_KEY];
-        }
-      } catch (e) { /* sealed prototype */ }
+    nameReconcile();
+    if (now - nameFrameState.sweptAt >= NAME_SWEEP_MS) {
+      nameFrameState.sweptAt = now;
+      nameSweep();
     }
-  }
-
-  (function installGameTrap() {
-    // The plain own property the object was assigning, given to it before
-    // anything else happens, so the page carries on exactly as it would have.
-    const passThrough = (object, value) => {
-      try {
-        Object.defineProperty(object, GAME_TRAP_KEY, {
-          value, writable: true, enumerable: true, configurable: true,
-        });
-      } catch (e) { /* frozen: not ours to fix */ }
-    };
-    const getter = function () { return undefined; };
-    getter.__lumiGameTrap = true;
-    for (const prototype of [Object.prototype, PAGE.Object && PAGE.Object.prototype]) {
-      if (!prototype) continue;
-      // Never take a key something on the page has already claimed — the same
-      // rule the zoom hub follows, and the reason the two scripts can coexist.
-      if (Object.prototype.hasOwnProperty.call(prototype, GAME_TRAP_KEY)) continue;
-      try {
-        Object.defineProperty(prototype, GAME_TRAP_KEY, {
-          configurable: true,
-          get: getter,
-          set(value) {
-            passThrough(this, value);
-            try {
-              gameCapture.trapHits += 1;
-              if (gameCapture.game) return;
-              if (!gameLooksLikeSingleton(this)) return;
-              gameCapture.game = this;
-              gameWatchLoop(this.loop);
-              // Its one assignment has happened. Hand the key back rather than
-              // leaving a page-wide accessor installed for the session.
-              gameStandDown();
-            } catch (e) { /* never break the page's own work */ }
-          },
-        });
-        gameCapture.installed = true;
-      } catch (e) { /* sealed prototype: nothing else to try */ }
-    }
-    // And a ceiling, so a build that never assigns it is not left wrapped.
-    if (gameCapture.installed) setTimeout(gameStandDown, GAME_TRAP_CEILING_MS);
-  })();
-
-  // The narrow constructor trap still retires after 20s. The loop probe
-  // survives that deadline and removes itself on successful capture.
-  gameInstallLoopProbe();
-
-  function gameRepairRenderer() {
-    const loop = gameCapture.loop;
-    if (!loop || !loop.renderer) return;
-    const renderer = loop.renderer;
-    const owned = rendererHooks.get(renderer);
-    if (owned && renderer.render === owned.wrapper) return;
-    try {
-      hookRenderer(renderer);
-      if (rendererHooks.get(renderer) !== owned) gameCapture.repairs++;
-    } catch (e) { frameFailed('renderer recovery', e); }
-  }
-  setInterval(gameRepairRenderer, 2000);
-
-  // What Pixi ACTUALLY built, rather than what mope's settings asked for.
-  // Those are two different questions and 1.20.1 could only answer the second:
-  // __lumiArenaDebug().renderer reads the preference out of the settings
-  // capture, which is what a player chose and not necessarily what they got.
-  // A captured renderer says outright — Pixi's own RendererType is
-  // WEBGL 1, WEBGPU 2, CANVAS 4.
-  const GAME_RENDERER_TYPES = {1: 'webgl', 2: 'webgpu', 4: 'canvas'};
-
-  function gameRendererName() {
-    const renderer = renderers[0];
-    if (!renderer) return '';
-    if (typeof renderer.name === 'string' && renderer.name) return renderer.name;
-    return GAME_RENDERER_TYPES[renderer.type] || ('type ' + renderer.type);
-  }
-
-  function captureDebug() {
-    const report = {
-      version: VERSION,
-      // Which route produced the renderer, and whether the other was needed.
-      renderersHooked: renderers.length,
-      rendererBuilt: gameRendererName() || '(nothing captured)',
-      capturedVia: gameCapture.rendererVia ||
-        (renderers.length ? 'Pixi devtools hook' : '(nothing captured)'),
-      devtoolsHookMode: rendererHookMode + '/' + appHookMode,
-      // The game singleton itself. Everything below it is reachable now, which
-      // is a good deal more than Canvas support needed — see the header.
-      gameCaptured: !!gameCapture.game,
-      trapKey: GAME_TRAP_KEY,
-      trapHits: gameCapture.trapHits,
-      trapStoodDown: gameCapture.stoodDown,
-      loopCaptured: !!gameCapture.loop,
-      stage: !!(gameCapture.loop && gameCapture.loop.stage),
-      loopProbeInstalled: gameCapture.loopProbeInstalled,
-      loopProbeHits: gameCapture.loopProbeHits,
-      rendererRepairs: gameCapture.repairs,
-      framesSeen: framePerfCalls,
-    };
-    console.log(TAG, 'capture', report);
-    return report;
-  }
-  try { PAGE.__lumiCaptureDebug = captureDebug; }
-  catch (e) { window.__lumiCaptureDebug = captureDebug; }
-
-  // ---------------------------------------------------------- the hook record
-  //
-  // 1.0.25. Whether the mis-hooks are actually gone, answered from evidence
-  // rather than from how the last game felt.
-  //
-  // Every mis-hook traced so far came down to one of two things: mope's game
-  // object was never caught (the script arrived after mope had built it, so
-  // there was no `$.player` to ask), or it was caught and something fell back
-  // to GUESSING which animal is yours anyway. So each game gets one line,
-  // written ten seconds in, saying how each hook was caught and whether the
-  // player lock ever had to guess. The last thirty are kept.
-  //
-  // That record is also the gate for the next step. Every guessing fallback
-  // left in this file exists for a copy that missed the game object; once the
-  // record shows the extension never misses, the fallbacks can be deleted and
-  // a miss can be reported as a miss instead of being papered over.
-  //
-  // Nothing here leaves the browser. "Copy report" puts it on the clipboard so
-  // it can be pasted to Lumi by hand.
-  const HOOK_LOG_KEY = 'hookLog';
-  const HOOK_LOG_MAX = 30;
-  const HOOK_SAMPLE_AFTER_MS = 10000;
-  const hookRecord = {
-    log: (() => { const v = store.get(HOOK_LOG_KEY, null); return Array.isArray(v) ? v : []; })(),
-    entry: null,        // this page load's line, once written
-    inGameSince: 0,
-  };
-
-  // 'game' when mope's own $.player decided, 'guessed' when the inference ran,
-  // '' when nothing has needed a lock yet (every feature that uses one is off).
-  function hookLockKind() {
-    const by = hpState.lockedBy || '';
-    if (by === 'game') return 'game';
-    return by ? 'guessed' : '';
-  }
-
-  function hookSnapshot() {
-    return {
-      at: Date.now(),
-      v: VERSION,
-      via: QOLC_VIA,
-      game: !!gameCapture.game,
-      renderer: gameCapture.rendererVia ||
-        (renderers.length ? 'Pixi devtools hook' : 'none'),
-      camera: zoomHub.hooked() ? (zoomHub.hookedVia() || 'hooked') : 'none',
-      lock: hookLockKind(),
-    };
-  }
-
-  // Runs on the 250ms pacer. One store write per game, plus one more only if
-  // the lock is later seen guessing — never a write per tick.
-  function hookRecordTick(now) {
-    if (prevMenuVisible !== false) { hookRecord.inGameSince = 0; return; }
-    if (!hookRecord.inGameSince) hookRecord.inGameSince = now;
-    const entry = hookRecord.entry;
-    if (!entry) {
-      if (now - hookRecord.inGameSince < HOOK_SAMPLE_AFTER_MS) return;
-      hookRecord.entry = hookSnapshot();
-      hookRecord.log.push(hookRecord.entry);
-      if (hookRecord.log.length > HOOK_LOG_MAX) hookRecord.log.splice(0, hookRecord.log.length - HOOK_LOG_MAX);
-      store.set(HOOK_LOG_KEY, hookRecord.log);
-      return;
-    }
-    const lock = hookLockKind();
-    if (lock && entry.lock !== 'guessed' && lock !== entry.lock) {
-      entry.lock = lock;
-      store.set(HOOK_LOG_KEY, hookRecord.log);
-    }
-  }
-
-  // One line for the Settings pane. Counts only lines written by the way this
-  // copy is installed, so a Tampermonkey history does not muddy the
-  // extension's.
-  function hookSummary(log, via) {
-    const mine = log.filter((e) => e && e.via === via);
-    if (!mine.length) return 'Nothing recorded yet. Play a game for ten seconds.';
-    const n = mine.length;
-    const game = mine.filter((e) => e.game).length;
-    const renderer = mine.filter((e) => e.renderer && e.renderer !== 'none').length;
-    const camera = mine.filter((e) => e.camera && e.camera !== 'none').length;
-    const guessed = mine.filter((e) => e.lock === 'guessed').length;
-    const clean = game === n && renderer === n && camera === n && guessed === 0;
-    return (clean ? 'All clean. ' : '') + 'Last ' + n + (n === 1 ? ' game' : ' games') +
-      ': game ' + game + '/' + n + ', renderer ' + renderer + '/' + n +
-      ', camera ' + camera + '/' + n + ', player guessed in ' + guessed + '.';
-  }
-
-  function hookReport() {
-    return JSON.stringify({
-      version: VERSION, via: QOLC_VIA, now: hookSnapshot(),
-      capture: captureDebug(), log: hookRecord.log,
-    }, null, 1);
-  }
-
-  function hookRecordDebug() {
-    console.log(TAG, hookSummary(hookRecord.log, QOLC_VIA));
-    console.table ? console.table(hookRecord.log) : console.log(hookRecord.log);
-    return hookRecord.log;
-  }
-  try { PAGE.__lumiHookRecord = hookRecordDebug; }
-  catch (e) { window.__lumiHookRecord = hookRecordDebug; }
-
-  // ------------------------------------------------------------ keeping current
-  //
-  // 1.0.25. An extension loaded with "Load unpacked" never updates itself, and
-  // that is how this one is shared. So the extension copy looks, at most once an
-  // hour, at the version in the repository's manifest.json and says so on the
-  // menu when a newer one is out. It fetches one public file from GitHub and
-  // sends nothing; Settings → Troubleshooting switches it off.
-  //
-  // A Tampermonkey copy has its own updater, so it does not check. It gets a
-  // one-time note that the extension exists instead, once per version.
-  const UPDATE_URL = 'https://raw.githubusercontent.com/Luminosity67/lumis-extras/main/manifest.json';
-  const UPDATE_PAGE = 'https://github.com/Luminosity67/lumis-extras/releases/latest';
-  const UPDATE_EVERY_MS = 60 * 60 * 1000;   // 1.0.26: hourly (was daily)
-  const menuNotice = {text: '', bad: false};
-
-  // True when `a` is a later 1.x.y than `b`. Missing parts count as 0.
-  function qolcVersionNewer(a, b) {
-    const pa = String(a).split('.').map((n) => parseInt(n, 10) || 0);
-    const pb = String(b).split('.').map((n) => parseInt(n, 10) || 0);
-    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-      const x = pa[i] || 0, y = pb[i] || 0;
-      if (x !== y) return x > y;
-    }
-    return false;
-  }
-
-  function updateAvailable() {
-    const v = store.get('updateLatest', '');
-    return v && qolcVersionNewer(v, VERSION) ? v : '';
-  }
-
-  // The notice is said once per version per page load. The check itself now
-  // repeats every hour, and without this a known release would be announced
-  // again on every one of them.
-  let updateAnnounced = '';
-
-  function updateAnnounce() {
-    const known = updateAvailable();
-    if (!known || known === updateAnnounced) return;
-    updateAnnounced = known;
-    queueMenuNotice('Lumi’s Extras ' + known + ' is out. Get it from the GitHub releases page (Settings → Troubleshooting).');
-  }
-
-  function updateCheck() {
-    if (QOLC_VIA !== 'extension' || !settings.updateCheck) return;
-    const last = Number(store.get('updateCheckedAt', 0)) || 0;
-    if (Date.now() - last < UPDATE_EVERY_MS) { updateAnnounce(); return; }
-    store.set('updateCheckedAt', Date.now());
-    fetch(UPDATE_URL, {cache: 'no-store', credentials: 'omit'})
-      .then((r) => (r.ok ? r.json() : null))
-      .then((m) => {
-        if (!m || typeof m.version !== 'string') return;
-        store.set('updateLatest', m.version);
-        updateAnnounce();
-        syncTroubleshootingUI();
-      })
-      .catch((e) => dbg('update check failed', e));
-  }
-
-  function userscriptNotice() {
-    if (QOLC_VIA !== 'userscript') return;
-    if (store.get('extensionNoticeFor', '') === VERSION) return;
-    store.set('extensionNoticeFor', VERSION);
-    queueMenuNotice('Lumi’s Extras works best as a browser extension now. ' +
-      'Install it from github.com/Luminosity67/lumis-extras.');
-  }
-
-  // Shown on the MENU only — never over a game — and held long enough to read.
-  function queueMenuNotice(text, bad) {
-    menuNotice.text = text;
-    menuNotice.bad = !!bad;
-  }
-
-  function menuNoticeTick() {
-    if (!menuNotice.text || prevMenuVisible !== true) return;
-    qolcToast(menuNotice.text, menuNotice.bad ? 'is-bad' : '', 9000);
-    menuNotice.text = '';
-  }
-
-  // Replaced with the real thing once the panel exists.
-  let syncTroubleshootingUI = () => {};
-
-  // Everything drawn in the world — name colors above all — depends on one of
-  // the two hooks above catching a renderer. If neither did, in-world colors
-  // are impossible while the leaderboard, which goes through the DOM rather
-  // than Pixi, keeps working. That combination is otherwise a mystery to
-  // diagnose, so it says so out loud rather than failing silently.
-  //
-  // Since 1.20.1 it also names the cause where it can. The settings capture
-  // is running for Arena Culling anyway and knows which renderer mope built,
-  // and Canvas2D is a cause that produces exactly this and cannot be seen from
-  // anywhere else — see mopeRendererNote(). Its 20s ceiling matches this
-  // timer's, but it is installed at document-start and this is scheduled when
-  // the script body runs, so it has always resolved by the time this fires.
-  setTimeout(() => {
-    if (!renderers.length) {
-      console.warn(TAG, 'no Pixi renderer was captured — in-world name colors, ' +
-        'party dots, HP numbers and the arena sky cannot draw. ' +
-        'The running-loop recovery probe is ' +
-        (gameCapture.loopProbeInstalled ? 'waiting for a frame. ' : 'unavailable. ') +
-        'Hook mode: ' + rendererHookMode + '/' + appHookMode + '. ' +
-        'Game loop route: ' + (gameCapture.game ? 'captured the game but not a renderer'
-          : gameCapture.installed ? 'installed, never fired (' + gameCapture.trapHits +
-            ' hits on the key)' : 'could not install') + '. ' +
-        'Leaderboard and menu colors are unaffected.' + mopeRendererNote());
-    } else {
-      dbg('renderers hooked:', renderers.length);
-    }
-  }, 20000);
-
-  // How hard this script is actually working, and whether the frame pacing
-  // above is doing anything at all. Run it in a game, wait a few seconds, run
-  // it again — the rates cover the span since the previous call, so the first
-  // one after a page load is an average over the whole session and the second
-  // is the one to read.
-  //
-  // renderCallsPerSecond well above featureRunsPerSecond means the browser is
-  // running uncapped and the pacing is absorbing the surplus, which is the
-  // intended state. The two being equal means every call is already inside the
-  // budget — normal with vsync on.
-  function perfDebug() {
-    const now = performance.now();
-    const span = now - framePerfSince;
-    const seconds = span > 0 ? span / 1000 : 0;
-    const report = {
-      version: VERSION,
-      sampleSeconds: seconds ? Number(seconds.toFixed(2)) : 0,
-      renderCallsPerSecond: seconds ? Math.round(framePerfCalls / seconds) : 0,
-      featureRunsPerSecond: seconds ? Math.round(framePerfRuns / seconds) : 0,
-      workCeilingHz: Math.round(1000 / FRAME_WORK_MIN_MS),
-      skippedPercent: framePerfCalls
-        ? Number((100 * (1 - framePerfRuns / framePerfCalls)).toFixed(1)) : 0,
-      renderersHooked: renderers.length,
-      overlaysLive: overlays ? overlays.size : 0,
-      hpBarsTracked: hpState && hpState.bars ? hpState.bars.size : 0,
-      partyPeers: party && party.peers ? party.peers.size : 0,
-      featureErrors: frameFailureReport(),
-    };
-    console.table ? console.table(report) : console.log(report);
-    framePerfCalls = 0;
-    framePerfRuns = 0;
-    framePerfSince = now;
-    return report;
-  }
-  try { PAGE.__lumiPerfDebug = perfDebug; }
-  catch (e) { window.__lumiPerfDebug = perfDebug; }
-
-  // ------------------------------------------------------------- camera zoom
-
-  // Everything that used to live here — the Object.prototype trap, the settle
-  // decision, the deferral to Lumi's Moderator Extras, the watchdog, the wheel
-  // handler and the zoom number itself — now lives in the shared zoom hub near
-  // the top of this file. What is left is this script's SHARE of it: a switch,
-  // a level readout, and a toast.
-  //
-  // The deferral in particular is gone rather than moved. Standing down for
-  // the moderator script was the reason this half of the zoom was inert on the
-  // one machine that has both scripts on it, and the hub means there is
-  // nothing left to stand down FROM: one hook, one number, both panels driving
-  // the same thing.
-
-  // Declared here rather than beside the panel it belongs to: the hub calls
-  // back into syncZoomUI() during the migration below, which is long before
-  // the panel is built, and a `let` further down the file would still be in
-  // its temporal dead zone at that moment.
-  let extras = null;
-
-  const ZOOM_MEMBER_ID = 'extras';
-  const ZOOM_PANEL_SOURCE = 'extras-panel';
-
-  const zoomSeat = zoomHub.join(ZOOM_MEMBER_ID, {
-    panelSource: ZOOM_PANEL_SOURCE,
-    // Lower than the moderator script's, whose readout is measured against
-    // mope's own game-stats block rather than parked in a corner. This one is
-    // the fallback for when that block is not on screen, and the only readout
-    // at all when this script is installed on its own.
-    toastPriority: 1,
-    // The camera itself goes the other way: this script owns the zoom, and
-    // the moderator script defers to it whenever this seat is active. Note
-    // that this is about ownership, not about the number — there is one
-    // shared level, so deferring costs the other panel its claim on the
-    // camera and not the zoom the player is looking through.
-    zoomPriority: 2,
-    onChange(change) {
-      settings.zoomLevel = change.level;
-      store.set('zoomLevel', change.level);
-      syncZoomUI();
-    },
-    showToast,
-    // The wheel belongs to whatever it lands on. The hub already ignores
-    // anything that is not the game surface; this covers an open panel, which
-    // scrolls, and takes the keys with it.
-    ignoreEvent(event) {
-      if (extras && extras.panel && extras.panel.style.display === 'block') return true;
-      const target = event.target;
-      if (target && target.closest && target.closest(
-        '#qolc-panel, #qolc-btn, #qolc-game-hint, #qolc-cd, #qolc-hp, ' +
-        '#qolc-zoom, #qolc-party')) return true;
-      return false;
-    },
-  });
-
-  function normalizeZoom(value) {
-    return zoomHub.normalize(value);
-  }
-
-  function zoomActive() {
-    return !!settings.masterEnabled && !!settings.cameraZoom;
-  }
-
-  function syncZoomSeat() {
-    zoomSeat.setActive(zoomActive());
-  }
-
-  function setZoomLevel(value) {
-    zoomHub.setLevel(value, ZOOM_PANEL_SOURCE);
-  }
-
-  // One-time migration. Before 1.12.0 each script kept its own zoom number;
-  // the hub keeps one for both. A level this script had saved is worth
-  // carrying over, but only if the hub is still sitting at its default —
-  // otherwise the other script's saved value, or this session's own, would be
-  // overwritten by whichever script happened to load second.
-  (function migrateStoredZoom() {
-    const stored = normalizeZoom(store.get('zoomLevel', 1));
-    if (stored !== 1 && zoomHub.getLevel() === 1) zoomHub.setLevel(stored, 'migrate');
-    settings.zoomLevel = zoomHub.getLevel();
-    syncZoomSeat();
-  })();
-
-  function zoomDebug() {
-    const report = Object.assign({
-      version: VERSION,
-      sandboxed: PAGE !== window,
-      featureEnabled: settings.cameraZoom,
-    }, zoomHub.status());
-    console.table ? console.table(report) : console.log(report);
-    if (report.hooked) {
-      console.info(TAG, 'camera zoom is working on this page. mope\'s own zoom is ' +
-        'left alone and its wheel is intercepted, so this is the only zoom moving.');
-    } else if (report.trap.indexOf('armed') !== 0) {
-      console.warn(TAG, 'the camera hook could not be installed on the page — check ' +
-        'that the script is running in the page itself. The extension always does; ' +
-        'a Tampermonkey copy needs @grant unsafeWindow and an up-to-date manager.');
-    } else {
-      console.warn(TAG, 'mope\'s camera has not been seen being built yet. The hook ' +
-        'stays armed for the whole session, so this usually clears itself once ' +
-        'the game finishes loading; if it does not, reload the tab.');
-    }
-    return report;
-  }
-  try { PAGE.__lumiZoomDebug = zoomDebug; } catch (e) { window.__lumiZoomDebug = zoomDebug; }
-
-  /* ----- in-game readout ----- */
-
-  // Deliberately plain, and deliberately not part of the panel: a zoom step
-  // taken mid-fight has to be legible without opening anything. Styled inline
-  // rather than through the stylesheet so it cannot be affected by the panel's
-  // own show/hide state. A percentage the camera never received would read as
-  // if it had worked, so an unhooked camera says so on the readout itself.
-  let zoomToast = null;
-  let zoomToastTimer = 0;
-
-  function zoomStatusSuffix() {
-    if (!settings.masterEnabled) return ' (extras off)';
-    if (!settings.cameraZoom) return ' (zoom off)';
-    if (!zoomHub.hooked()) return ' (not applied)';
-    return '';
-  }
-
-  // Returns false when it could not be drawn at all, which is the hub's cue to
-  // ask the next script along for a readout instead of leaving a zoom step with
-  // nothing on screen to acknowledge it.
-  function showToast() {
-    try {
-      if (!zoomToast) {
-        if (!document.body) return false;
-        zoomToast = document.createElement('div');
-        zoomToast.id = 'qolc-zoom';
-        zoomToast.style.cssText = [
-          'position:fixed', 'right:10px', 'bottom:10px', 'z-index:2147483647',
-          'pointer-events:none', 'font:12px/1.4 monospace', 'color:#fff',
-          'background:rgba(0,0,0,.55)', 'padding:3px 7px', 'border-radius:3px',
-          'white-space:nowrap',
-        ].join(';');
-        document.body.appendChild(zoomToast);
+    if (overlays.size && now - nameFrameState.animatedAt >= NAME_OVERLAY_MS) {
+      nameFrameState.animatedAt = now;
+      for (const [node, m] of overlays) {
+        syncOverlayLayout(node, m);
+        syncOverlayVisibility(node, m);
+        animateOverlayTints(m, now);
       }
-      zoomToast.textContent =
-        'View: ' + Math.round(zoomHub.getLevel() * 100) + '%' + zoomStatusSuffix();
-      zoomToast.style.display = '';
-      clearTimeout(zoomToastTimer);
-      zoomToastTimer = setTimeout(() => {
-        if (zoomToast) zoomToast.style.display = 'none';
-      }, 850);
-      return true;
-    } catch (e) {
-      // The readout is a convenience; never let it break the zoom.
-      return false;
     }
   }
-
-  // Called from the panel and from every hub change, so the rows can explain
-  // WHY they are inert rather than just sitting there looking available. Safe
-  // to call before the panel has ever been built.
-  function syncZoomUI() {
-    syncZoomSeat();
-    if (!extras || !extras.zoomUi) return;
-    const refs = extras.zoomUi;
-    const hooked = zoomHub.hooked();
-    refs.row.classList.toggle('qolc-row-off', !hooked);
-    // 1.25.0 removed the Zoom level readout from the panel — the level is set
-    // with the wheel and the − and = keys, and a number that could only be
-    // watched was the one thing here nobody adjusted. The hub still owns it.
-    // Deliberately never given qolc-row-off — see where the row is built.
-    refs.hookRow.classList.toggle('qolc-hook-ok', hooked);
-    refs.hookRow.classList.toggle('qolc-hook-bad', !hooked);
-    refs.hookNote.textContent = hooked
-      ? 'Attached to the game camera, via the ' + zoomHub.hookedVia()
-      : 'Not attached yet — press to re-arm without reloading';
-  }
-
-  // While the panel is open the hook row is live rather than a snapshot, so a
-  // hook that comes back on its own is visible without touching anything. It
-  // costs one read of a boolean a second, and only while you are looking at it.
-  setInterval(() => {
-    const panel = extras && extras.panel;
-    if (!panel || panel.style.display !== 'block') return;
-    if (extras.zoomUi && extras.zoomUi.hookBtn.disabled) return;   // mid re-hook
-    syncZoomUI();
-  }, 1000);
-
-  // -------------------------------------------------------------- turn speed
-
-  // How fast a rendered animal rotates toward the angle the SERVER has already
-  // given it. mope moves `angle` a little way toward `target.angle` each frame;
-  // this scales the size of that step, and nothing else.
-  //
-  // The step is then clamped so it can never carry the animal past the target.
-  // That clamp is the whole design, not a rounding detail: with it, the angle
-  // drawn is always somewhere between where the animal was and where the
-  // server says it is, so this stays a change to the RATE of an interpolation
-  // that was already happening. Without it, a high setting overshoots and
-  // oscillates around the target, and the angle drawn becomes one the server
-  // never sent. Nothing is transmitted either way — mope's own
-  // sendServerSettings carries no angle, and everybody else sees the server's.
-  //
-  // It applies to every animal rather than only yours, because there is no
-  // reliable way to tell which entity is yours from here: the game context is
-  // module-scoped and unreachable, and the HP feature's lock is a Pixi node
-  // rather than an entity. Since the clamp keeps every animal inside its own
-  // interpolation window, applying it to all of them is consistent — each one
-  // simply reaches its server angle sooner or later than mope would have
-  // drawn it.
-
-  const TURN_TRAP_GRACE_MS = 5000;
-
-  const turnState = {
-    trapInstalled: false,
-    trapHits: 0,        // objects seen going into a Map while the trap was on
-    sawAnimal: false,
-    prototypes: new Set(),
-    removeTrap: null,
-    removed: false,
-    applied: 0,
-  };
-
-  function normalizeTurnSpeed(value) {
-    const number = Math.round(Number(value));
-    if (!Number.isFinite(number)) return TURN_NEUTRAL;
-    return Math.min(Math.max(number, TURN_MIN), TURN_MAX);
-  }
-
-  function normalizeTurnStyle(value) {
-    const name = String(value);
-    for (const [id] of TURN_STYLES) if (id === name) return id;
-    return 'linear';
-  }
-
-  function turnWorking() {
-    return turnState.prototypes.size > 0;
-  }
-
-  // 1 means "leave every animal exactly as mope drew it", and it is what the
-  // master switch, the feature switch and the neutral setting all collapse to —
-  // so turning any of them off needs nothing undone, the next frame is simply
-  // native again.
-  function turnMultiplier() {
-    if (!settings.masterEnabled || !settings.turnSpeed) return 1;
-    return settings.turnSpeedValue / TURN_NEUTRAL;
-  }
-
-  function turnWrapAngle(angle) {
-    return Math.atan2(Math.sin(angle), Math.cos(angle));
-  }
-
-  // How much of the multiplier applies at this distance from the target.
-  // Linear spends it evenly. Ease-out spends more of it while the animal is
-  // still far from where it is going and eases as it arrives; ease-in is the
-  // same curve read backwards, slow to commit and quick to finish. The 0.5
-  // floor keeps either curve from stalling to nothing at its shallow end.
-  function turnShapedMultiplier(multiplier, toTarget) {
-    const style = settings.turnStyle;
-    if (style === 'linear') return multiplier;
-    const closeness = Math.min(Math.abs(toTarget) / Math.PI, 1);
-    if (style === 'ease-out') return multiplier * (0.5 + closeness);
-    if (style === 'ease-in') return multiplier * (1.5 - closeness);
-    return multiplier;
-  }
-
-  // Runs for every animal on every frame, so it leaves as early as it can and
-  // allocates nothing.
-  function turnApply(animal, before) {
-    const multiplier = turnMultiplier();
-    const instant = settings.turnStyle === 'instant';
-    if (multiplier === 1 && !instant) return;
-    const after = animal.angle;
-    const target = animal.target && animal.target.angle;
-    if (typeof after !== 'number' || typeof target !== 'number') return;
-    if (typeof before !== 'number') return;
-
-    const toTarget = turnWrapAngle(target - before);
-    if (!toTarget) return;
-    let step = instant
-      ? toTarget
-      : turnWrapAngle(after - before) * turnShapedMultiplier(multiplier, toTarget);
-
-    // Never past the target, and never the wrong way round it.
-    if (toTarget > 0) step = Math.min(Math.max(step, 0), toTarget);
-    else step = Math.max(Math.min(step, 0), toTarget);
-    if (step === after - before) return;
-
-    animal.angle = before + step;
-    if (animal.body && typeof animal.body.rotation === 'number') {
-      animal.body.rotation = animal.angle;
-    }
-    turnState.applied += 1;
-  }
-
-  function turnLooksLikeAnimal(value) {
-    try {
-      if (!value || typeof value !== 'object') return false;
-      if (value.type !== 'animal') return false;
-      if (typeof value.angle !== 'number') return false;
-      const target = value.target;
-      if (!target || typeof target !== 'object') return false;
-      return typeof target.angle === 'number' && !!value.container;
-    } catch (e) { return false; }
-  }
-
-  // The wrapper stays on the prototype for the rest of the page's life, which
-  // is fine: with the feature off, turnApply's first line returns immediately.
-  // What must NOT stay is the Map trap that found the prototype — see below.
-  function turnAdoptPrototype(prototype) {
-    if (!prototype || turnState.prototypes.has(prototype)) return false;
-    const origUpdate = prototype.update;
-    if (typeof origUpdate !== 'function') return false;
-    turnState.prototypes.add(prototype);
-    prototype.update = function () {
-      const before = this.angle;
-      const result = origUpdate.apply(this, arguments);
-      try { turnApply(this, before); } catch (e) { /* never break a frame */ }
-      return result;
-    };
-    dbg('turn speed: an animal prototype was found and wrapped');
-    return true;
-  }
-
-  // Finding an animal at all is the hard part. mope's entities live on the
-  // module-scoped game context, which a userscript cannot reach, and they are
-  // not in the Pixi scene graph either — the scene holds each entity's
-  // CONTAINER, with no way back to the entity that owns it. What they do go
-  // through is a Map, so a temporary setter on Map.prototype.set sees one being
-  // stored and hands over the object itself.
-  //
-  // This is a hot path — every Map.set anywhere on the page goes through it —
-  // so unlike the camera trap it is NOT left running on a timer. It is
-  // installed only when the feature is switched on, and taken out again a few
-  // seconds after the first animal is seen. The grace period is there because
-  // animals all spawn in one burst when you join a game, so a sibling
-  // prototype would appear alongside the first; it is a window measured from
-  // the capture, not from installation, because a player can sit in the menu
-  // for as long as they like and no animal exists until they are in a game.
-  function turnInstallEntityTrap() {
-    if (turnState.trapInstalled) return;
-    const prototypes = [];
-    for (const candidate of [Map.prototype, PAGE.Map && PAGE.Map.prototype]) {
-      if (candidate && !prototypes.includes(candidate)) prototypes.push(candidate);
-    }
-    const patched = [];
-
-    function removeTrap() {
-      if (turnState.removed) return;
-      turnState.removed = true;
-      for (const entry of patched) {
-        // Only stand ours down if it is still the one in place; another script
-        // may have wrapped it since, and its wrapper calls ours.
-        try {
-          if (entry.prototype.set === entry.wrapper) entry.prototype.set = entry.original;
-        } catch (e) { /* leave it: the wrapper is inert once removed is set */ }
-      }
-      dbg('turn speed: entity trap removed');
-    }
-    turnState.removeTrap = removeTrap;
-
-    for (const prototype of prototypes) {
-      const original = prototype.set;
-      if (typeof original !== 'function') continue;
-      const wrapper = function (key, value) {
-        // Cheapest possible reject first: almost everything a page puts in a
-        // Map fails on the very first test.
-        if (!turnState.removed && value && typeof value === 'object' &&
-            value.type === 'animal') {
-          try {
-            turnState.trapHits += 1;
-            if (turnLooksLikeAnimal(value)) {
-              const wasFirst = !turnState.sawAnimal;
-              turnState.sawAnimal = true;
-              turnAdoptPrototype(Object.getPrototypeOf(value));
-              if (wasFirst) setTimeout(removeTrap, TURN_TRAP_GRACE_MS);
-            }
-          } catch (e) { /* a capture must never break the page's own work */ }
-        }
-        return original.apply(this, arguments);
-      };
-      try {
-        prototype.set = wrapper;
-        patched.push({prototype, original, wrapper});
-      } catch (e) { /* frozen prototype: nothing to try */ }
-    }
-
-    if (!patched.length) return;
-    turnState.trapInstalled = true;
-    dbg('turn speed: entity trap installed');
-  }
-
-  function turnDebug() {
-    const report = {
-      version: VERSION,
-      featureEnabled: settings.turnSpeed,
-      masterEnabled: settings.masterEnabled,
-      setting: settings.turnSpeedValue,
-      style: settings.turnStyle,
-      multiplier: Number(turnMultiplier().toFixed(3)),
-      entityTrap: (turnState.trapInstalled ? 'installed' : 'NOT installed') +
-        (turnState.removed ? ', removed' : ', live') +
-        ', ' + turnState.trapHits + ' animals seen',
-      prototypesWrapped: turnState.prototypes.size,
-      working: turnWorking(),
-      anglesAdjusted: turnState.applied,
-    };
-    console.table ? console.table(report) : console.log(report);
-    if (!report.featureEnabled) {
-      console.info(TAG, 'turn speed is switched off, so nothing is hooked.');
-    } else if (report.working) {
-      console.info(TAG, 'turn speed is applied. anglesAdjusted climbing while you ' +
-        'are in a game means it is reaching animals; if it is stuck at 0, the ' +
-        'setting is at neutral (' + TURN_NEUTRAL + ') and there is nothing to change.');
-    } else if (!report.entityTrap.startsWith('installed')) {
-      console.warn(TAG, 'the entity trap could not be installed on this page — check ' +
-        'that the script is running in the page itself (the extension always does; a ' +
-        'Tampermonkey copy needs @grant unsafeWindow).');
-    } else {
-      console.warn(TAG, 'no animal has gone through the trap yet. Join a game with ' +
-        'the setting on: mope does not build any animal until then. If it stays ' +
-        'at zero inside a game, mope has changed how it stores entities and ' +
-        'this feature needs revisiting — send this output on.');
-    }
-    return report;
-  }
-  try { PAGE.__lumiTurnDebug = turnDebug; } catch (e) { window.__lumiTurnDebug = turnDebug; }
-
-  function setTurnSpeed(value) {
-    const next = normalizeTurnSpeed(value);
-    if (next === settings.turnSpeedValue) return;
-    settings.turnSpeedValue = next;
-    store.set('turnSpeedValue', next);
-    syncTurnUI();
-  }
-
-  function setTurnStyle(value) {
-    const next = normalizeTurnStyle(value);
-    if (next === settings.turnStyle) return;
-    settings.turnStyle = next;
-    store.set('turnStyle', next);
-    syncTurnUI();
-  }
-
-  function syncTurnUI() {
-    if (!extras || !extras.turnUi) return;
-    const refs = extras.turnUi;
-    const instant = settings.turnStyle === 'instant';
-    refs.level.classList.toggle('qolc-row-off', !settings.turnSpeed || instant);
-    refs.styleRow.classList.toggle('qolc-row-off', !settings.turnSpeed);
-    // Shown as a multiple of mope's own rate, because that is what it is —
-    // and 100% reads unambiguously as "off" in a way "120" never would.
-    refs.value.textContent =
-      Math.round(100 * settings.turnSpeedValue / TURN_NEUTRAL) + '%';
-    refs.minus.disabled = instant || settings.turnSpeedValue <= TURN_MIN;
-    refs.plus.disabled = instant || settings.turnSpeedValue >= TURN_MAX;
-    for (const button of refs.styles) {
-      button.classList.toggle('active', button.dataset.turnStyle === settings.turnStyle);
-    }
-    // 1.25.0: descriptions live in the info bar, so "instant makes the rate
-    // irrelevant" is said by the Rate sub-row going dim just above rather than
-    // by a line of text under the switch. The hint for rate says it in words.
-  }
-
   // --------------------------------------------------------------- party map
 
   const PARTY_KEYS = {
@@ -6021,7 +2730,7 @@
   // `comfortZones` is a different thing and is not this: it is terrain an
   // animal survives in, and it files the kraken with the penguins.
   const PARTY_ART_BIOMES = {
-    land: 'angry_duck baby_duck bear bee boa cassowary cheetah chicken cobra ' +
+    land: 'angry_duck baby_duck bear bee boa cassowary cheetah chicken cobra girabie momaffie ' +
           'crocodile deer dino_monster donkey dragon duck eagle elephant ' +
           'falcon fox frog giant_spider giraffe gorilla hedgehog ' +
           'hippopotamus lion macaw mole mouse ostrich ostrich_baby peacock ' +
@@ -6075,73 +2784,60 @@
       (sub ? sub + '/' : '') + species + '.ui.webp';
   }
 
-  // Your own animal, from the ability button's icon — the same reading the HP
-  // feature trusts for this, and the only one that cannot confuse you with a
-  // neighbour. A shop skin costs the rare variant (the item path does not
-  // carry one), so a skinned player is drawn as the plain animal; that is a
-  // picture of the right species rather than no picture at all.
+  // Your own animal, straight from mope's own player entity: its species and
+  // rare variant are read off the animal itself, so a shop skin no longer
+  // costs the rare (the 1.0.x ability-icon reading lost it).
   function partySelfArtKey() {
-    return partyArtKeyOf(hpIdentifySelfFromHud());
+    return artKeyOf(myAnimal());
   }
 
-  // -1 means "not known", which is a row reading em-dash rather than a row
-  // claiming zero.
-  //
-  // 1.0.22: publish the server value, with a fresh visual read as compatibility
-  // fallback. 1.21.1 stopped using settled damage samples, but even raw samples
-  // depended on the HP scan running, and unscaled fill geometry read as 100%.
-  // The existing pacer sends changed whole percentages at most every 100ms.
+  // Your server health, 0-100 — the same percent mope prints above your
+  // animal. -1 means "not known", which a list row shows as an em-dash rather
+  // than as a claim of zero.
   function partySelfHealth() {
-    // The same server percent mope prints above the animal. Read the current
-    // model on every send: HP display settings, interpolation, HUD culling and
-    // the damage-number scanner cannot freeze this value or choose a neighbour.
-    const model = hpGameModel();
-    if (gameCapture.game && !model) return -1;
-    if (model) {
-      if (model.spawned === false || model.destroyed === true ||
-          (model.container && model.container.destroyed === true)) return -1;
-      const target = model.target;
-      if (target && typeof target === 'object' && 'health' in target) {
-        const value = target.health;
-        return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100
-          ? Math.round(value) : -1;
-      }
+    const value = healthOf(myAnimal());
+    return value != null && value >= 0 && value <= 100 ? Math.round(value) : -1;
+  }
+
+  // The XP needed for the NEXT tier, per tier (index 0 is tier 1). From
+  // mope's own upgrade table (requiredXP, shifted by one).
+  const TIER_NEXT_XP = [
+    100, 400, 1000, 2000, 5000, 12000, 25000, 40000, 60000,
+    90000, 145000, 350000, 650000, 1000000, 5000000, 10000000, 40000000,
+  ];
+
+  // 2030000 -> '2.03M', 5000000 -> '5M', 640 -> '640'. The receiver shows the
+  // string as it is, so only its shape matters (1.0.x checks it against
+  // /^[\d.,]{1,12}[KMB]?$/ on each side of the slash).
+  function partyCompact(n) {
+    if (!Number.isFinite(n) || n < 0) return '';
+    const units = [[1e9, 'B'], [1e6, 'M'], [1e3, 'K']];
+    for (const [size, suffix] of units) {
+      // The epsilon absorbs float error: 2030000 / 1e6 * 100 is 202.99999...
+      if (n >= size) return String(Math.floor(n / size * 100 + 1e-6) / 100) + suffix;
     }
-    // Compatibility when the game/model shape has not been captured. Re-read
-    // the bar; raw/settled can survive skipped HP ticks and are not live data.
-    const entry = hpSelfEntry();
-    if (!entry || !entry.bar || !entry.bar.parent) return -1;
-    const value = hpPercentOf(entry.bar, entry);
-    if (typeof value !== 'number' || !Number.isFinite(value)) return -1;
-    return Math.max(0, Math.min(100, Math.round(value)));
+    return String(Math.floor(n));
   }
 
-  // Your XP as the party list shows it: "2.03M/5M", or '' when either half is
-  // unknown. 1.21.0.
-  //
-  // Sent as one compact string rather than two numbers because that is exactly
-  // what it is — mope's own two figures, already formatted by mope, in mope's
-  // own units. Parsing "2.03M" into 2030000 here only to format it back into
-  // "2.03M" at the other end would introduce a rounding disagreement between
-  // two members' lists for no gain, and the K/M/B suffix is the whole reason
-  // the figure fits in a row this narrow.
-  //
-  // Empty rather than half-sent when only one half is known, the same rule the
-  // animal and health follow: a member who cannot be read and a member on an
-  // older build should look identical on the wire, because they are.
+  // Your XP as the party list shows it: "2.03M/5M", or '' when either half
+  // is unknown — an unreadable member and one on an older build look the same.
   function partySelfXp() {
-    if (!xpAmount || !xpDenom) return '';
-    return xpAmount + '/' + xpDenom;
+    const me = myAnimal();
+    const game = bridge.game;
+    const xp = game && game.animalStats && game.animalStats.xp;
+    const tier = me && me.tier;
+    if (typeof xp !== 'number' || !(tier >= 1)) return '';
+    const next = TIER_NEXT_XP[Math.min(tier, TIER_NEXT_XP.length) - 1];
+    const have = partyCompact(xp);
+    const need = partyCompact(next);
+    return have && need ? have + '/' + need : '';
   }
 
-  // Health and animal travel whenever you are in a party and in a game — NOT
-  // only while your own party list is switched on. Those are two different
-  // questions: the list toggle says whether YOU want to see the party's health,
-  // and this says whether the party can see YOURS. Tying them together would
-  // mean a member who turned the list off went blank on everybody else's, with
-  // nothing on either end to say why.
+  // Health and animal travel whenever you are in a party and in a game — not
+  // only while your own list is on. The list toggle says whether YOU want to
+  // see the party; this says whether the party can see YOU.
   function partyNeedsSelfHealth() {
-    return partyActive() && prevMenuVisible === false;
+    return partyActive() && inGame();
   }
   function partyActive() {
     return settings.masterEnabled && party.enabled;
@@ -6651,163 +3347,52 @@
     };
   }
 
-  /* ----- projection ----- */
-  // See the header note. This is mope's own arithmetic, reversed.
+  /* ----- projection -----
+   *
+   * mope's own minimap is `$.minimap`: {container, sprite, player, ...}, and it
+   * places your marker with
+   *
+   *     worldToMinimapPosition(p) {
+   *       const k = sprite.width / $.map.shape.width;
+   *       return {x: p.x * k - sprite.width, y: p.y * k};
+   *     }
+   *
+   * so a position divided by the sprite width is a fraction of the map that
+   * means the same thing on every screen: u = (x + W) / W, v = y / W. That is
+   * the wire format 1.0.x established, kept exactly. The 1.0.x build had to
+   * FIND this container by shape among tens of thousands of nodes and guess
+   * which child was the marker; the bridge hands all three over by name.
+   */
 
-  // Generous, because the live stage runs to tens of thousands of nodes. This
-  // is a backstop against a pathological tree, not a working budget — the
-  // result is cached, so a full walk happens about twice a second at worst.
-  const PARTY_WALK_LIMIT = 80000;
-
-  // Breadth-first: the minimap sits shallow (stage > HUD > minimap), so BFS
-  // finds it in a handful of nodes where a depth-first walk could wander the
-  // entire world container first.
-  // Found by SHAPE, not by name. mope's source labels this container
-  // 'minimap', but every one of its display-object wrappers runs
-  // `opts.label && (opts.label = undefined)` before calling super, and Pixi's
-  // option copier then skips undefined — so no game-authored label ever
-  // reaches an instance. Searching for one (as 1.4.0 did) finds nothing, on
-  // every machine, forever. The labels in mope's source are dead documentation.
-  //
-  // What is unique is the geometry: across the whole live tree exactly one
-  // object is a sprite anchored top-right, which is the minimap's map sprite
-  // (mope builds it `anchor:{x:1,y:0}` — the same anchor its own projection
-  // subtracts a sprite width for). Its parent is the container.
-  //
-  // The walk uses a moving index rather than Array.shift(): shift() is O(n),
-  // which made this quadratic over a stage holding tens of thousands of nodes
-  // and cost more frame time than everything else here combined.
-  // Collect every node that could be the minimap, with the evidence for each.
-  // 1.4.1 took the first anchor match and ran with it, which picked the wrong
-  // container in a live game — a right-anchored sprite is only unique on a
-  // quiet stage, not one holding a hundred players' worth of HUD.
-  function partyMinimapCandidates(stage) {
-    const candidates = [];
-    if (!stage || typeof stage !== 'object') return {candidates, visited: 0};
-    const queue = [stage];
-    let head = 0;
-    let visited = 0;
-    while (head < queue.length) {
-      const node = queue[head++];
-      if (!node || typeof node !== 'object') continue;
-      if ((visited += 1) > PARTY_WALK_LIMIT) break;
-      const kids = node.children;
-      if (!Array.isArray(kids)) continue;
-      if (kids.length >= 2) {
-        const sprite = kids[0];
-        const marker = kids[1];
-        if (sprite && sprite.texture && sprite.anchor &&
-            sprite.anchor.x === 1 && sprite.anchor.y === 0 &&
-            marker && marker.position) {
-          candidates.push({
-            node,
-            width: Number(sprite.width),
-            height: Number(sprite.height),
-            dynamic: sprite.texture.dynamic === true,
-            markerKids: Array.isArray(marker.children) ? marker.children.length : -1,
-            childCount: kids.length,
-          });
-        }
-      }
-      for (const k of kids) queue.push(k);
-    }
-    return {candidates, visited};
-  }
-
-  // Rank rather than take-the-first. mope's minimap sprite sits on a DYNAMIC
-  // render texture (it is redrawn as the map changes), its marker container
-  // holds exactly two circles (a black outline under a fill), and its display
-  // width is a class constant of 250 scaled by the HUD — a few hundred pixels,
-  // never a full-screen panel. Any one of those can drift in a future build,
-  // so none is individually required; together they have to clear a bar.
-  function partyScoreCandidate(c) {
-    let score = 0;
-    if (c.dynamic) score += 4;
-    if (c.markerKids === 2) score += 3;
-    if (Number.isFinite(c.width) && c.width >= 40 && c.width <= 1200) score += 2;
-    return score;
-  }
-
-  function partyFindMinimap(stage) {
-    const found = partyMinimapCandidates(stage);
-    let best = null;
-    let bestScore = -1;
-    for (const c of found.candidates) {
-      const score = partyScoreCandidate(c);
-      if (score > bestScore) { bestScore = score; best = c; }
-    }
-    return bestScore >= 4 && best ? best.node : null;
-  }
-
-  // Even an O(n) walk is far too expensive to repeat 240 times a second, which
-  // is what halved the frame rate in 1.4.0. The container is found once and
-  // then reused for as long as it stays attached; a failed search backs off
-  // instead of retrying on the very next frame.
-  const PARTY_RESCAN_MS = 500;
-  let partyMinimapCache = null;
-  let partyLastScan = -Infinity;
-  let partyLastStage = null;   // most recent render root, for __lumiPartyDebug()
-
-  function partyCachedMinimap(stage, now) {
-    const cached = partyMinimapCache;
-    // Still parented means still in the tree — cheap enough to check per frame.
-    if (cached && cached.parent) return cached;
-    partyMinimapCache = null;
-    if (now - partyLastScan < PARTY_RESCAN_MS) return null;
-    partyLastScan = now;
-    partyMinimapCache = partyFindMinimap(stage);
-    if (partyMinimapCache) dbg('party: minimap container found');
-    return partyMinimapCache;
-  }
-
-  // mope builds the container as children:[sprite, player] and appends
-  // pumpkins after, so index order is the documented shape — but it is
-  // validated rather than trusted. Pumpkins carry textures too, so the map
-  // sprite is picked by being the widest, not by being first.
-  // Indices 0 and 1 are fixed by construction — mope builds the container with
-  // `children:[this.sprite, this.player]`. Pumpkins are appended after that and
-  // destroyed again as they are collected, so the child COUNT moves constantly
-  // while these two do not. Two things deliberately not tested: `visible`,
-  // because mope hides the whole container at the menu and whenever the HUD is
-  // toggled off, and `children.length`, for the pumpkin reason above.
-  //
-  // Note `sprite.width` is the DISPLAY width (250 from construction, scaled by
-  // UIScale), not the texture's pixel width — the display width is what mope's
-  // own worldToMinimapPosition divides by, so it is the right one to use.
-  function partyReadParts(container) {
-    if (!container) return null;
-    const kids = Array.isArray(container.children) ? container.children : null;
-    if (!kids || kids.length < 2) return null;
-    const sprite = kids[0];
-    const spriteW = Number(sprite && sprite.width);
+  // {container, sprite, dot, spriteW} for mope's minimap, or null while there
+  // is none (the menu, a culled duel).
+  function partyReadParts() {
+    const game = bridge.game;
+    const minimap = game && game.minimap;
+    if (!minimap) return null;
+    const container = minimap.container;
+    const sprite = minimap.sprite;
+    const dot = minimap.player;
+    if (!container || container.destroyed || !sprite || !dot || !dot.position) return null;
+    const spriteW = Number(sprite.width);
     if (!Number.isFinite(spriteW) || spriteW <= 0) return null;
-
-    // Your own marker is NOT reliably at index 1. mope constructs the container
-    // as children:[sprite, player], but createPumpkin() appends to that same
-    // container, and the player is given zIndex 2 specifically so it draws
-    // above those pumpkins — so as soon as the container sorts, index 1 is a
-    // PUMPKIN. That one wrong index caused every symptom of the 1.4.2 bug at
-    // once: we published a pumpkin's position as our own (so two clients could
-    // never agree, and the dot wandered as pumpkins were eaten), and we cloned
-    // a pumpkin to build the party marker, inheriting its brown outline and its
-    // colour. Identify it by zIndex, which is true whether or not the container
-    // happens to be sorted.
-    let dot = null;
-    let best = -Infinity;
-    for (const k of kids) {
-      if (!k || k === sprite || k.__lumiPartyDot || !k.position) continue;
-      const z = Number(k.zIndex);
-      const rank = Number.isFinite(z) ? z : 0;
-      if (rank >= best) { best = rank; dot = k; }   // ties resolve to the last
-    }
-    // Last resort for a build that drops zIndex entirely: the original index.
-    if (!dot && kids[1] && kids[1].position && !kids[1].__lumiPartyDot) dot = kids[1];
-    if (!dot) return null;
-    return {sprite, dot, spriteW, dotZ: best};
+    return {container, sprite, dot, spriteW};
   }
 
-  // Our own fractional position, read straight off the dot mope already drew.
+  // Our own fractional position. Read from the animal itself rather than off
+  // the marker, so it is right even on a frame the minimap skipped — and it
+  // is the identical number: x / mapWidth is (x * k) / W with k = W / mapWidth.
   function partySelfPosition(parts) {
+    const me = myAnimal();
+    const game = bridge.game;
+    const shape = game && game.map && game.map.shape;
+    const width = shape && Number(shape.width);
+    if (me && me.position && width > 0) {
+      const u = Number(me.position.x) / width;
+      const v = Number(me.position.y) / width;
+      if (Number.isFinite(u) && Number.isFinite(v)) return {u, v};
+    }
+    if (!parts) return null;
     const x = Number(parts.dot.position.x);
     const y = Number(parts.dot.position.y);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
@@ -6918,36 +3503,9 @@
     }
   }
 
-  const PARTY_TAG_SCREEN_CACHE_MS = 500;
-  const partyTagScreenCache = {canvas: null, at: -Infinity, value: null};
-
-  // Name tags are DOM nodes while party dots live inside Pixi. This converts
-  // only the already-projected dot position into DOM screen space; it does not
-  // participate in peer tracking or minimap projection. Kept separate from
-  // chat, whose v1.8.0 anchor is intentionally independent of the canvas. The
-  // canvas rectangle forces browser layout, so it is cached; the minimap itself
-  // is fixed HUD and a half-second refresh still follows resize promptly.
-  function partyTagScreenOf(renderer, now) {
-    const canvas = renderer && (renderer.canvas || renderer.view);
-    if (!canvas || !canvas.getBoundingClientRect) return null;
-    if (partyTagScreenCache.canvas === canvas &&
-        now - partyTagScreenCache.at < PARTY_TAG_SCREEN_CACHE_MS) {
-      return partyTagScreenCache.value;
-    }
-    const view = viewportOf(renderer);
-    if (!view.w || !view.h) return null;
-    const rect = canvas.getBoundingClientRect();
-    if (!rect.width || !rect.height) return null;
-    partyTagScreenCache.canvas = canvas;
-    partyTagScreenCache.at = now;
-    partyTagScreenCache.value = {rect, view};
-    return partyTagScreenCache.value;
-  }
-
-  // Names ride in the DOM rather than as Pixi Text, because building a Text
-  // node needs a style object this script would have to invent, whereas a
-  // container's own toGlobal() maps its local point onto the canvas exactly.
-  // `screen` is shared by the caller. Every DOM write is compared first so an
+  // Name tags are DOM nodes while party dots live inside Pixi: the
+  // container's own toGlobal() maps the dot onto the canvas, and canvasRect()
+  // maps the canvas onto the page. Every DOM write is compared first so an
   // unchanged peer heartbeat does not invalidate layout or paint.
   function partyPlaceTag(peer, container, local, screen) {
     if (!party.tags || !screen) {
@@ -6970,9 +3528,9 @@
     const name = peer.name || '?';
     if (peer.tag.textContent !== name) peer.tag.textContent = name;
     const left = Math.round(
-      screen.rect.left + global.x * (screen.rect.width / screen.view.w)) + 'px';
+      screen.rect.left + global.x * (screen.rect.width / screen.w)) + 'px';
     const top = Math.round(
-      screen.rect.top + global.y * (screen.rect.height / screen.view.h)) + 'px';
+      screen.rect.top + global.y * (screen.rect.height / screen.h)) + 'px';
     if (peer.tag.style.display !== 'block') peer.tag.style.display = 'block';
     if (peer.tag.style.left !== left) peer.tag.style.left = left;
     if (peer.tag.style.top !== top) peer.tag.style.top = top;
@@ -7011,35 +3569,6 @@
   // it with the right time left rather than a backlog.
   function partyChatOn() {
     return partyActive() && party.chat && !arenaFocusHiding();
-  }
-
-  /* ----- the on-screen channel message ----- */
-
-  // One centred announcement, shared. It began as party chat's alone, which is
-  // why the element still carries that id; 1.17.0's arena sky needs to say the
-  // same kind of thing in the same place, and two elements fighting over the
-  // middle of the screen would be worse than one that is named oddly.
-  const qolcToastState = {el: null, timer: 0};
-  const QOLC_TOAST_MS = 2600;
-
-  function qolcToast(text, cls, ms) {
-    try {
-      if (!qolcToastState.el || !qolcToastState.el.isConnected) {
-        const host = document.body || document.documentElement;
-        if (!host) return;
-        qolcToastState.el = document.createElement('div');
-        qolcToastState.el.id = 'qolc-party-toast';
-        host.appendChild(qolcToastState.el);
-      }
-      const el = qolcToastState.el;
-      el.textContent = text;
-      el.className = cls || '';
-      el.style.display = 'block';
-      clearTimeout(qolcToastState.timer);
-      qolcToastState.timer = setTimeout(() => {
-        if (qolcToastState.el) qolcToastState.el.style.display = 'none';
-      }, ms || QOLC_TOAST_MS);
-    } catch (e) { /* the message is a courtesy; never let it break the caller */ }
   }
 
   function partyChatToast(text, bad) {
@@ -7284,7 +3813,7 @@
     partyFocusNoticeTick();
     // Leaving the game closes the input rather than leaving it floating over
     // the menu with focus.
-    if (partyChat.open && prevMenuVisible !== false) partyChatCloseInput();
+    if (partyChat.open && !inGame()) partyChatCloseInput();
     // If mope's own chat box turns up while ours is open, only one of them has
     // focus and the player cannot tell which. Ours stands down rather than
     // leaving two boxes up and letting a party message be typed into neither.
@@ -7859,7 +4388,7 @@
     // A party of one now has something to show, but only when your own row is
     // switched on. With it off this is still "nobody else is here", which is
     // what 1.16.0 meant by an empty list.
-    if (!partyListOn() || prevMenuVisible !== false || document.hidden ||
+    if (!partyListOn() || !inGame() || document.hidden ||
         (!party.peers.size && !party.listSelf)) {
       partyListHide();
       return;
@@ -7921,15 +4450,12 @@
 
   /* ----- the per-frame tick ----- */
 
-  function partyTick(stage, renderer, now) {
+  function partyTick(now) {
     // Its own try/catch. hookRenderer runs every per-frame feature inside ONE
     // try block, so without this a throw upstream (HP scan, name sweep) would
     // silently take the party map down with it, and a throw in here would take
     // them down instead — with no error either way, since that catch is silent.
     try {
-      // Captured before the enabled check so __lumiPartyDebug() can inspect the
-      // tree even when the feature is switched off.
-      partyLastStage = stage;
       if (!partyActive()) {
         partyHideAll(); partyChatClear(); partyListHide(); return;
       }
@@ -7944,16 +4470,16 @@
       // inside it.
       partyListTick(now);
 
-      const container = partyCachedMinimap(stage, now);
-      if (!container) { party.minimapSeen = false; partyHideAll(); return; }
-      const parts = partyReadParts(container);
-      if (!parts) { party.minimapSeen = false; partyHideAll(); return; }
-      party.minimapSeen = true;
+      // The minimap is only needed to DRAW the others. Your own position comes
+      // from your animal, so you keep publishing even on a frame with no
+      // minimap on screen (a culled duel hides it).
+      const parts = partyReadParts();
+      party.minimapSeen = !!parts;
 
       // Publish our own position, and — since 1.16.0 — the animal and health
       // that ride with it. Both are read before the pacer is asked, because
       // the stamp is what tells it a still player has something new to say.
-      const self = partySelfPosition(parts);
+      const self = inGame() ? partySelfPosition(parts) : null;
       const health = partyNeedsSelfHealth() ? partySelfHealth() : -1;
       const art = partyNeedsSelfHealth() ? partySelfArtKey() : '';
       // 1.21.0. Read beside health and the animal, and gated on the same
@@ -8007,6 +4533,11 @@
       // Nothing else to do in a party of one, which is the common case — bail
       // before touching the DOM or the layout engine.
       if (!party.peers.size) return;
+      // Only while mope is actually showing its minimap: not on the death
+      // screen, the menu, or a culled duel, where a DOM name tag would be left
+      // floating over nothing.
+      if (!parts || !inGame() || !nodeShown(parts.container)) { partyHideAll(); return; }
+      const container = parts.container;
 
       // One shared canvas measurement for DOM name tags. v1.8.0 accidentally
       // removed this value while partyPlaceTag still consumed it; evaluating
@@ -8016,7 +4547,7 @@
       // measurement below is worth skipping entirely rather than doing and
       // throwing away.
       const focusHiding = arenaFocusHiding();
-      const screen = (party.tags && !focusHiding) ? partyTagScreenOf(renderer, now) : null;
+      const screen = (party.tags && !focusHiding) ? canvasRect(now) : null;
 
       // Draw everyone else.
       for (const [id, peer] of party.peers) {
@@ -8026,6 +4557,12 @@
           if (peer.node) peer.node.visible = false;
           if (peer.tag) peer.tag.style.display = 'none';
           continue;
+        }
+        // A dot whose minimap was rebuilt (new server, new game) is gone with
+        // it: Pixi nulls a destroyed node's position, so it is dropped and
+        // drawn again here rather than read.
+        if (peer.node && (peer.node.destroyed || peer.node.parent !== container)) {
+          partyDestroyPeer(peer);
         }
         if (!peer.node) peer.node = partyMakeDot(container, parts, peer.color);
         if (!peer.node) continue;
@@ -8052,46 +4589,32 @@
 
   /* ----- diagnostic ----- */
 
-  // When this feature fails it fails on someone else's machine, mid-game,
-  // where the only thing available is the console. The important half is the
-  // label dump: if the minimap is not found, knowing what labels the tree
-  // DOES carry is the difference between a fix and another guess.
   function partyDebug() {
-    const parts = partyMinimapCache ? partyReadParts(partyMinimapCache) : null;
-    const self = parts ? partySelfPosition(parts) : null;
+    const parts = partyReadParts();
+    const self = partySelfPosition(parts);
     const report = {
       version: VERSION,
       masterEnabled: settings.masterEnabled,
       featureEnabled: party.enabled,
-      // 1.0.2. Leadership, said as a whole rather than as a boolean: "am I the
-      // leader" and "who is" are different questions and a party that disagrees
-      // about the answer needs both to diagnose it.
       leader: (() => {
         const id = partyLeaderId();
-        if (!id) return "nobody eligible (no join times seen yet)";
-        if (id === party.id) return "you (joined " + new Date(party.joinedAt).toISOString() + ")";
+        if (!id) return 'nobody eligible (no join times seen yet)';
+        if (id === party.id) return 'you (joined ' + new Date(party.joinedAt).toISOString() + ')';
         const p = party.peers.get(id);
-        return (p && p.name ? p.name : id) + " (joined " +
-          (p && p.joinedAt ? new Date(p.joinedAt).toISOString() : "?") + ")";
+        return (p && p.name ? p.name : id) + ' (joined ' +
+          (p && p.joinedAt ? new Date(p.joinedAt).toISOString() : '?') + ')';
       })(),
       focusNoticeSent: partyChat.focusTold,
       codeSet: !!partyNormalizeCode(party.code),
-      // Named "relay" and stated with its mode, because comparing this
-      // between two players is the first check when a party will not form.
       relay: PARTY_BROKERS[party.broker][0] +
         (party.pin >= 0 ? ' (pinned)' : ' (auto — can change on a dropped connection)'),
       dotColor: partyDotPreset(party.color).name + ' (' + party.color + ')',
-      // The list's preconditions, each said separately, because "the list is
-      // not showing" has several completely different causes and only one of
-      // them is a bug. The anchor is asked for rather than merely tested for,
-      // since a leaderboard that exists but measures nothing is a real state —
-      // a background tab is one — and looks identical to a missing one here.
       list: !party.list ? 'off in the panel'
-        : prevMenuVisible !== false ? 'on — hidden, not in a game'
+        : !inGame() ? 'on — hidden, not in a game'
         : !document.getElementById('leaderboard') ? 'on — no #leaderboard to sit under'
         : !partyListAnchor() ? 'on — #leaderboard measures 0x0, nothing to anchor to'
         : !party.peers.size ? 'on — hidden, nobody else in the party yet'
-        : 'on — ' + party.peers.size + ' row(s), you excluded',
+        : 'on — ' + party.peers.size + ' row(s)',
       handle: (function () {
         const found = partySelfHandle();
         if (!found) return '(none — chat falls back to your in-game name)';
@@ -8100,107 +4623,30 @@
             : partyHandle.cache ? 'localStorage ' + PARTY_AUTH_CACHE_KEY
             : 'GET /users/me') + ')';
       })(),
-      // Both of these are what would be PUBLISHED right now, so a peer showing
-      // the wrong thing can be narrowed to a sending or a receiving problem
-      // from one paste of this.
       selfHealth: partyNeedsSelfHealth()
-        ? (partySelfHealth() >= 0 ? partySelfHealth() + '%'
-           : 'not readable — no valid current player health or live bar')
+        ? (partySelfHealth() >= 0 ? partySelfHealth() + '% (mope\'s own $.player.target.health)'
+           : 'not readable — mope has no animal for you right now')
         : 'not sent — ' + (partyActive() ? 'not in a game' : 'party is off'),
-      selfAnimal: partySelfArtKey() || '(not identified from the ability icon)',
+      selfAnimal: partySelfArtKey() || '(no animal)',
       selfAnimalArt: partyArtUrl(partySelfArtKey()) || '(none)',
-      // Two rows, not one, because "was it read?" and "is it going out?" are
-      // different questions with different answers, and the party being off
-      // must not hide the first one. Health reports as a single row for
-      // historical reasons; this is the better shape.
-      selfXp: partySelfXp() ||
-        (!xpAmount && !xpDenom ? 'nothing read from the XP bar yet'
-         : !xpAmount ? 'the XP bar\'s own total has not been read'
-         : 'the next-tier requirement has not been read'),
-      selfXpSent: partyNeedsSelfHealth() ? 'yes, on the next message'
-        : 'no — ' + (partyActive() ? 'not in a game' : 'party is off'),
-      // 1.21.0. Why selfHealth reads the way it does, which is the whole of
-      // what has to be known to fix an inaccurate figure. The provenance is
-      // the important row: mope PRINTS a percent on its own bar and that
-      // number is exact, while a measured fill is an estimate — and the two
-      // failing look nothing alike. `settledAgeMs` says whether the reading is
-      // live or frozen; a large number while you are taking damage means the
-      // bar never held still long enough to be believed.
-      selfHealthWhy: (() => {
-        const model = hpGameModel();
-        if (gameCapture.game && !model) return 'mope says you have no animal right now';
-        if (model && (model.spawned === false || model.destroyed === true ||
-            (model.container && model.container.destroyed === true))) return 'your animal has despawned';
-        if (model && model.target && typeof model.target === 'object' && 'health' in model.target) {
-          return {
-            source: "mope's current player target.health (server percent)",
-            serverPercent: model.target.health,
-            publishedPercent: partySelfHealth(),
-          };
-        }
-        const entry = hpSelfEntry();
-        const player = hpGamePlayer() || hpState.player;
-        if (!player) return 'no animal is locked as you';
-        if (!entry) return 'an animal is locked but it carries no health-bar entry';
-        if (entry.entity !== player) {
-          return 'MISMATCH — the locked animal and the locked entry are different ' +
-            'objects, so partySelfHealth() is refusing to publish';
-        }
-        const parts = entry.parts;
-        const printed = parts ? hpPercentFromLabel(parts.label) : null;
-        const now = performance.now();
-        return {
-          source: printed != null
-            ? 'mope\'s own printed percent (exact)'
-            : 'measured from the drawn fill (an estimate)',
-          printedLabel: printed != null ? printed + '%' : '(not on screen)',
-          liveReading: hpPercentOf(entry.bar, entry),
-          publishedPercent: partySelfHealth(),
-          // Damage samples are diagnostic only; party publication re-reads
-          // the live bar when the native server value is unavailable.
-          raw: entry.raw,
-          settled: entry.settled,
-          settledAgeMs: entry.rawAt ? Math.round(now - entry.rawAt) : null,
-          barVisible: entry.bar ? entry.bar.visible !== false : null,
-          barAlpha: entry.bar ? Number(entry.bar.alpha) : null,
-          blindForMs: entry.blindAt ? Math.round(now - entry.blindAt) : 0,
-          // The sticky lock is the documented way this goes wrong — it is what
-          // put the chat box on a duck bot. If the species here is not what you
-          // are riding, the figure belongs to somebody else.
-          lockedOnto: hpIdentify(entry.entity),
-          abilityIconSays: hpIdentifySelfFromHud(),
-          barsTracked: hpState.bars.size,
-        };
-      })(),
+      selfXp: partySelfXp() || '(no animal)',
       chat: !party.chat ? 'off'
         : (partyChat.mode ? 'PARTY channel' : 'public channel') +
           (partyChat.open ? ', typing' : '') +
           ', ' + partyChat.lines.length + ' line(s) up',
-      // If P or Enter do nothing in game, this is the row that says why: mope's
-      // chat box being open stands every hotkey down, and so does being on the
-      // menu rather than in a game.
-      chatRise: PARTY_CHAT_FIXED_RISE +
-        'px above viewport centre, 0px across, fixed (zoom-independent)',
       chatHotkeys: document.getElementById('chatInput') ? 'stood down — mope chat is open'
-        : prevMenuVisible !== false ? 'stood down — not in a game'
+        : !inGame() ? 'stood down — not in a game'
         : party.chat ? 'live (P switches channel)' : 'off in the panel',
       status: party.status + (party.statusInfo ? ' — ' + party.statusInfo : ''),
       transportReady: !!(party.transport && party.transport.isReady()),
       topicTail: party.topic ? '…' + party.topic.slice(-8) : '(none)',
       peersKnown: party.peers.size,
-      stageSeen: !!partyLastStage,
-      minimapFound: !!partyMinimapCache,
-      partsReadable: !!parts,
-      spriteWidth: parts ? parts.spriteW : '(n/a)',
+      minimap: parts ? 'mope\'s $.minimap, sprite width ' + parts.spriteW
+        : 'none on screen (menu, or a culled duel)',
       selfU: self ? self.u : '(n/a)',
       selfV: self ? self.v : '(n/a)',
     };
     console.table ? console.table(report) : console.log(report);
-
-    // What each member last sent, a row each. The list is built from exactly
-    // these values, so a member showing an em-dash or the wrong animal is
-    // answered here: an empty column means it never arrived, and a full one
-    // means the fault is on the drawing side.
     if (party.peers.size) {
       const heardAt = performance.now();
       const rows = [];
@@ -8210,76 +4656,21 @@
           handle: peer.handle ? '@' + peer.handle : '(none)',
           health: peer.hp >= 0 ? peer.hp + '%' : '(not sent)',
           animal: peer.art || '(not sent)',
-          art: partyArtUrl(peer.art) || '(none)',
           dotColor: partyDotPreset(peer.color).name,
           lastHeard: Math.round(heardAt - peer.at) + 'ms ago',
         });
       }
       console.table ? console.table(rows) : console.log(rows);
     }
-
-    // The two fields that decide whether a party can form at all, called out
-    // because neither means anything except compared against somebody else.
     console.log(TAG, 'party: if a party will not form, compare these two with ' +
       'the other player — relay "' + PARTY_BROKERS[party.broker][0] +
       '" and topicTail "' + (party.topic ? '…' + party.topic.slice(-8) : '(none)') +
       '". Different relays means you are on separate servers and can never see ' +
       'each other; pick the same one under Relay. Different topic tails means ' +
       'the party codes are not actually identical.');
-
-    if (!partyLastStage) {
-      console.warn(TAG, 'party: no render frame has been seen at all — the Pixi ' +
-        'hook never fired. Are you in a game?');
-      return report;
-    }
-
-    // Always dump the candidate list, not only on failure: picking the WRONG
-    // container looks like success from the inside, and the alternatives are
-    // the only way to tell which one should have won.
-    const found = partyMinimapCandidates(partyLastStage);
-    console.log(TAG, 'party: walked ' + found.visited + ' nodes and found ' +
-      found.candidates.length + ' minimap candidate(s):',
-      found.candidates.map((c, i) => ({
-        n: i,
-        chosen: c.node === partyMinimapCache,
-        score: partyScoreCandidate(c),
-        spriteW: c.width,
-        spriteH: c.height,
-        dynamicTexture: c.dynamic,
-        markerChildren: c.markerKids,
-        containerChildren: c.childCount,
-      })));
-
-    if (!partyMinimapCache) {
-      console.warn(TAG, 'party: none of those scored high enough to trust ' +
-        '(4 required). mope has probably changed how it builds the minimap.');
-    } else if (!parts) {
-      console.warn(TAG, 'party: the chosen container has unreadable children.');
-    } else {
-      const kids = partyMinimapCache.children || [];
-      console.log(TAG, 'party: chosen container has spriteWidth ' + parts.spriteW +
-        ' and puts YOUR OWN dot at (' + parts.dot.position.x + ', ' +
-        parts.dot.position.y + '), i.e. u=' + (self ? self.u : '?') +
-        ' v=' + (self ? self.v : '?') + '.');
-      console.log(TAG, 'party: marker chosen at zIndex ' + parts.dotZ + ' from ' +
-        kids.length + ' children:', kids.map((k, i) => ({
-          i,
-          zIndex: k ? k.zIndex : null,
-          ours: !!(k && k.__lumiPartyDot),
-          isMarker: k === parts.dot,
-          isMapSprite: k === parts.sprite,
-          childCount: k && k.children ? k.children.length : 0,
-          x: k && k.position ? Math.round(k.position.x) : null,
-          y: k && k.position ? Math.round(k.position.y) : null,
-        })));
-      console.log(TAG, 'party: u and v should both sit between 0 and 1 while you ' +
-        'are on the map, and isMarker must be true on YOUR player dot — if it ' +
-        'landed on a pumpkin instead, that is the bug.');
-    }
     return report;
   }
-  try { PAGE.__lumiPartyDebug = partyDebug; }
-  catch (e) { window.__lumiPartyDebug = partyDebug; }
+  expose('__lumiPartyDebug', partyDebug);
 
   /* ----- keyboard ----- */
 
@@ -8359,7 +4750,7 @@
       // exactly what moving to the window restored.
       if (document.getElementById('chatInput')) return;
       if (partyChatTypingElsewhere()) return;
-      if (prevMenuVisible !== false) return;
+      if (!inGame()) return;
 
       if (kbHit('partyChat', e)) {
         // The hotkey follows the feature switch, so someone who does not want
@@ -9160,7 +5551,6 @@
   // attribute-prefix selector is correct BY CONSTRUCTION for surfaces that do
   // not exist yet. The id convention is now the contract; anything new is
   // covered the moment it is named.
-  const QOLC_OWN_UI = '[id^="qolc-"]';
 
   const domTouched = new Map(); // element -> original inline styles
 
@@ -9301,29 +5691,6 @@
       syncNameColorUI();
     }
   }, true);
-
-  // Greys the HP-bar row out while its parent feature is off; replaced with the
-  // real thing once the panel exists.
-  let syncHpBarRow = () => {};
-  // 1.22.0. Same pattern for the party list's two sub-options.
-  let syncPartyListSubRows = () => {};
-  // Assigned when the panel is built. The arena sky can be toggled with a
-  // mouse button while the panel has never been opened, so the setter has to
-  // exist and do nothing until there is a switch to move.
-  let syncArenaSkyRow = () => {};
-  let syncArenaThemeRow = () => {};
-  let syncZorderRows = () => {};
-  let syncKeybinds = () => {};
-  // Assigned with the Settings pane. Called from every path that takes the
-  // panel off screen — including the polled game-to-menu transition, which is
-  // neither a click nor a blur and so reaches none of the other cancels.
-  let kbCancelCapture = () => {};
-  // 1.29.0. The bite indicator's style sub-option dims with its parent.
-  // 1.31.0. The units picker lights the chosen mode and dims while neither of
-  // the two features it governs is switched on.
-  let syncHpUnitsRow = () => {};
-  // 1.33.0. The five quick-chat fields dim with their parent switch.
-  let syncChatRows = () => {};
 
   // ----------------------------------------------------- clutter reduction
 
@@ -9864,104 +6231,58 @@
     }, 1000);
   }
 
-  // -------------------------------------------- ability cooldown timers
 
-  // The ability buttons that actually have a cooldown. ability1 is the main
-  // one — the big box at the bottom LEFT of the HUD, holding whatever the
-  // current animal's signature move is (dragon fire, elephant trunk hit, ...).
-  // ability2 is the bottom-right box and only exists for animals that have a
-  // second move; dive sits next to ability1. The dash button has no cooldown,
-  // so it has no ring and is deliberately absent from this list.
-  const CD_SLOTS = ['ability1Button', 'ability2Button', 'diveButton'];
-  const CD_DIVE_SLOT = 'diveButton';
+  /* ======================== ability cooldown timers ========================
+   *
+   * mope keeps every cooldown in its HUD store:
+   *
+   *     cooldowns: {ability1, ability2, dive, arena:
+   *                 {startsAt, endsAt, active, disabled}}
+   *
+   * written from the server's `cooldown` packet as performance.now() times.
+   * `active` means the ability is running (the green ring) and `endsAt` is
+   * then when it stops; otherwise `endsAt` is when it is ready again. An
+   * active ability with no end is a hold ability, shown as ∞.
+   *
+   * 1.0.x measured mope's animated ring instead, and broke every time mope
+   * redrew it (1.0.27 was the two-half-disc rewrite). The store does not
+   * change shape when the ring does.
+   */
 
-  // The ring is tinted green while the ability is still FIRING and dark while
-  // it is merely recharging. The game writes this as an inline custom property
-  // (rgba(95, 240, 150, 0.55) vs rgba(0, 0, 0, 0.3)), so the two phases can be
-  // told apart and coloured differently.
-  const CD_ACTIVE_TINT = /95,\s*240,\s*150/;
-
-  // Below this the countdown is over in all but name; showing "0.0" for a
-  // frame or two just looks like a stuck timer.
-  const CD_MIN_MS = 60;
+  const CD_SLOTS = [
+    {id: 'ability1Button', slot: 'ability1'},
+    {id: 'ability2Button', slot: 'ability2'},
+    {id: 'diveButton', slot: 'dive'},
+  ];
+  const CD_MIN_MS = 60;           // a sliver this small is not worth drawing
+  const CD_DECIMAL_MS = 3000;     // below this, one decimal
+  const CD_TICK_MIN_MS = 30;
 
   const cooldownUI = {
     layer: null,
-    badges: new Map(), // button id -> badge element
+    badges: new Map(),   // button id -> badge element
     rafId: 0,
     running: false,
     lastAt: -Infinity,
   };
-  const CD_TICK_MIN_MS = 30;
 
-  // Milliseconds left on a ring, or 0 when it is not counting down.
-  //
-  // The game cancels the previous animation before starting a new one, so
-  // normally only one is live. If a stale one is ever still attached, the
-  // NEWEST is the authoritative answer — taking the largest remaining instead
-  // would let an outdated, longer countdown mask the real one and then drop
-  // the readout by seconds when it finally expired.
-  function cdRemaining(ring) {
-    let anims;
-    try { anims = ring.getAnimations(); } catch (e) { return 0; }
-    let left = 0, newest = -Infinity;
-    for (const anim of anims) {
-      const state = anim.playState;
-      if (state === 'finished' || state === 'idle') continue;
-      // Document-timeline animations report a plain number; guard anyway,
-      // since scroll/view timelines hand back a CSSNumericValue.
-      let current = anim.currentTime;
-      if (current && typeof current === 'object') current = current.value;
-      if (typeof current !== 'number') continue;
-      let total;
-      try { total = anim.effect.getComputedTiming().activeDuration; } catch (e) { continue; }
-      if (!(total > 0)) continue;
-      let started = anim.startTime;
-      if (started && typeof started === 'object') started = started.value;
-      if (typeof started !== 'number') started = 0;
-      if (started >= newest) { newest = started; left = total - current; }
-    }
-    return left > 0 ? left : 0;
-  }
-
-  // Whole seconds until the last three, then tenths.
-  //
-  // The previous split was at ten seconds and rounded UP above it, which made
-  // the readout jump: Math.ceil showed "11" for anything over 10.0, so the
-  // display ran a whole second ahead of the truth and then fell into the
-  // decimal range well below the number you had just been looking at. Both
-  // sides now round DOWN, so the sequence is strictly monotonic and every
-  // step is exactly one unit: ... 5, 4, 3, 3.0, 2.9 ...
-  //
-  // Abilities that hold rather than recharge (Spit Water and friends) are
-  // driven with an endless ring animation, so the remaining time really is
-  // Infinity. That is a valid state, not an error — show it as such instead
-  // of printing the word "Infinity" across the whole HUD.
-  const CD_DECIMAL_MS = 3000;
   function cdFormat(ms) {
     if (!Number.isFinite(ms)) return '∞';
     if (ms > CD_DECIMAL_MS) return String(Math.floor(ms / 1000));
     return (Math.floor(ms / 100) / 10).toFixed(1);
   }
 
-  // Keep long readouts inside the box; 4+ characters would otherwise spill
-  // past its edges at the base size.
   function cdFontScale(text) {
     if (text.length >= 4) return 0.26;
     if (text.length === 3) return 0.30;
     return 0.36;
   }
 
-  // The shared overlay every HUD readout is drawn on, so the game's own DOM
-  // is never written to.
   function cdLayer() {
-    let layer = cooldownUI.layer;
+    const layer = cooldownUI.layer;
     if (layer && layer.isConnected) return layer;
     const found = qolcOwnLayer('qolc-cd');
     if (!found) return null;
-    // The badge cache is keyed to the layer that held them, so it is dropped
-    // whenever the layer changes — including when this adopts one that was
-    // already on the page.
     if (found !== cooldownUI.layer) cooldownUI.badges.clear();
     cooldownUI.layer = found;
     return found;
@@ -9984,129 +6305,50 @@
     diveReset();
   }
 
-  // Style writes are compared against the current value first: the numbers
-  // change ~10x a second but the boxes only move when the HUD is resized,
-  // and a redundant style write on every frame would dirty layout for free.
   function cdSetStyle(el, prop, value) {
     if (el.style[prop] !== value) el.style[prop] = value;
   }
 
-  function cdTick(frameNow) {
-    cooldownUI.rafId = 0;
-    if (!cooldownUI.running) return;
-    cooldownUI.rafId = requestAnimationFrame(cdTick);
-    if (document.hidden) return;
-    const now = Number.isFinite(frameNow) ? frameNow : performance.now();
-    if (now - cooldownUI.lastAt < CD_TICK_MIN_MS) return;
-    cooldownUI.lastAt = now;
-
-    const air = diveAirLeft(now);
-
-    for (const id of CD_SLOTS) {
-      const existing = cooldownUI.badges.get(id);
-      const btn = document.getElementById(id);
-      const ring = btn && btn.querySelector('.cooldownRing');
-      if (!ring) { if (existing) existing.style.display = 'none'; continue; }
-
-      // A zero-sized box means the HUD has not laid out yet, or the in-game
-      // clutter feature has hidden this row.
-      const rect = btn.getBoundingClientRect();
-      if (rect.width < 8 || rect.height < 8) {
-        if (existing) existing.style.display = 'none';
-        continue;
-      }
-
-      // Air left takes the dive box while you are under; the dive cooldown
-      // gets it back the moment you surface.
-      const diving = id === CD_DIVE_SLOT && air != null;
-      const left = diving ? air : cdRemaining(ring);
-      if (left <= CD_MIN_MS) { if (existing) existing.style.display = 'none'; continue; }
-
-      const badge = existing && existing.isConnected ? existing : cdBadgeFor(id);
-      if (!badge) continue;
-      const text = cdFormat(left);
-      if (badge.textContent !== text) badge.textContent = text;
-      // Air counts as uptime, so it reads green like any ability still firing.
-      badge.classList.toggle('qolc-cd-active', diving ||
-        CD_ACTIVE_TINT.test(ring.style.getPropertyValue('--cd-color')));
-      cdSetStyle(badge, 'display', 'block');
-      cdSetStyle(badge, 'left', Math.round(rect.left + rect.width / 2) + 'px');
-      cdSetStyle(badge, 'top', Math.round(rect.top + rect.height / 2) + 'px');
-      cdSetStyle(badge, 'fontSize',
-        Math.max(11, Math.round(rect.height * cdFontScale(text))) + 'px');
-    }
+  // {left, active} for a slot: milliseconds to show, and whether the ability
+  // is running (green) rather than recharging (white).
+  function cdReading(slot, now) {
+    const hud = bridge.store('hud');
+    const cooldowns = hud && hud.cooldowns;
+    const entry = cooldowns && cooldowns[slot];
+    if (!entry) return null;
+    const endsAt = Number(entry.endsAt) || 0;
+    const active = entry.active === true;
+    if (active && endsAt <= now) return {left: Infinity, active: true};
+    if (endsAt > now) return {left: endsAt - now, active};
+    return null;
   }
 
-  // ------------------------------------------------------- dive air timer
-  //
-  // How long you can stay under is governed by oxygen, which the server
-  // streams as a plain 0-100 value and the game renders as a bar mounted ONLY
-  // while submerged — so the bar's presence is the dive, and its fill width is
-  // the exact percentage left. How fast that drains is per-animal
-  // (oxygenDecreaseAmount runs from 2 to 10) and moves with balance patches,
-  // so the drain rate is MEASURED off the bar rather than assumed: sample the
-  // percentage, take the slope, divide what is left by it.
-  //
-  // The bar carries no id, but its fill is painted the oxygen colour inline,
-  // which the resource and XP bars never use.
-  // Counting down rather than re-estimating
-  // ---------------------------------------
-  // The obvious way to do this is to divide the oxygen left by the rate it is
-  // draining at, every frame. It skips seconds. Both halves of that division
-  // move on their own: the percentage arrives in whole steps, and a slope taken
-  // over a rolling slice of history changes every time a reading falls out the
-  // back of the window. The quotient wobbles by a few tenths, and a wobble
-  // across a whole number shows up as 9 becoming 7.
-  //
-  // So nothing is divided per frame. The drain is linear, so the moment the air
-  // runs out is PREDICTED once and then simply counted down to in real time —
-  // which is what makes the display tick one second per second. The prediction
-  // is anchored on the instants the percentage actually stepped, since those are
-  // exact: the reading changed at that moment, and nowhere in between. Each new
-  // step re-predicts, and may move the finish line only slightly, so a countdown
-  // already on screen is corrected rather than jerked. That correction is capped
-  // well below a second, which is what makes skipping impossible: a figure that
-  // only ever falls, and never by a whole second at once, cannot miss one.
-  const DIVE_TINTS = ['rgb(140, 206, 244)', '#8CCEF4'];
-  const DIVE_MAX_SECS = 600;      // anything beyond this is a bad measurement
-  const DIVE_MIN_SPAN_MS = 350;   // history needed before a slope means anything
-  const DIVE_NUDGE_CAP_MS = 400;  // most one correction may move the finish line
-  const DIVE_NUDGE_SHARE = 0.35;  // and never faster than this share of real time
+  /* ----- dive air -----
+   *
+   * While you are under, the Dive card shows the air you have left, in green.
+   * mope keeps oxygen as a 0-100 number on $.animalStats and drains it a step
+   * at a time, so the time left is predicted from how fast it has been
+   * falling. Each new reading may only nudge the prediction a little, and the
+   * readout never counts back up — a timer that jumps is worse than one that
+   * is a few hundred milliseconds off. The rate is remembered per animal, so
+   * the next dive starts with a good guess.
+   */
+  const DIVE_MAX_SECS = 600;
+  const DIVE_MIN_SPAN_MS = 350;
+  const DIVE_NUDGE_CAP_MS = 400;
+  const DIVE_NUDGE_SHARE = 0.35;
 
-  // Starting the countdown before it has been measured
-  // --------------------------------------------------
-  // Two timed crossings of the percentage are needed before the drain rate is
-  // known, and on a slow-draining animal that is a second or more of the dive
-  // box sitting empty — at the START of the dive, which is exactly when the
-  // number is worth having.
-  //
-  // But the rate does not change: it is a property of the animal, and the dive
-  // you just finished measured it exactly. So it is kept, and the next dive on
-  // the same animal is seeded with it from the very first sample. Only the
-  // timing of that sample is uncertain — it catches the percentage partway
-  // through a step — so the seeded figure is at most one step out, and the
-  // usual refinement corrects it from there. It is deliberately not used for
-  // an animal it was not measured on: a wrong rate confidently displayed is
-  // worse than a second of nothing.
   const diveUI = {
-    bar: null, first: null, last: null,
+    first: null, last: null,
     endAt: 0, nudgedAt: 0, shownLeft: 0, shownAt: 0,
-    seeded: false,          // the current prediction came from a past dive
-    rate: 0,                // percent per ms, measured
-    rateFor: null,          // and the animal it was measured on
+    seeded: false,
+    rate: 0,          // percent per ms, measured
+    rateFor: null,    // and the animal it was measured on
   };
 
-  // Kept deliberately outside diveReset: surfacing ends the dive, not what was
-  // learned from it.
-  function diveNoteRate(drop, span) {
-    if (!(drop > 0) || !(span > 0)) return;
-    diveUI.rate = drop / span;
-    diveUI.rateFor = diveSpecies();
-  }
-
   function diveSpecies() {
-    const self = hpIdentifySelfFromHud();
-    return self ? self.species + '/' + self.sub : '';
+    const me = myAnimal();
+    return me ? artKeyOf(me) : '';
   }
 
   function diveReset() {
@@ -10119,19 +6361,6 @@
     diveUI.seeded = false;
   }
 
-  function diveFindBar() {
-    if (diveUI.bar && diveUI.bar.isConnected) return diveUI.bar;
-    for (const bar of document.querySelectorAll('.container > .bar')) {
-      const paint = bar.style.backgroundColor;
-      if (DIVE_TINTS.indexOf(paint) !== -1) { diveUI.bar = bar; return bar; }
-    }
-    diveUI.bar = null;
-    return null;
-  }
-
-  // Re-predict when the air runs out, from the whole dive so far rather than a
-  // recent slice of it. The rate does not change while you are under, so every
-  // step observed makes the answer steadier instead of shifting it about.
   function diveRefine(now) {
     const first = diveUI.first, last = diveUI.last;
     if (!first || !last) return;
@@ -10140,19 +6369,13 @@
     if (!(drop > 0) || !(span >= DIVE_MIN_SPAN_MS)) return;
     const predicted = last.t + last.pct * (span / drop);
     if (!(predicted > now) || predicted - now > DIVE_MAX_SECS * 1000) return;
-    diveNoteRate(drop, span);
+    diveUI.rate = drop / span;
+    diveUI.rateFor = diveSpecies();
     if (!diveUI.endAt || diveUI.seeded) {
-      // Either nothing was on screen, or what was on screen came from a past
-      // dive. Both are replaced outright: rationing a correction toward the
-      // first real measurement would only preserve a figure that was a
-      // stand-in for it.
       diveUI.endAt = predicted;
       if (diveUI.seeded) { diveUI.shownAt = 0; diveUI.shownLeft = 0; }
       diveUI.seeded = false;
     } else {
-      // Corrections are rationed: a share of the time since the last one, and
-      // never a whole second's worth, so the number on screen keeps falling
-      // smoothly instead of lurching toward each new estimate.
       const since = now - (diveUI.nudgedAt || now);
       const budget = Math.min(DIVE_NUDGE_CAP_MS, Math.max(60, since * DIVE_NUDGE_SHARE));
       const shift = predicted - diveUI.endAt;
@@ -10161,10 +6384,6 @@
     diveUI.nudgedAt = now;
   }
 
-  // The rate carried over from the last dive on this animal, turned into a
-  // finish line straight away. Wrong by at most the part of a step already
-  // elapsed when the dive was first seen, and corrected the moment two
-  // crossings have been timed for real.
   function diveSeed(pct, now) {
     if (diveUI.endAt || !(diveUI.rate > 0)) return;
     if (diveUI.rateFor === null || diveUI.rateFor !== diveSpecies()) return;
@@ -10176,43 +6395,28 @@
 
   function diveNote(pct, now) {
     const last = diveUI.last;
-    // The very first reading catches the percentage partway through its step,
-    // so the moment it changed is unknown and it cannot anchor anything. It is
-    // held only to notice the next change — but it is enough to start a
-    // countdown from a rate this animal has already been measured at.
     if (!last) { diveUI.last = {t: now, pct}; diveSeed(pct, now); return; }
-    // Oxygen going back up means a refill or a fresh dive; everything measured
-    // so far belongs to a different one.
-    if (pct > last.pct + 0.5) {
+    if (pct > last.pct + 0.5) {          // surfaced and refilled
       diveReset();
       diveUI.last = {t: now, pct};
       diveSeed(pct, now);
       return;
     }
     if (pct === last.pct) return;
-    diveUI.last = {t: now, pct};             // an exact crossing, timed
+    diveUI.last = {t: now, pct};
     if (!diveUI.first) { diveUI.first = diveUI.last; return; }
     diveRefine(now);
   }
 
-  // Milliseconds of air left, or null when not diving / not yet measurable.
-  // The readout itself is drawn by cdTick inside the dive ability box, so air
-  // and dive cooldown share one number in one place: air while you are under
-  // (green, the same way an ability shows its uptime), cooldown after you
-  // surface (white). That mirrors how the main ability box already reads.
+  // Milliseconds of air left while diving, or null when not under water.
   function diveAirLeft(now) {
-    const bar = diveFindBar();
-    if (!bar) { diveReset(); return null; }
-    const pct = parseFloat(bar.style.width);
-    if (!Number.isFinite(pct)) return null;
-    diveNote(pct, now);
+    const me = myAnimal();
+    const game = bridge.game;
+    const oxygen = game && game.animalStats && Number(game.animalStats.oxygen);
+    if (!me || !me.diving || !Number.isFinite(oxygen)) { diveReset(); return null; }
+    diveNote(oxygen, now);
     if (!diveUI.endAt) return null;
     let left = diveUI.endAt - now;
-    // A prediction that grows would walk the countdown backwards — 18 becoming
-    // 19 — which reads as wrong as skipping does. So the figure shown is held to
-    // a ceiling that itself falls at real time: a later prediction is allowed to
-    // slow the countdown to exactly one second per second, never to reverse it.
-    // The prediction underneath is left alone to keep improving.
     if (diveUI.shownAt) {
       const ceiling = diveUI.shownLeft - (now - diveUI.shownAt);
       if (left > ceiling) left = ceiling;
@@ -10223,6 +6427,41 @@
     return left;
   }
 
+  function cdTick(frameNow) {
+    cooldownUI.rafId = 0;
+    if (!cooldownUI.running) return;
+    cooldownUI.rafId = requestAnimationFrame(cdTick);
+    if (document.hidden) return;
+    const now = Number.isFinite(frameNow) ? frameNow : performance.now();
+    if (now - cooldownUI.lastAt < CD_TICK_MIN_MS) return;
+    cooldownUI.lastAt = now;
+    const air = inGame() ? diveAirLeft(now) : null;
+    for (const {id, slot} of CD_SLOTS) {
+      const existing = cooldownUI.badges.get(id);
+      const btn = inGame() ? document.getElementById(id) : null;
+      const hide = () => { if (existing) existing.style.display = 'none'; };
+      if (!btn) { hide(); continue; }
+      const rect = btn.getBoundingClientRect();
+      if (rect.width < 8 || rect.height < 8) { hide(); continue; }
+      const diving = slot === 'dive' && air != null;
+      const reading = diving ? {left: air, active: true} : cdReading(slot, now);
+      if (!reading || reading.left <= CD_MIN_MS) { hide(); continue; }
+      const badge = existing && existing.isConnected ? existing : cdBadgeFor(id);
+      if (!badge) continue;
+      const text = cdFormat(reading.left);
+      if (badge.textContent !== text) badge.textContent = text;
+      badge.classList.toggle('qolc-cd-active', reading.active);
+      cdSetStyle(badge, 'display', 'block');
+      cdSetStyle(badge, 'left', Math.round(rect.left + rect.width / 2) + 'px');
+      cdSetStyle(badge, 'top', Math.round(rect.top + rect.height / 2) + 'px');
+      cdSetStyle(badge, 'fontSize',
+        Math.max(11, Math.round(rect.height * cdFontScale(text))) + 'px');
+    }
+  }
+
+  // Its own animation frame rather than the game's frame hook: the badges sit
+  // over DOM buttons, and a rAF keeps them ticking on the menu-to-game edge
+  // and in the frames before mope's renderer exists.
   function applyAbilityCooldown() {
     const on = settings.masterEnabled && settings.abilityCooldown;
     if (on === cooldownUI.running) return;
@@ -10236,47 +6475,25 @@
       cooldownUI.rafId = 0;
       cdHideAll();
     }
-    dbg('ability cooldown timers', on ? 'running' : 'stopped');
   }
 
-  // ------------------------------------------------------ HP damage numbers
-  //
-  // What the game actually knows
-  // ----------------------------
-  // Health reaches the client as a single byte: a whole PERCENT, 0-100, per
-  // animal. Nothing in the client stores hit points — the server keeps those
-  // — so a damage number can only ever be `percent lost x that animal's
-  // maximum HP`, and the maximums have to come from outside the game. The
-  // table below is the one a mope.io developer provided, and it is per TIER,
-  // which is why the rules further down are so cautious about anything that
-  // is not a plain tier animal.
-  //
-  // Where the percent is read from
-  // ------------------------------
-  // Every animal owns a small health bar above its head, built once as a
-  // container holding exactly three shapes — a dark backing plate, the
-  // coloured fill, and a mask the fill is clipped to. Whenever the value
-  // changes, the game redraws the fill as `value / 100 x plate width`, so the
-  // ratio of those two widths IS the health percent, needing no assumption
-  // about bar size or zoom. At full health the game stops redrawing the fill
-  // and fades the whole container out instead, so "faded out" is read as 100%.
-  //
-  // That value is animated: the game eases the drawn bar toward the number
-  // the server sent rather than snapping to it. A reading is therefore only
-  // trusted once it has stopped moving for HP_SETTLE_MS, at which point it is
-  // the server's own whole percent and is rounded to it. The cost is that a
-  // number appears a fraction of a second after the hit, and that two hits
-  // landing within a few frames of each other are reported as one combined
-  // number rather than two — the total stays honest either way.
-  //
-  // Which animal is you
-  // -------------------
-  // The camera is locked to your own animal, so of every health bar on the
-  // screen yours is the one sitting at the centre of it. The lock is sticky
-  // once made, so an animal passing over you cannot steal it.
+  /* ============== health: damage numbers and your own HP bar ==============
+   *
+   * Everything here reads the game's own numbers, nothing is measured off the
+   * screen. An animal's health is `entity.target.health`, the 0-100 byte the
+   * server sends (there is no hit-point figure anywhere in the client), its
+   * tier is `entity.tier`, and what is hurting it is `entity.effects` —
+   * burning, poisoned, bleeding, frozen, aloed, healing — the same flags mope
+   * itself colours the animal's outline from. Yours is `$.player`.
+   *
+   * 1.0.x had none of that: it found health bars by shape, measured their
+   * drawn width (which Pixi reports wrongly under a mask), guessed which bar
+   * was yours, and read effects off sprite tints. That is the code that kept
+   * breaking.
+   */
 
-  // Maximum HP by tier, 1-17. Provided by a mope.io developer; these are the
-  // GENERIC tier values, which is exactly as far as the information goes.
+  // Max HP per tier (index 0 is tier 1). Not in the client — these are
+  // community figures, which is why "Hit points" mode is labelled approximate.
   const HP_TIER_MAX = [
     2.5, 2.5,                    // tiers 1-2
     3, 3, 3, 3,                  // tiers 3-6
@@ -10287,1288 +6504,244 @@
     12,                          // tier 17
   ];
 
-  // The tier ladder, read out of the game client itself (its upgrade table
-  // lists the animals of each tier in order). Species names are the client's
-  // own internal keys, which is also the form they appear in on texture paths.
-  const HP_TIERS = [
-    ['mouse', 'shrimp', 'chipmunk', 'kangaroo_rat', 'lemming'],
-    ['rabbit', 'pigeon', 'trout', 'arctic_hare', 'desert_chipmunk'],
-    ['mole', 'chicken', 'crab', 'penguin', 'meerkat', 'baby_duck'],
-    ['pig', 'woodpecker', 'sea_horse', 'seal', 'armadillo'],
-    ['deer', 'flamingo', 'squid', 'reindeer', 'gazelle'],
-    ['hedgehog', 'fox', 'peacock', 'jellyfish', 'arctic_fox', 'fennec_fox', 'bee'],
-    ['zebra', 'donkey', 'macaw', 'turtle', 'muskox', 'warthog', 'frog', 'duck', 'angry_duck'],
-    ['cobra', 'cheetah', 'stingray', 'snowy_owl', 'wolf', 'camel', 'snail'],
-    ['toucan', 'gorilla', 'pufferfish', 'snow_leopard', 'rattle_snake'],
-    ['bear', 'lion', 'pelican', 'swordfish', 'walrus', 'hyena', 'gobi_bear'],
-    ['tiger', 'crocodile', 'falcon', 'octopus', 'markhor', 'wolverine', 'vulture'],
-    ['rhinoceros', 'eagle', 'giraffe', 'shark', 'polar_bear', 'bison'],
-    ['hippopotamus', 'boa', 'ostrich', 'ostrich_baby', 'orca', 'sabertooth_tiger', 'komodo_dragon'],
-    ['elephant', 'cassowary', 'giant_spider', 'blue_whale', 'mammoth', 'black_widow'],
-    ['dragon', 'trex', 'phoenix', 'king_crab', 'kraken', 'yeti', 'pterodactyl'],
-    ['dino_monster', 'lava_monster', 'sea_monster', 'ice_monster', 'giant_scorpion'],
-    ['black_dragon', 'king_dragon'],
-  ];
-  const HP_SPECIES_TIER = new Map();
-  HP_TIERS.forEach((species, i) => species.forEach((s) => HP_SPECIES_TIER.set(s, i + 1)));
-
-  // Rares share a tier with their base animal but NOT always its health, and
-  // no per-rare figures were provided. Guessing would put a wrong number on
-  // screen, which is worse than putting none there, so a rare shows nothing
-  // unless it appears below. Only the toucans are known:
-  //   Choco and Keel-billed  same HP as a plain toucan
-  //   Fiery                  one more than a plain toucan
-  //   Lava, Helmeted Hornbill  unknown, and so left out
+  // Rare variants whose max HP is known. Every other rare gets no figure
+  // rather than a wrong one.
   const HP_SUBSPECIES_BONUS = new Map([
     ['toucan/choco', 0],
     ['toucan/keel_billed', 0],
     ['toucan/fiery', 1],
   ]);
-
-  // King Dragon sits on tier 17 beside Black Dragon but is strongly suspected
-  // of carrying more health, so it is treated as an unknown rather than given
-  // the tier figure.
   const HP_UNKNOWN_SPECIES = new Set(['king_dragon']);
 
-  // Maximum HP for an animal, or 0 when it is not something we can put a
-  // number on. 0 is the single "say nothing" answer for every uncertain case.
-  function hpMaxFor(species, subspecies) {
-    if (!species || HP_UNKNOWN_SPECIES.has(species)) return 0;
-    const tier = HP_SPECIES_TIER.get(species);
-    if (!tier) return 0;
-    const base = HP_TIER_MAX[tier - 1];
+  // An animal's max HP, or 0 when it is not known.
+  function hpMaxOf(entity) {
+    if (!entity) return 0;
+    const species = speciesOf(entity);
+    if (HP_UNKNOWN_SPECIES.has(species)) return 0;
+    const tier = Number(entity.tier);
+    const base = tier >= 1 ? HP_TIER_MAX[tier - 1] : 0;
     if (!base) return 0;
-    if (!subspecies) return base;
-    const bonus = HP_SUBSPECIES_BONUS.get(species + '/' + subspecies);
+    if (!isRareRoll(entity)) return base;
+    const bonus = HP_SUBSPECIES_BONUS.get(species + '/' + rareOf(entity));
     return bonus === undefined ? 0 : base + bonus;
   }
-
-  // Animal art is loaded under `animals/<biome>/<species>/[<rare>/]<part>`, so
-  // both the species and the rare variant can be read straight back off a
-  // sprite's texture.
-  //
-  // The extension group is `*` and not `?`, which is the whole of the 1.16.1
-  // fix. Every in-world part is a single extension (`body.webp`), but mope's
-  // ability button falls back to the animal's own UI ARTWORK when it has no
-  // ability icon, and that file is `<species>.ui.webp` — TWO dots. A `?` there
-  // matched `.ui` and then failed on `.webp`, so the fallback named nothing at
-  // all. See HP_ABILITY_IMG_RE below for why that mattered so much.
-  const HP_TEXTURE_RE = /animals\/[a-z_]+\/([a-z_]+)\/(?:([a-z_]+)\/)?[a-z_0-9]+(?:\.[a-z0-9]+)*$/i;
-  // Your own animal is also written into the ability button's icon, in the
-  // same shape. That is the more reliable of the two, being plain HTML.
-  //
-  // But it is only in that shape while the animal HAS an ability icon, and
-  // most do not: mouse, rabbit, pig, deer, cheetah, kraken, trex, camel and
-  // pigeon all 404 on `ability.webp`, and mope's own `onimgerror` quietly
-  // rewrites the src to `<species>.ui.webp` (or, with a skin on,
-  // `items/<id>/<species>.ui.webp`). So this regex misses for a large share of
-  // the roster and hpMatchPath() below is not a rare fallback but the ordinary
-  // path — which is exactly why the extension bug above had to be fixed rather
-  // than worked around. It presented as party members' animals showing for
-  // some players and not others, depending only on what they were riding.
-  const HP_ABILITY_IMG_RE = /animals\/[a-z_]+\/([a-z_]+)\/(?:([a-z_]+)\/)?ability/i;
-
-  // An animal wearing a shop skin loads all of its art from `items/<id>/`
-  // instead, which drops the species out of the path — and plenty of players
-  // wear skins, so leaving those unlabelled would gut the feature. Skin ids
-  // are however built as `<species>_<skin name>`: trex_gold, kraken_cthulhu,
-  // king_crab_amethyst. Matching the LONGEST species that fits keeps
-  // `black_dragon_*` off `dragon` and `king_crab_*` off `crab`.
-  //
-  // What a skin does cost is the rare variant, which the item path does not
-  // carry: a skinned animal is read as the plain tier animal. Only the toucans
-  // are affected in practice, and a King Dragon still resolves to king_dragon
-  // and so still stays silent.
-  const HP_ITEM_RE = /(?:^|\/)items\/([a-z0-9_]+)\//i;
-  const hpItemSpecies = new Map();
-
-  function hpSpeciesFromItemId(id) {
-    if (hpItemSpecies.has(id)) return hpItemSpecies.get(id);
-    let best = '';
-    for (const species of HP_SPECIES_TIER.keys()) {
-      if (species.length <= best.length) continue;
-      if (id === species || id.indexOf(species + '_') === 0) best = species;
-    }
-    hpItemSpecies.set(id, best);
-    return best;
-  }
-
-  // The XP bar's denominator is the NEXT tier's requirement, and no two tiers
-  // share one, so the bar alone pins your tier down. This is the last resort
-  // for your own animal when even the item id cannot be read — it gives the
-  // generic tier figure and nothing about rares, so tier 17 is refused: Black
-  // Dragon and King Dragon share it and only one of them has a known number.
-  const HP_TIER_NEXT_XP = [
-    100, 400, 1000, 2000, 5000, 12000, 25000, 40000, 60000,
-    90000, 145000, 350000, 650000, 1000000, 5000000, 10000000, 40000000,
-  ];
-
-  function hpTierFromXp() {
-    if (!xpDenom) return 0;
-    const m = /^([\d.,]+)([KMB]?)$/.exec(xpDenom);
-    if (!m) return 0;
-    const scale = m[2] === 'K' ? 1e3 : m[2] === 'M' ? 1e6 : m[2] === 'B' ? 1e9 : 1;
-    const value = parseFloat(m[1].replace(/,/g, '')) * scale;
-    if (!(value > 0)) return 0;
-    for (let i = 0; i < HP_TIER_NEXT_XP.length; i++) {
-      // The bar rounds what it prints, so match on proximity rather than
-      // equality; the requirements are far enough apart for that to be safe.
-      if (Math.abs(value - HP_TIER_NEXT_XP[i]) <= HP_TIER_NEXT_XP[i] * 0.05) return i + 1;
-    }
-    return 0;
-  }
-
-  const HP_SETTLE_MS = 90;      // a reading must hold still this long to count
-  const HP_BLIND_MS = 2500;     // unreadable longer than this and the baseline is dropped
-  // HP mode's noise floor, as a FRACTION OF THE ANIMAL'S MAXIMUM rather than a
-  // flat number of hit points (1.0.10).
-  //
-  // It was 0.05 HP flat, and that quietly deleted small hits on small animals.
-  // The percent reading moves in whole points, so the smallest real hit an
-  // animal can take is max/100 HP — which for anything with a maximum of 4 or
-  // less is BELOW 0.05 and was dropped: a 1% burn tick on a max-4 animal is
-  // 0.04, on a max-2.5 mouse 0.025. Every tier up to 13 has a maximum of 4 or
-  // less, so for most of the roster HP mode silently showed fewer numbers than
-  // percent mode — which reads as the indicator being unreliable rather than as
-  // a threshold doing its job.
-  //
-  // Half of one percentage point keeps every genuine whole-point change and
-  // still rejects sub-point jitter from a MEASURED bar (hpPercentOf falls back
-  // to measuring when mope prints no label). The small absolute floor underneath
-  // is for float noise alone.
-  const HP_MIN_DAMAGE_FRACTION = 0.005;  // half of one percentage point of max
-  const HP_MIN_DAMAGE_FLOOR = 0.01;      // never trust a change smaller than this
-  const HP_MIN_DAMAGE_PCT = 1;  // percent mode: one whole point is the smallest hit there is
-
-  function hpMinDamageFor(max) {
-    const scaled = (typeof max === 'number' && max > 0) ? max * HP_MIN_DAMAGE_FRACTION : 0;
-    return scaled > HP_MIN_DAMAGE_FLOOR ? scaled : HP_MIN_DAMAGE_FLOOR;
-  }
-  const HP_IDENT_MS = 1200;     // how often an animal's species is re-checked
-  const HP_LOCK_FRACTION = 0.10; // "at the centre of the screen", as a screen fraction
-  // How close an enemy has to be for its damage to be counted as yours, as a
-  // fraction of the shorter screen axis. The game never says who dealt damage,
-  // so this is the whole of the guess. It is deliberately generous: thrown
-  // fruit, spat venom and fired quills all land well away from the animal that
-  // sent them, and a radius drawn tight around your own body misses every one
-  // of them. The cost of the wider net is that a fight happening beside you
-  // can put up numbers that were nothing to do with you.
-  const HP_FIGHT_FRACTION = 0.42;
-  const HP_STACK_MS = 700;      // numbers on one animal within this window stack
-  const HP_MAX_LIVE = 40;       // hard ceiling on floating numbers at once
-  const HP_LIFE_MS = 1100;      // must match the qolc-hp-float animation
-  // The poison halo the game tints its poison overlay with. Nothing else in
-  // an animal's effects layer uses it, which makes it a clean marker.
-  const HP_POISON_TINT = 0x55cf37;
-
-  const hpUI = {layer: null, live: 0};
-  // The last few numbers put on screen, with the raw percentages they came
-  // from. Health arrives as a whole percent, so this is the only way to check
-  // a figure against what the game actually said — __lumiHpDebug() reports it.
-  const hpRecent = [];
-  const HP_RECENT_MAX = 10;
-
-  function hpNoteDamage(entry, from, to, max, damage, kind, isPlayer, percent) {
-    hpRecent.push({
-      on: isPlayer ? 'you' : 'other',
-      percent: from + ' -> ' + to, lostPercent: from - to,
-      // `maxHP` is still recorded in percent mode even though nothing used it
-      // to make the number. It is the one figure that says whether HP mode
-      // WOULD have printed anything for this animal, which is the question to
-      // ask when somebody switches modes and half the numbers disappear.
-      units: percent ? 'percent' : 'hp',
-      maxHP: max, hp: Math.round(damage * 1000) / 1000,
-      shown: hpFormat(damage, percent), kind,
-      // Why it chose that colour, kept alongside the number so a wrong one can
-      // be explained after the fact instead of having to be caught live.
-      why: {
-        outline: entry.outline >= 0
-          ? '#' + entry.outline.toString(16).padStart(6, '0') : 'none',
-        effectsGroupFound: !!(entry.lastFx && entry.lastFx.groupFound),
-        burningNow: !!(entry.lastFx && entry.lastFx.burningRecently),
-        inArena: entry.arenaAt > 0,
-      },
-    });
-    if (hpRecent.length > HP_RECENT_MAX) hpRecent.shift();
-  }
-
-  // The live scene, kept from the render hook so the debug tools can walk it
-  // on demand rather than only while a frame is being drawn.
-  let hpLastStage = null;
-
-  const hpScan = {
-    active: false, seen: null, everFound: false, warnedAt: 0,
-    // counted per sweep, purely so __lumiHpDebug() can say where it stops
-    nodes: 0, threes: 0, bars: 0, animals: 0, sample: null, animalSample: null,
-    // how many parts the scene's small containers are built from, and one
-    // example of a container that is NOT the three the health bar has always
-    // been — the two readings that say whether the bar itself was rebuilt
-    shapes: {}, otherSample: null,
-  };
-  const hpState = {
-    bars: new Map(),   // health-bar container -> reading state
-    player: null,      // the entity container the camera is locked to
-    playerEntry: null, // its reading state, kept to hand
-    playerAt: 0,
-    lockedBy: '',      // 'game' (mope's own $.player) or 'heuristic' (the old inference) — 1.0.17
-  };
 
   function hpActive() {
     return settings.masterEnabled && settings.hpNumbers;
   }
 
-  // The bar hangs off the numbers rather than standing beside them: both read
-  // the same health the same way, and a bar with the numbers switched off would
-  // be a second feature wearing the first one's machinery.
   function hpBarOn() {
     return hpActive() && settings.hpBar;
   }
 
-  // Percent mode, 1.31.0's default and the one the game can actually support.
-  //
-  // The whole of the identification apparatus below — HP_TIER_MAX, HP_TIERS,
-  // HP_SUBSPECIES_BONUS, hpIdentify(), the skin-id fallback, the XP-bar last
-  // resort — exists to answer ONE question: what to multiply a lost percent
-  // by. In percent mode that question is never asked, so none of it can be
-  // got wrong: a rare with no published maximum, an animal wearing a skin,
-  // a King Dragon and an ordinary mouse all report the same exact figure the
-  // server sent. It is still called for the HP bar's whole-point marks, which
-  // are about the bar's geometry rather than the number printed on it, and
-  // which simply do not appear when the animal cannot be named.
   function hpUnitsPercent() {
     return settings.hpUnits !== 'hp';
   }
 
+  function hpBarColour(fraction) {
+    if (fraction > 0.6) return '#4ad66d';
+    if (fraction > 0.3) return '#ffd60a';
+    return '#ff4a3d';
+  }
+
+  function hpTickColour(fraction) {
+    if (fraction > 0.6) return '#bcffd4';
+    if (fraction > 0.3) return '#fff6b8';
+    return '#ffc7c0';
+  }
+
+  // Your resource meter (water, lava or energy) as a percentage. mope keeps
+  // the raw value and its maximum on $.animalStats.
+  function resourcePercent() {
+    const game = bridge.game;
+    const resource = game && game.animalStats && game.animalStats.resource;
+    if (!resource) return null;
+    const value = Number(resource.value), max = Number(resource.max);
+    if (!Number.isFinite(value) || !(max > 0)) return null;
+    return value / max * 100;
+  }
+
+  /* ----- the floating numbers ----- */
+
+  const HP_WORK_MS = 30;           // a check every 30ms is finer than the server ticks
+  const HP_FIGHT_FRACTION = 0.42;  // "near you", as a fraction of the shorter screen side
+  const HP_STACK_MS = 700;         // hits on one animal within this window stack
+  const HP_STACK_PX = 17;
+  const HP_STACK_MAX = 4;
+  const HP_MAX_LIVE = 40;          // hard ceiling on numbers on screen at once
+  const HP_LIFE_MS = 1100;         // must match the qolc-hp-float animation
+  const HP_DRY_PERCENT = 1.5;
+  const HP_MIN_DAMAGE_FRACTION = 0.005;   // HP mode: half a point of max is the floor
+
+  const hpState = {
+    seen: new WeakMap(),   // entity -> {health, shownAt, stack}
+    live: 0,
+    layer: null,
+    workAt: -Infinity,
+    recent: [],            // last few hits, for __lumi.health()
+  };
+
   function hpLayer() {
-    let layer = hpUI.layer;
+    let layer = hpState.layer;
     if (layer && layer.isConnected) return layer;
-    const host = document.body || document.documentElement;
-    if (!host) return null;
-    layer = document.createElement('div');
-    layer.id = 'qolc-hp';
-    host.appendChild(layer);
-    hpUI.layer = layer;
-    hpUI.live = 0;
+    layer = qolcOwnLayer('qolc-hp');
+    hpState.layer = layer;
+    hpState.live = 0;
     return layer;
   }
 
-  function hpReset() {
-    // Before the map is emptied, not after: the entries ARE the only handles
-    // on the outline nodes, and a cleared map leaves them on mope's bars with
-    // nothing left that could take them off again.
-    hpEdgeClearAll();
-    hpState.bars.clear();
-    hpState.player = null;
-    hpState.playerEntry = null;
-    hpState.playerAt = 0;
-    hpHideBar();
-    if (hpUI.layer) {
-      while (hpUI.layer.firstChild) hpUI.layer.removeChild(hpUI.layer.firstChild);
+  // What hurt it, in the order the colours are meant to win: fire outranks
+  // poison outranks bleed. `effects` is mope's own record of the animal's
+  // afflictions, the one it tints the outline from.
+  function hpDamageKind(entity, isPlayer) {
+    const fx = entity && entity.effects;
+    if (fx) {
+      if (fx.burning) return 'fire';
+      if (fx.poisoned) return 'poison';
+      if (fx.bleeding) return 'bleed';
     }
-    hpUI.live = 0;
-  }
-
-  // ---------------- reading the bar ----------------
-
-  // The health bar, found by what it LOOKS like rather than by where its parts
-  // sit in a list.
-  //
-  // It used to be three shapes in a fixed order — plate, fill, mask — and both
-  // that order and that count were relied on. Two things then changed at once.
-  // The game stopped exposing the drawing commands every width used to be read
-  // from, so all measurements fell back to each object's own bounds; and with
-  // bounds as the only reading, "three children that happen to be the same
-  // width" describes an animal's body group exactly as well as it describes a
-  // health bar. Six sharks were duly tracked as six health bars, every one of
-  // them reporting 100% health for ever, and no damage was ever seen.
-  //
-  // So the parts are identified by shape now. A health bar is a small, WIDE,
-  // THIN thing: the plate is the widest bar-shaped part, and the fill is
-  // another part of much the same height that is never wider than the plate.
-  // Neither the order of the parts nor how many there are comes into it — only
-  // that the thing is shaped like a bar, which a 500x500 square is not.
-  // What the bar actually turned out to be, once it was watched rather than
-  // guessed at. Four children now, not three:
-  //
-  //   [0] Graphics  30 x 7   the backing plate
-  //   [1] Graphics  varies   the fill, masked by [2]
-  //   [2] Graphics  30 x 7   the mask  (fill.mask === this — still true)
-  //   [3] Text      ~12 x 8  the game's OWN health number, new in this update
-  //
-  // The fourth child is the whole fault. Requiring exactly three parts was
-  // never a claim about the bar so much as an accident of how it happened to
-  // be built, and the moment mope.io added its own health readout inside the
-  // same container, every health bar in the game stopped being recognised.
-  //
-  // Two things are worth knowing about measuring it. The plate and the mask
-  // report their size honestly — 30 x 7, every time. The FILL does not: asked
-  // for its width it answers with a stale bound in the thousands, which is the
-  // same fault the drawing-command reader was written for in the first place.
-  // So the fill is never measured by asking it how wide it is; it is measured
-  // from what it drew. Nothing here may use hpMeasure() on the fill.
-  const HP_BAR_MIN_ASPECT = 3;   // how many times wider than tall the plate is
-  const HP_BAR_MAX_PARTS = 5;
-
-  function hpMeasure(node) {
-    const w = Number(node && node.width);
-    const h = Number(node && node.height);
-    if (!Number.isFinite(w) || !Number.isFinite(h) || !(w > 0) || !(h > 0)) return null;
-    return {node, w, h};
-  }
-
-  // The child that is masked BY another child is the fill, and the one doing
-  // the masking is the mask. This is the only relationship in the bar that
-  // states outright what a part is FOR rather than implying it from where it
-  // sits, and it came through the rebuild intact.
-  function hpClippedPair(kids) {
-    for (let i = 0; i < kids.length; i++) {
-      let m = null;
-      try { m = kids[i] && kids[i].mask; } catch (e) { m = null; }
-      if (!m) continue;
-      for (let j = 0; j < kids.length; j++) {
-        if (j !== i && kids[j] === m) return {fill: kids[i], clip: kids[j]};
-      }
+    if (isPlayer) {
+      const pct = resourcePercent();
+      if (pct != null && pct <= HP_DRY_PERCENT) return 'dry';
     }
-    return null;
-  }
-
-  // Mope's own children, with ours dropped.
-  //
-  // The missing-health outline (see hpEdgeAttach) is added as a CHILD of the
-  // bar container, so everything that reasons about that container has to be
-  // blind to it. Two separate ways it would otherwise bite:
-  //
-  //   * The count. A four-part bar becomes five, which still passes the gate
-  //     below today and stops passing the day mope adds a fifth part of its
-  //     own. That is the arena-sky flicker exactly — a matcher counting
-  //     children, and our own child changing the count — rebuilt in a new
-  //     place.
-  //   * The plate search. The outline is drawn at the plate's size, on purpose,
-  //     so "another child of much the same width and height" describes it
-  //     perfectly. It could be picked AS the plate and then measured as one.
-  //
-  // Costs nothing in the ordinary case: no bar carries an outline unless the
-  // starfield is up, and the scan below is offered a couple of thousand
-  // containers a sweep, so the count-first pass is what keeps this off the
-  // allocator.
-  function hpVisibleKids(kids) {
-    if (!kids) return kids;
-    let marked = 0;
-    for (let i = 0; i < kids.length; i++) {
-      if (kids[i] && kids[i].__lumiHpEdge) marked++;
-    }
-    if (!marked) return kids;
-    const out = [];
-    for (let i = 0; i < kids.length; i++) {
-      if (!(kids[i] && kids[i].__lumiHpEdge)) out.push(kids[i]);
-    }
-    return out;
-  }
-
-  // {plate, fill, label} when this container is a health bar, or null.
-  function hpBarParts(node) {
-    const kids = hpVisibleKids(node && node.children);
-    if (!kids || kids.length < 2 || kids.length > HP_BAR_MAX_PARTS) return null;
-    if (!node.parent || !node.parent.parent) return null;
-
-    // The game's own health number, if it is in here. Read before anything
-    // else is decided, because it is worth having either way.
-    const labelOf = (fill, clip) => {
-      for (const k of kids) {
-        if (k && k !== fill && k !== clip && typeof k.text === 'string') return k;
-      }
-      return null;
-    };
-
-    const pair = hpClippedPair(kids);
-    if (pair) {
-      // The mask is the full-width rounded rectangle, so it is a true
-      // reference on its own; a separate plate matching it is preferred only
-      // because that is the part the game never touches.
-      const ref = hpMeasure(pair.clip);
-      if (!ref || ref.w / ref.h < HP_BAR_MIN_ASPECT) return null;
-      let plate = pair.clip;
-      for (const k of kids) {
-        if (k === pair.fill || k === pair.clip) continue;
-        const s = hpMeasure(k);
-        if (!s) continue;
-        if (Math.abs(s.w - ref.w) <= Math.max(0.5, ref.w * 0.05) &&
-            Math.abs(s.h - ref.h) <= Math.max(0.5, ref.h * 0.5)) { plate = k; break; }
-      }
-      return {plate, fill: pair.fill, label: labelOf(pair.fill, pair.clip)};
-    }
-
-    // No mask to be had — the accessor has changed shape between engine
-    // versions before, so shape alone has to be able to carry it. Only parts
-    // that measure honestly are considered, which is what keeps an animal's
-    // body group (three 500x500 squares) from passing as a bar.
-    //
-    // Restricted to three parts, which is the shape this is a fallback FOR:
-    // the bar as it was built before the game added its own number. Measuring
-    // is the expensive half of this feature — every hpMeasure() forces the
-    // engine to work out a bound — and the matcher is now offered a couple of
-    // thousand containers a sweep rather than the few dozen it used to see.
-    // The masked path above pays none of that, and the live bar takes it.
-    if (kids.length !== 3) return null;
-    const shapes = [];
-    for (const k of kids) {
-      const s = hpMeasure(k);
-      if (s) shapes.push(s);
-    }
-    if (shapes.length < 2) return null;
-    let plate = shapes[0];
-    for (const s of shapes) if (s.w > plate.w) plate = s;
-    if (plate.w / plate.h < HP_BAR_MIN_ASPECT) return null;
-    let fill = null;
-    for (const s of shapes) {
-      if (s === plate) continue;
-      if (Math.abs(s.h - plate.h) > Math.max(1, plate.h * 0.5)) continue;
-      if (s.w > plate.w * 1.02) continue;
-      if (!fill || s.w < fill.w) fill = s;
-    }
-    if (!fill) return null;
-    return {plate: plate.node, fill: fill.node, label: labelOf(fill.node, null)};
-  }
-
-  function hpIsHealthBar(node) {
-    return !!hpBarParts(node);
-  }
-
-  // mope.io's own health readout, added in the update that broke this. It is a
-  // PERCENT — the very number the server sent, printed — so whenever it is on
-  // screen it beats any measurement of the bar: exact rather than inferred,
-  // and immune to the bar being restyled again.
-  //
-  // It is only trusted while it is actually being drawn. Switched off, the
-  // object is still there and its text may be anything or nothing, and a stale
-  // reading would be worse than measuring the bar.
-  function hpPercentFromLabel(node) {
-    if (!node || node.visible === false) return null;
-    if (!(Number(node.alpha) > 0.05)) return null;
-    const text = typeof node.text === 'string' ? node.text : '';
-    const m = /(\d{1,3})/.exec(text);
-    if (!m) return null;
-    const value = Number(m[1]);
-    return value >= 0 && value <= 100 ? value : null;
-  }
-
-  // How wide a shape was actually DRAWN.
-  //
-  // Asking the display object for its `width` seemed like the obvious way to
-  // measure the bar and is not: measured live, an undrawn fill inside a 30-wide
-  // bar reported 2222. That figure is a measurement of something — a stale
-  // bound, a shared cache, the mask — but whatever it is, it is not the bar,
-  // and one bad reading is enough to make every number disappear.
-  //
-  // The drawn rectangle itself is not ambiguous, so it is read from the drawing
-  // commands still held on the shape. Current engine builds keep those on a
-  // graphics context, older ones keep parsed shapes on a geometry, and `width`
-  // remains as a last resort behind both — it is sanity-checked either way.
-  function hpWidthFromContext(shape) {
-    const list = shape && shape.context && shape.context.instructions;
-    if (!Array.isArray(list)) return null;
-    for (let i = list.length - 1; i >= 0; i--) {
-      const data = list[i] && list[i].data;
-      const path = data && (data.path || data);
-      const steps = path && path.instructions;
-      if (!Array.isArray(steps)) continue;
-      for (let j = steps.length - 1; j >= 0; j--) {
-        const step = steps[j];
-        const args = step && step.data;
-        if (!Array.isArray(args) || args.length < 4) continue;
-        if (step.action === 'roundRect' || step.action === 'rect') {
-          const w = Number(args[2]);
-          if (Number.isFinite(w) && w >= 0) return w;
-        }
-      }
-    }
-    return null;
-  }
-
-  function hpWidthFromGeometry(shape) {
-    const list = shape && shape.geometry && shape.geometry.graphicsData;
-    if (!Array.isArray(list)) return null;
-    for (let i = list.length - 1; i >= 0; i--) {
-      const w = list[i] && list[i].shape && Number(list[i].shape.width);
-      if (Number.isFinite(w) && w >= 0) return w;
-    }
-    return null;
-  }
-
-  function hpDrawnWidth(shape) {
-    let w = hpWidthFromContext(shape);
-    if (w == null) w = hpWidthFromGeometry(shape);
-    if (w != null) {
-      // Graphics instructions/geometry are unscaled. Mope draws a permanent
-      // 30-unit rectangle and changes bar.scale.x to health.value / 100.
-      // The siblings' local scales matter; their shared parent scale cancels.
-      const scale = shape && shape.scale ? shape.scale.x : 1;
-      return typeof scale === 'number' && Number.isFinite(scale) ? w * Math.abs(scale) : null;
-    }
-    // Pixi width already includes local scale. Multiplying it again would
-    // report 1.69% for a 13% fill on the bounds-only compatibility path.
-    const measured = Number(shape && shape.width);
-    return Number.isFinite(measured) && measured >= 0 ? measured : null;
-  }
-
-  // Health percent 0-100, or null while it cannot be read at all. The game
-  // hides the bar entirely at full health instead of drawing a full one, so a
-  // faded-out bar is 100 rather than unknown.
-  function hpPercentOf(bar, entry) {
-    const owner = bar.parent;               // the animal's own HUD group
-    if (!owner || owner.visible === false) return null; // in a hole / despawned
-    if (bar.visible === false) return 100;
-    const alpha = Number(bar.alpha);
-    if (!(alpha > 0.002)) return 100;
-    // Which child is the plate and which is the fill is worked out from their
-    // shapes rather than their positions in the list, and re-worked out if the
-    // parts are ever rebuilt underneath us.
-    let parts = entry && entry.parts;
-    if (!parts || !parts.plate || parts.plate.parent !== bar) {
-      parts = hpBarParts(bar);
-      if (entry) entry.parts = parts;
-    }
-    if (!parts) return null;
-    // The game's own printed percent, when it is being shown. Nothing has to
-    // be measured at all in that case.
-    const printed = hpPercentFromLabel(parts.label);
-    if (printed != null) return printed;
-    // Read both siblings in the same local coordinate space. Do not retain a
-    // width across rebuilt graphics or changes to the reference's local scale.
-    const plate = hpDrawnWidth(parts.plate);
-    const fill = hpDrawnWidth(parts.fill);
-    if (!(plate > 0) || fill == null || !(fill >= 0)) return null;
-    const pct = (fill / plate) * 100;
-    if (!(pct >= 0) || pct > 105) return null;
-    return Math.min(100, pct);
-  }
-
-  // ---------------- the missing-health outline ----------------
-
-  // Read out of mope's bundle, the whole of how the track behind the fill is
-  // drawn, once, when the bar is built:
-  //
-  //     wrapper.rectOrRoundRect(0, 0, 30, 7, 2.5, roundedCorners)
-  //     wrapper.fill({ color: 'black', alpha: .25 })
-  //
-  // That plate is the missing health: the fill sits on top of it and retreats
-  // as health is lost, so what shows through is the part that is gone. Black at
-  // a quarter alpha darkens whatever is behind it, which reads perfectly over
-  // grass and not at all over the arena starfield — the bar becomes a short
-  // green stub with no visible indication of how long it ought to be.
-  //
-  // A TINT CANNOT FIX THIS, which is what it was planned as and is worth
-  // stating plainly. Tinting MULTIPLIES the colour a shape was drawn in. This
-  // shape was drawn in black, and black times anything is black — so
-  // plate.tint here is not a weak lever, it is not a lever. Sixteen million
-  // values, not one pixel of difference.
-  //
-  // So: a thin light outline on our own Graphics, added as a child of mope's
-  // bar container. It makes the whole bar locatable, which is the reading that
-  // was actually missing, and it leaves mope's own fill alone — that fill ramps
-  // to RED at low health, and a track recoloured red would lose its contrast at
-  // exactly the moment the bar has to be read.
-  //
-  // Nothing of mope's is written to. Redrawing the plate's own graphics context
-  // in a better colour is one fewer node and a far worse trade: it means
-  // mutating a drawing this script does not own and then restoring it exactly,
-  // out of an engine-internal style object, on every path out of the feature.
-  // An added node makes the undo a destroy(), and mope tears the animal's
-  // container down with children: true, so ours goes with it even if we never
-  // get the chance.
-  const HP_EDGE_COLOR = 0xffffff;
-  const HP_EDGE_ALPHA = 0.5;
-  const HP_EDGE_WIDTH = 0.7;   // world units, on a bar mope draws 30 x 7
-
-  // Purely so the common case can skip work: while this is 0, no container in
-  // the scene carries one of ours, and hpVisibleKids() is the only thing that
-  // has to know.
-  let hpEdgeLive = 0;
-
-  // The rectangle mope drew the plate WITH, read back out of the drawing
-  // commands it is still holding: {rounded, args}.
-  //
-  // Read rather than assumed, and the feature refuses to draw when it cannot be
-  // read. 30 x 7 with a 2.5 radius is what the bundle says today, but whether
-  // the corners are rounded at all is $.settings.rendering.roundedCorners — a
-  // setting the player owns — and a rounded ring around a square bar would be a
-  // worse artefact than the flat track this feature exists to fix. The same
-  // traversal hpDrawnWidth() has always used, so a build that stops exposing
-  // instructions turns this off rather than misdrawing it.
-  function hpPlateShape(shape) {
-    const list = shape && shape.context && shape.context.instructions;
-    if (!Array.isArray(list)) return null;
-    for (let i = list.length - 1; i >= 0; i--) {
-      const data = list[i] && list[i].data;
-      const path = data && (data.path || data);
-      const steps = path && path.instructions;
-      if (!Array.isArray(steps)) continue;
-      for (let j = steps.length - 1; j >= 0; j--) {
-        const step = steps[j];
-        const args = step && step.data;
-        if (!Array.isArray(args)) continue;
-        const rounded = step.action === 'roundRect';
-        if (!rounded && step.action !== 'rect') continue;
-        const need = rounded ? 5 : 4;
-        if (args.length < need) continue;
-        const out = [];
-        for (let k = 0; k < need; k++) {
-          const v = Number(args[k]);
-          if (!Number.isFinite(v)) return null;
-          out.push(v);
-        }
-        if (!(out[2] > 0) || !(out[3] > 0)) return null;
-        return {rounded, args: out};
-      }
-    }
-    return null;
-  }
-
-  function hpEdgeDetach(entry) {
-    const node = entry && entry.edge;
-    if (!node) return;
-    entry.edge = null;
-    if (hpEdgeLive > 0) hpEdgeLive--;
-    try { if (node.parent) node.parent.removeChild(node); } catch (e) {}
-    try { if (typeof node.destroy === 'function') node.destroy(); } catch (e) {}
-  }
-
-  function hpEdgeAttach(entry) {
-    if (entry.edge) return entry.edge;
-    const bar = entry.bar;
-    if (!bar || !bar.parent) return null;
-
-    // The same re-derivation hpPercentOf() does, and for the same reason: the
-    // parts can be rebuilt underneath us between one frame and the next.
-    let parts = entry.parts;
-    if (!parts || !parts.plate || parts.plate.parent !== bar) {
-      parts = hpBarParts(bar);
-      entry.parts = parts;
-    }
-    const plate = parts && parts.plate;
-    if (!plate) return null;
-    const shape = hpPlateShape(plate);
-    if (!shape) return null;
-
-    // Built from mope's own plate rather than from an engine import, which a
-    // userscript cannot reach: the object's constructor IS the class. Kept in
-    // its own variable for the reason arenaSkyAttach() spells out — written
-    // inline, the expression parses as something else entirely.
-    const Graphics = plate.constructor;
-    let node = null;
-    try { if (typeof Graphics === 'function') node = new Graphics(); }
-    catch (e) { return null; }
-    if (!node || typeof node.stroke !== 'function') {
-      try { if (node && typeof node.destroy === 'function') node.destroy(); } catch (e) {}
-      return null;
-    }
-
-    try {
-      node.__lumiHpEdge = true;   // so hpVisibleKids() never counts it
-      const a = shape.args;
-      if (shape.rounded) node.roundRect(a[0], a[1], a[2], a[3], a[4]);
-      else node.rect(a[0], a[1], a[2], a[3]);
-      node.stroke({color: HP_EDGE_COLOR, alpha: HP_EDGE_ALPHA, width: HP_EDGE_WIDTH});
-
-      // mope draws the plate from its top-left corner and then pivots it to its
-      // centre, so an outline drawn at the same coordinates only lands in the
-      // same place if it is pivoted the same way. Copied off the plate rather
-      // than written as size/2, so a bar built at another size cannot leave the
-      // ring behind.
-      if (plate.pivot) node.pivot.set(plate.pivot.x, plate.pivot.y);
-      if (plate.position) node.position.set(plate.position.x, plate.position.y);
-
-      // Above the fill, below mope's own health number. Appending would put the
-      // ring over that number; the label is the last child, so inserting at its
-      // index is the whole of it.
-      const at = parts.label ? bar.children.indexOf(parts.label) : -1;
-      if (at >= 0 && typeof bar.addChildAt === 'function') bar.addChildAt(node, at);
-      else bar.addChild(node);
-    } catch (e) {
-      try { if (node.parent) node.parent.removeChild(node); } catch (e2) {}
-      try { node.destroy(); } catch (e2) {}
-      return null;
-    }
-
-    // No render layer to join. mope hangs the bar off the animal's HUD, and a
-    // layer renders an attached object's whole SUBTREE at its own depth, so a
-    // child of the bar is already at the bar's depth by construction.
-    //
-    // No alpha to manage either: the container this hangs in is the one mope
-    // lerps to zero at full health, and alpha multiplies down a tree — so the
-    // outline fades in with the bar and vanishes with it, which is exactly
-    // right. There is no missing health to point at when there is none.
-    entry.edge = node;
-    entry.edgeKey = hpEdgeKeyOf(shape);
-    entry.edgeCheckAt = 0;
-    hpEdgeLive++;
-    return node;
-  }
-
-  // A signature for the rectangle an outline was drawn against, so a change in
-  // it can be noticed. Rounded and square are different SHAPES rather than
-  // different numbers, so the flag leads.
-  function hpEdgeKeyOf(shape) {
-    return shape ? (shape.rounded ? 'r|' : 's|') + shape.args.join(',') : '';
-  }
-
-  const HP_EDGE_RECHECK_MS = 400;
-
-  function hpEdgeApply(entry, want, now) {
-    // A bar rebuilt underneath us leaves the outline attached to a container
-    // nothing points at any more. Dropped before anything else is decided, so
-    // the branch below can only ever build onto the bar this entry is holding.
-    if (entry.edge && entry.edge.parent !== entry.bar) hpEdgeDetach(entry);
-    if (!want) { if (entry.edge) hpEdgeDetach(entry); return; }
-    if (!entry.edge) { hpEdgeAttach(entry); return; }
-
-    // 1.0.6. THE OUTLINE HAS TO FOLLOW THE SHAPE, NOT JUST THE BAR.
-    //
-    // Geometry is copied off mope's plate at attach time, which is right — but
-    // it was only ever copied ONCE. Rounded Corners is a live setting the
-    // player owns, so mope redraws the plate as a rect the moment it is turned
-    // off while our ring carries on being a roundRect. The header used to
-    // claim the next duel corrected it; it does not reliably, because the
-    // outline lives as long as the bar entry does and that can outlast several
-    // fights.
-    //
-    // So the plate is re-read on a throttle and the ring rebuilt when the
-    // shape underneath it has changed. Throttled because this walks the
-    // plate's drawing instructions and hpTick runs over every tracked bar —
-    // 400ms is far below noticing a corner change and far above doing this
-    // per bar per frame.
-    if (now - entry.edgeCheckAt < HP_EDGE_RECHECK_MS) return;
-    entry.edgeCheckAt = now;
-    const plate = entry.parts && entry.parts.plate;
-    if (!plate || plate.parent !== entry.bar) return;
-    const key = hpEdgeKeyOf(hpPlateShape(plate));
-    // An unreadable plate is not evidence of a change. Leaving the ring alone
-    // is the safe answer: hpEdgeAttach() already refuses to build one it cannot
-    // measure, so rebuilding here would just drop the outline for good.
-    if (!key || key === entry.edgeKey) return;
-    hpEdgeDetach(entry);
-    hpEdgeAttach(entry);
-  }
-
-  // Every outline, off. Called from the two places an entry can stop being
-  // tracked — hpReset() and the end of a scan — because a dropped entry is the
-  // one way a node of ours could be left on a bar with nothing left holding a
-  // reference to it.
-  function hpEdgeClearAll() {
-    if (!hpEdgeLive) return;
-    for (const entry of hpState.bars.values()) hpEdgeDetach(entry);
-  }
-
-  // ---------------- identifying the animal ----------------
-
-  function hpTextureNames(node, out) {
-    const tex = node && node.texture;
-    if (!tex) return out;
-    if (typeof tex.label === 'string') out.push(tex.label);
-    if (Array.isArray(tex.textureCacheIds)) out.push(...tex.textureCacheIds);
-    const src = tex.source || tex.baseTexture;
-    if (src) {
-      if (typeof src.label === 'string') out.push(src.label);
-      if (Array.isArray(src.textureCacheIds)) out.push(...src.textureCacheIds);
-      if (typeof src.src === 'string') out.push(src.src);
-      if (src.resource && typeof src.resource.src === 'string') out.push(src.resource.src);
-    }
-    return out;
-  }
-
-  function hpMatchPath(text) {
-    if (typeof text !== 'string') return null;
-    const clean = text.split(/[?#]/)[0];
-    if (clean.indexOf('animals/') !== -1) {
-      const m = HP_TEXTURE_RE.exec(clean);
-      if (m) return {species: m[1].toLowerCase(), sub: m[2] ? m[2].toLowerCase() : ''};
-    }
-    if (clean.indexOf('items/') !== -1) {
-      const m = HP_ITEM_RE.exec(clean);
-      if (m) {
-        const species = hpSpeciesFromItemId(m[1].toLowerCase());
-        // A skin hides the rare variant, so this is the plain tier animal.
-        if (species) return {species, sub: '', skinned: true};
-      }
-    }
-    return null;
-  }
-
-  // Walk the animal's own display objects looking for the first texture whose
-  // path names it. Kept shallow and bounded — this runs for every animal that
-  // takes damage, and the art sits two or three levels down at most.
-  //
-  // `collect`, when given, is filled with the texture paths actually seen. It
-  // is only ever passed by the debug helper: if this stops recognising
-  // anything, the first thing worth knowing is what the paths really look like.
-  function hpIdentify(entity, collect) {
-    const stack = [{node: entity, depth: 0}];
-    let visited = 0;
-    const names = [];
-    while (stack.length && visited++ < 48) {
-      const {node, depth} = stack.pop();
-      if (!node) continue;
-      names.length = 0;
-      hpTextureNames(node, names);
-      for (const name of names) {
-        if (collect && collect.length < 6) collect.push(name);
-        const hit = hpMatchPath(name);
-        if (hit) return hit;
-      }
-      const kids = node.children;
-      if (kids && depth < 3) {
-        for (let i = 0; i < kids.length && i < 12; i++) {
-          stack.push({node: kids[i], depth: depth + 1});
-        }
-      }
-    }
-    return null;
-  }
-
-  // Your own animal, taken from the ability button's icon. This is the
-  // authoritative source when it is available: it is written from the same
-  // species and rare values the game uses everywhere else, and unlike the
-  // scene graph it cannot be confused with a neighbouring animal.
-  function hpIdentifySelfFromHud() {
-    const btn = document.getElementById('ability1Button');
-    const img = btn && btn.querySelector('img');
-    const src = img && (img.getAttribute('src') || img.src);
-    if (typeof src !== 'string') return null;
-    const clean = src.split(/[?#]/)[0];
-    const m = HP_ABILITY_IMG_RE.exec(clean);
-    if (m) return {species: m[1].toLowerCase(), sub: m[2] ? m[2].toLowerCase() : ''};
-    // Wearing a skin turns the icon into an item path, same as the artwork.
-    return hpMatchPath(clean);
-  }
-
-  // ---------------- what kind of damage it was ----------------
-
-  // Poison and bleeding are written onto the animal itself: the game tints an
-  // animal's OUTLINE (and its tail with it) by whatever is afflicting it, and
-  // poison and bleeding are two of the things that show up there. That is a far
-  // better signal than the effects layer, because it is a single value on a
-  // shape that always exists, in colours nothing else on the animal uses —
-  // predator red is #EF3C31 and edible green is #4AE05E, neither of which can
-  // be mistaken for these.
-  //
-  // Reading it off the outline also sidesteps a genuine ambiguity inside the
-  // effects layer: the bleeding halo and the flash an animal gives on ANY hit
-  // are both plain red, so a red halo in there means nothing on its own.
-  // The same outline also says who is in a 1v1 arena: the game paints the two
-  // duellists cyan and yellow. That is the only handle on arena membership the
-  // scene offers, and it is enough for both halves of what is wanted — someone
-  // else's duel is left alone, and inside your own only you and the animal
-  // opposite you are counted.
-  const HP_TINT_POISON = 0x55cf37;   // the game's poison halo
-  const HP_TINT_BLEED = 0xff0000;    // plain red: bleeding
-  const HP_TINT_STINK = 0x604729;    // bleeding while also stunk
-  const HP_TINT_ARENA = [0x00ffff, 0xffff00];  // duellist one, duellist two
-  const HP_OUTLINE_MEANS = new Set(
-    [HP_TINT_POISON, HP_TINT_BLEED, HP_TINT_STINK].concat(HP_TINT_ARENA));
-
-  function hpOutlineTint(entity) {
-    const body = entity && entity.children && entity.children[0];
-    const kids = body && body.children;
-    if (!kids) return -1;
-    for (let i = 0; i < kids.length && i < 8; i++) {
-      const part = kids[i];
-      // Skip the effects group: its own red halo is ambiguous, as above.
-      if (!part || part.label === 'effects') continue;
-      const tint = Number(part.tint);
-      if (!Number.isFinite(tint)) continue;
-      const rgb = tint & 0xffffff;
-      if (HP_OUTLINE_MEANS.has(rgb)) return rgb;
-    }
-    return -1;
-  }
-
-  // An affliction outranks the arena colour on the outline, so a duellist who
-  // is bleeding stops looking like a duellist for as long as it lasts. Arena
-  // membership is therefore remembered for a while after it was last seen
-  // rather than read fresh every frame.
-  // Long enough to outlast a duel rather than a moment of one. An affliction
-  // overrides the duellist colour for as long as it lasts, so an opponent that
-  // bleeds or burns without a break stops looking like a duellist — and once
-  // that memory lapses it is dropped as somebody else's business, taking its
-  // damage numbers with it. Eight seconds could not survive one sustained
-  // bleed. The cost of a longer memory is only that a duel just ended keeps
-  // being treated as one for a while.
-  const HP_ARENA_MEMORY_MS = 30000;
-
-  // WHERE THIS MEMORY LIVES, and why it is written twice (1.0.13).
-  //
-  // `entry` is a reading of a health BAR. It is created when the bar enters a
-  // scan and dropped the moment the bar leaves one — which inside a culled
-  // duel is a routine event, not an exotic one. So a fact about an ANIMAL had
-  // been living only on a reading of that animal's bar, and went out with it.
-  //
-  // That is what made this the second half of the culled-duel bug: 1.0.12
-  // taught the lock to hold the entity with no reading to hand, and then
-  // arenaSkyPick() asked hpInArena(entry) — with entry null — and was told no.
-  // The animal was in an arena, the script knew it thirty seconds ago, and the
-  // answer was still no, so the duel read as somebody else's and the sky, the
-  // bite indicator and the boost counter all went off together.
-  //
-  // The WeakMap is keyed on the entity, so it survives the reading and is
-  // collected with the animal.
-  const hpArenaSeen = new WeakMap();
-
-  function hpNoteOutline(entry, now) {
-    const rgb = hpOutlineTint(entry.entity);
-    entry.outline = rgb;
-    if (HP_TINT_ARENA.indexOf(rgb) !== -1) {
-      entry.arenaAt = now;
-      try { hpArenaSeen.set(entry.entity, now); } catch (e) { /* not an object */ }
-    }
-    return rgb;
-  }
-
-  // The same question asked of an ANIMAL rather than of a bar reading, so it
-  // can still be answered while the reading is gone.
-  function hpEntityInArena(entity, now) {
-    if (!entity) return false;
-    let at = 0;
-    try { at = hpArenaSeen.get(entity) || 0; } catch (e) { at = 0; }
-    return at > 0 && now - at < HP_ARENA_MEMORY_MS;
-  }
-
-  function hpInArena(entry, now) {
-    if (entry && entry.arenaAt > 0 && now - entry.arenaAt < HP_ARENA_MEMORY_MS) return true;
-    return hpEntityInArena(entry && entry.entity, now);
-  }
-
-  // Each animal also carries an "effects" group holding the visuals for what is
-  // happening to it. Burning is the one that only lives here — it is an
-  // animated flame rather than a tint, and nothing recolours the outline for it.
-  // The group hangs off the animal's body, so that is looked at directly before
-  // falling back to a search. The walk is generous now: fire being the one kind
-  // that lives only here, a group missed for any reason means fire silently
-  // reads as a plain hit, which is exactly the symptom this had.
-  // Display objects are named through `label` in current engine builds and
-  // through `name` in older ones, and the game's own code is written against
-  // whichever it was built for. Asking for both costs nothing and removes an
-  // entire way for this to come up empty.
-  function hpNameOf(node) {
-    if (!node) return '';
-    if (typeof node.label === 'string') return node.label;
-    if (typeof node.name === 'string') return node.name;
-    return '';
-  }
-
-  function hpEffectsOf(entity) {
-    const body = entity && entity.children && entity.children[0];
-    const direct = body && body.children;
-    if (direct) {
-      for (let i = 0; i < direct.length; i++) {
-        if (hpNameOf(direct[i]) === 'effects') return direct[i];
-      }
-    }
-    const stack = [{node: entity, depth: 0}];
-    let visited = 0;
-    while (stack.length && visited++ < 160) {
-      const {node, depth} = stack.pop();
-      if (!node) continue;
-      if (node !== entity && hpNameOf(node) === 'effects') return node;
-      const kids = node.children;
-      if (kids && depth < 3) {
-        for (let i = 0; i < kids.length && i < 16; i++) {
-          stack.push({node: kids[i], depth: depth + 1});
-        }
-      }
-    }
-    return null;
-  }
-
-  // The flame fades in slowly — slowly enough that the first tick of damage can
-  // land while it is still almost invisible — so the threshold here is low, and
-  // having seen it once the answer is held for a moment afterwards. Both exist
-  // so that a burn is not reported as a plain hit at the very moment it starts.
-  const HP_BURN_MEMORY_MS = 1400;
-
-  // The other things the group can be showing. Healing and aloe are haloes in
-  // their own colours; the frost bubbles are a whole sub-group the game names.
-  // Aloe is the awkward one — the game fades its halo in to an opacity of only
-  // 0.01, so it is barely drawn at all and has to be looked for far below the
-  // level anything else registers at.
-  const HP_TINT_HEALING = 0x800080;
-  const HP_TINT_ALOE = 0xbbc94d;
-  const HP_FROST_LABEL = 'freezeBubbles';
-  const HP_ALOE_ALPHA = 0.002;
-  const HP_HALO_ALPHA = 0.02;
-
-  // Reads one node and folds whatever it is saying into `out`. `strict` is set
-  // when the node is known to be part of the animal's effects group, where an
-  // animated sprite can only be the flame; away from it, an animated sprite
-  // could be anything, so fire is not claimed on that evidence alone.
-  function hpReadEffectNode(node, out, strict) {
-    if (!node || node.visible === false) return;
-    const alpha = Number(node.alpha);
-    if (hpNameOf(node) === HP_FROST_LABEL) {
-      if (alpha > 0.01) out.frozen = true;
-      return;
-    }
-    if (!(alpha > HP_ALOE_ALPHA)) return;
-    if (node.textures || typeof node.animationSpeed === 'number') {
-      if (strict && alpha > 0.004) out.burning = true;
-      return;
-    }
-    // These three colours belong to the game's effect haloes and to nothing
-    // else on an animal, so they are safe to trust wherever they turn up.
-    const tint = Number(node.tint) & 0xffffff;
-    if (tint === HP_TINT_ALOE) out.aloed = true;
-    else if (alpha > HP_HALO_ALPHA) {
-      if (tint === HP_TINT_POISON) out.poisoned = true;
-      else if (tint === HP_TINT_HEALING) out.healing = true;
-    }
-  }
-
-  function hpEffectsSay(entry, now) {
-    const out = {
-      burning: false, poisoned: false, healing: false,
-      aloed: false, frozen: false, groupFound: false,
-    };
-    let fx = entry.fx;
-    if (!fx || !fx.parent) { fx = hpEffectsOf(entry.entity); entry.fx = fx; }
-    const list = fx && fx.children;
-    if (list) {
-      out.groupFound = true;
-      for (let i = 0; i < list.length; i++) hpReadEffectNode(list[i], out, true);
-    } else {
-      // No group to be found — so look over the whole animal instead. The
-      // halo colours and the frost bubbles identify themselves wherever they
-      // are; only fire is left out, being the one thing that would have to be
-      // guessed at from shape rather than recognised.
-      const stack = [{node: entry.entity, depth: 0}];
-      let visited = 0;
-      while (stack.length && visited++ < 90) {
-        const {node, depth} = stack.pop();
-        if (!node) continue;
-        if (node !== entry.entity) hpReadEffectNode(node, out, false);
-        const kids = node.children;
-        if (kids && depth < 4) {
-          for (let i = 0; i < kids.length && i < 16; i++) {
-            stack.push({node: kids[i], depth: depth + 1});
-          }
-        }
-      }
-    }
-    // Two answers, because the two callers want different ones. Colouring a
-    // damage number wants the forgiving one: the flame fades in slowly enough
-    // that the first tick can land before it shows, and lingers after the burn
-    // ends. The bar wants the literal one — holding a flame on screen for a
-    // second after the fire went out would sit on top of whatever is happening
-    // now, and frost or poison arriving in that gap would never be seen.
-    if (out.burning) entry.burnAt = now;
-    out.burningRecently = out.burning ||
-      !!(entry.burnAt && now - entry.burnAt < HP_BURN_MEMORY_MS);
-    return out;
-  }
-
-  // ---------------- YOUR RESOURCE METER ----------------
-  //
-  // Read once, here, by everything that wants it. 1.31.0 had one reader for
-  // one caller — "is the meter dry", for the damage colour — and 1.32.0's
-  // boost work needs the same three lines with the value kept rather than
-  // thrown away. Two independent searches for one element, with two ideas of
-  // which element it is, is the mistake the layout registry exists to prevent.
-  //
-  // WHAT THE GAME KNOWS, because the accuracy of everything downstream rests
-  // on it. Your animal has ONE resource — water, lava or energy, decided by
-  // its species — and the server sends its value as a bare uint8 on a
-  // `resource` packet, pushed on change. The client divides that by a maximum
-  // out of the animal's own config and rounds UP:
-  //
-  //     oa.resource.percentage = Math.ceil(value / max * 100)
-  //
-  // then draws it as the middle of three identical meters in the bottom
-  // centre — oxygen, resource, XP. None of the three carries an id, and the
-  // markup is the same for all of them:
-  //
-  //     <div class="container [low-warn]">
-  //       <div class="bar" style="width: 43%; background-color: #4E66E4">
-  //       <div class="label">43% water</div>
-  //
-  // So which one is the resource is read off the FILL'S COLOUR, which mope
-  // takes from $.colors.ui.resourceBar and which is the same in every
-  // language. The label would have been easier and would have made this
-  // English-only for nothing, which is the trap 1.30.0's game-stats matcher
-  // fell into. The browser rewrites an inline hex colour to rgb() form on the
-  // way back out, so both spellings are matched — as the dive-air meter is.
-  //
-  // `low-warn` is mope's own class and it appears below `warnAt: 25`. It is
-  // read rather than recomputed, so the state this script calls "low" and the
-  // state the player can SEE are the same state. Note mope's test is strictly
-  // `< 25`; see WATER_LOW_PCT.
-  const WATER_TINTS = new Map([
-    ['rgb(78, 102, 228)', 'water'],  ['#4E66E4', 'water'],
-    ['rgb(255, 96, 0)', 'lava'],     ['#ff6000', 'lava'],
-    ['rgb(255, 136, 76)', 'energy'], ['#ff884c', 'energy'],
-  ]);
-  const HP_DRY_PERCENT = 1.5;
-
-  // THE RAW UNITS BEHIND THE PERCENT, per animal — and what that is NOT.
-  //
-  // mope's meter shows `Math.ceil(value / max * 100)`, where `value` is the
-  // uint8 the server pushes and `max` comes from the animal's config. Every
-  // animal in the game has a max of 100 except four, read out of the bundle:
-  //
-  //   camel                               125   water
-  //   eagle/harpy, eagle/greater_spotted  150   water
-  //   king_dragon                         125   lava
-  //
-  // 1.0.15 CORRECTS HOW THIS WAS DESCRIBED. Earlier comments and the handoff
-  // called King Dragon "125% lava". It is not: the METER never exceeds 100%.
-  // A King Dragon's lava reads 0–100 like everyone else's; it merely has 125
-  // raw units behind that percent, so one raw unit is 0.8 of a displayed
-  // point rather than 1. Lumi, who knows the game, flagged the phrasing as
-  // wrong, and it was. Black Dragon is not in the table: its max is 100.
-  //
-  // NOTHING IN THE COUNTER USES THIS. Since 1.0.10 boostsLeft() divides
-  // percent by percent, so the raw max never enters the arithmetic for any
-  // animal. It is kept for the debug reports and for the record.
-  const WATER_MAX = new Map([
-    ['camel', 125],
-    ['king_dragon', 125],
-    ['eagle/harpy', 150],
-    ['eagle/greater_spotted', 150],
-  ]);
-
-  function waterMaxFor(species, subspecies) {
-    if (!species) return 100;
-    return WATER_MAX.get(species + '/' + subspecies) || WATER_MAX.get(species) || 100;
-  }
-
-  // The whole reading, or null when there is no meter on screen — which is
-  // every moment you are not in a game, and also the moment after a respawn
-  // before mope has drawn the HUD.
-  function waterRead() {
-    let bars;
-    try { bars = document.querySelectorAll('.container > .bar'); } catch (e) { return null; }
-    for (const bar of bars) {
-      const kind = WATER_TINTS.get(bar.style.backgroundColor);
-      if (!kind) continue;
-      const pct = parseFloat(bar.style.width);
-      if (!Number.isFinite(pct)) continue;
-      return {node: bar, box: bar.parentNode, kind, pct,
-              low: !!(bar.parentNode && bar.parentNode.classList &&
-                      bar.parentNode.classList.contains('low-warn'))};
-    }
-    return null;
-  }
-
-  // Running your resource dry costs you health, and the game shows no effect
-  // for it at all — so it is read off the meter instead, which means it can
-  // only ever be known for YOUR animal and never anyone else's.
-  function hpResourceDry() {
-    const r = waterRead();
-    return !!r && r.pct <= HP_DRY_PERCENT;
-  }
-
-  // 'fire' | 'poison' | 'bleed' | 'dry' | 'basic'.
-  //
-  // Order matters where two are true at once, which happens often — an animal
-  // can burn and bleed at the same time, and a bite can land in the middle of
-  // either. Fire and poison come first because they are the loudest and the
-  // most useful to see; dehydration comes last of the named ones because an
-  // empty meter is a standing condition rather than an event, so a real bite
-  // taken on an empty meter should not be dressed up as thirst before anything
-  // else has had its say.
-  function hpDamageKind(entry, isPlayer, now) {
-    const fx = hpEffectsSay(entry, now);
-    entry.lastFx = fx;   // kept only so the debug log can explain the choice
-    if (fx.burningRecently) return 'fire';
-    const tint = entry.outline;
-    if (tint === HP_TINT_POISON || fx.poisoned) return 'poison';
-    if (tint === HP_TINT_BLEED || tint === HP_TINT_STINK) return 'bleed';
-    if (isPlayer && hpResourceDry()) return 'dry';
     return 'basic';
   }
 
-  // ---------------- the floating numbers ----------------
-
-  // Percent mode prints whole numbers and nothing else. Both readings it
-  // subtracts are already whole percents — the server sends one byte and this
-  // rounds to it — so the difference is a whole number by construction, and a
-  // decimal point there would be a digit with nothing behind it.
-  //
-  // HP mode keeps its one decimal place. That figure is a whole percent times
-  // a maximum, so it carries up to half a percent of rounding with it; more
-  // digits would be inventing precision the game never had.
   function hpFormat(damage, percent) {
     if (percent) return Math.round(damage) + '%';
     const rounded = Math.round(damage * 10) / 10;
     return rounded.toFixed(1).replace(/\.0$/, '');
   }
 
-  function hpShowNumber(x, y, damage, kind, isPlayer, percent) {
+  function hpShowNumber(x, y, text, kind, isPlayer) {
     const layer = hpLayer();
-    if (!layer || hpUI.live >= HP_MAX_LIVE) return;
+    if (!layer || hpState.live >= HP_MAX_LIVE) return;
     const el = document.createElement('div');
-    // Everything that happens to YOU glows, and a plain hit on you is yellow
-    // rather than red — so at a glance the colour says what hit you and the
-    // glow says who it hit, with no number ever being ambiguous about both.
     el.className = 'qolc-hp-num ' +
       (isPlayer ? (kind === 'basic' ? 'qolc-hp-you' : 'qolc-hp-' + kind) + ' qolc-hp-self'
                 : 'qolc-hp-' + kind);
-    el.textContent = hpFormat(damage, percent);
+    el.textContent = text;
     el.style.left = Math.round(x) + 'px';
     el.style.top = Math.round(y) + 'px';
     el.style.fontSize =
       Math.max(15, Math.round(Math.min(innerWidth, innerHeight) * 0.029)) + 'px';
     layer.appendChild(el);
-    hpUI.live++;
-    // animationend alone would leak an element whenever the tab is hidden
-    // mid-flight (animations do not finish there), so a timer backs it up.
+    hpState.live++;
     let done = false;
     const drop = () => {
       if (done) return;
       done = true;
-      hpUI.live = Math.max(0, hpUI.live - 1);
+      hpState.live = Math.max(0, hpState.live - 1);
       if (el.parentNode) el.parentNode.removeChild(el);
     };
     el.addEventListener('animationend', drop, {once: true});
     setTimeout(drop, HP_LIFE_MS + 400);
   }
 
-  // ---------------- your own health, as a live bar ----------------
-  //
-  // The game draws your health over your head only once you have lost some, and
-  // never as a figure. This is the same reading turned into a standing bar: the
-  // percent off the health bar, times your animal's maximum. It moves with
-  // anything that moves your health — a bite, a burn ticking away, an aloe, a
-  // gem, the lump you get back for a kill — because all of those reach the
-  // client the same way, as the percent this is already reading.
-  //
-  // It follows the ability buttons rather than sitting at fixed coordinates, so
-  // it lands in the same place relative to the HUD whatever the screen size,
-  // and moves with the HUD if the in-game clutter option hides a row.
-  // Every ability card the HUD can show. Their combined box is the cluster the
-  // bar sits above, which is what makes it move correctly when the in-game
-  // clutter option hides the top row: a hidden card measures zero and drops out
-  // of the union on its own, so the bar follows whatever is actually on screen.
+  // Which animals get numbers. You, and animals fighting near you — and in a
+  // duel only the two fighters, while outside one, nobody else's duel. That
+  // is the 1.0.x rule; the difference is that "you" and "a fighter" are now
+  // the game's answer rather than an inference.
+  function hpWatched(me, now) {
+    const out = [];
+    if (!me) return out;
+    const duel = me.arena;
+    if (duel) {
+      for (const fighter of [duel.player1, duel.player2]) {
+        if (fighter && fighter.container && !fighter.container.destroyed) out.push(fighter);
+      }
+      if (out.indexOf(me) === -1) out.push(me);
+      return out;
+    }
+    out.push(me);
+    const centre = screenPosOf(me.container, now);
+    if (!centre) return out;
+    const reach = Math.min(innerWidth, innerHeight) * HP_FIGHT_FRACTION;
+    for (const animal of liveAnimals()) {
+      if (animal === me || animal.arena) continue;
+      const at = screenPosOf(animal.container, now);
+      if (!at) continue;
+      if (Math.hypot(at.x - centre.x, at.y - centre.y) <= reach) out.push(animal);
+    }
+    return out;
+  }
+
+  function hpNumbersTick(now) {
+    const me = myAnimal();
+    const percent = hpUnitsPercent();
+    for (const animal of hpWatched(me, now)) {
+      const health = healthOf(animal);
+      if (health == null) continue;
+      let seen = hpState.seen.get(animal);
+      if (!seen) {
+        hpState.seen.set(animal, {health, at: now, shownAt: -Infinity, stack: 0});
+        continue;
+      }
+      // Only a reading from the PREVIOUS tick is a baseline. An animal that
+      // was out of range (or the feature was off) took its damage unseen,
+      // and showing it all at once on its return would be a hit nobody made.
+      const fresh = now - seen.at <= 250;
+      const before = seen.health;
+      seen.health = health;
+      seen.at = now;
+      if (!fresh) continue;
+      if (!(health < before)) continue;
+      const lost = before - health;
+      let text;
+      if (percent) {
+        text = hpFormat(lost, true);
+      } else {
+        const max = hpMaxOf(animal);
+        if (!max) continue;
+        const damage = lost / 100 * max;
+        if (damage < max * HP_MIN_DAMAGE_FRACTION) continue;
+        text = hpFormat(damage, false);
+      }
+      const isPlayer = animal === me;
+      const kind = hpDamageKind(animal, isPlayer);
+      // Over the health bar when mope is drawing one, else over the animal.
+      const anchor = animal.health && animal.health.container && animal.health.container.parent
+        ? animal.health.container : animal.container;
+      const at = screenPosOf(anchor, now);
+      if (!at) continue;
+      seen.stack = now - seen.shownAt < HP_STACK_MS ? Math.min(HP_STACK_MAX, seen.stack + 1) : 0;
+      seen.shownAt = now;
+      hpShowNumber(at.x, at.y - seen.stack * HP_STACK_PX, text, kind, isPlayer);
+      hpState.recent.push({on: isPlayer ? 'you' : 'other', from: before, to: health,
+        shown: text, kind, tier: animal.tier, species: speciesOf(animal)});
+      if (hpState.recent.length > 10) hpState.recent.shift();
+    }
+  }
+
+  /* ----- your own health, as a live bar ----- */
+
   const HP_HUD_BUTTONS = [
     'ability1Button', 'ability2Button', 'dashButton',
     'climbButton', 'diveButton', 'dropButton',
   ];
+  const HP_BAR_PAD_X = 9;          // must match the padding in the stylesheet
+  const HP_TICK_CSS_WIDTH = 2;
+  const HP_RATE_WINDOW_MS = 420;
+  const HP_RATE_FAST = 14;         // points per second that count as a fast heal
+  const HP_NO_HUD_GRACE_MS = 700;
 
   const hpBarUI = {
     root: null, track: null, fill: null, ticks: null, text: null,
     shown: false, skinAt: 0, tickKey: '', tickColour: '#bcffd4',
-    mood: null, noHudAt: 0,
+    mood: null, noHudAt: 0, rate: [],
   };
 
   function hpEnsureBar() {
     if (hpBarUI.root && hpBarUI.root.isConnected) return hpBarUI;
     const host = document.body || document.documentElement;
     if (!host) return null;
-    const root = document.createElement('div');
+    const root = document.getElementById('qolc-hpbar') || document.createElement('div');
     root.id = 'qolc-hpbar';
+    root.textContent = '';
     const track = document.createElement('div');
     track.className = 'qolc-hpbar-track';
     const fill = document.createElement('div');
     fill.className = 'qolc-hpbar-fill';
-    // The whole-HP marks sit ABOVE the fill so they stay readable across both
-    // the filled and the empty part of the bar.
     const ticks = document.createElement('div');
     ticks.className = 'qolc-hpbar-ticks';
     const text = document.createElement('div');
@@ -11578,15 +6751,11 @@
     root.appendChild(track);
     root.appendChild(text);
     host.appendChild(root);
-    hpBarUI.root = root;
-    hpBarUI.track = track;
-    hpBarUI.fill = fill;
-    hpBarUI.ticks = ticks;
-    hpBarUI.text = text;
+    Object.assign(hpBarUI, {root, track, fill, ticks, text, tickKey: ''});
     return hpBarUI;
   }
 
-  // The combined box of every ability card currently on screen.
+  // The ability cards, as one box: the bar sits on top of it.
   function hpHudCluster() {
     let left = Infinity, top = Infinity, right = -Infinity;
     for (const id of HP_HUD_BUTTONS) {
@@ -11601,10 +6770,8 @@
     return left < right ? {left, top, right} : null;
   }
 
-  // Rather than hard-coding a colour that would only suit one biome, the panel
-  // is painted with whatever the game is painting its own ability cards — read
-  // back off a live card, so it matches on ice, in lava and anywhere else, and
-  // keeps matching if the game ever restyles them.
+  // Borrow the HUD card's own background so the bar matches whatever skin
+  // mope is wearing this season.
   function hpMatchHudSkin(ui, now) {
     if (now - hpBarUI.skinAt < 1000) return;
     hpBarUI.skinAt = now;
@@ -11616,27 +6783,14 @@
     if (!card) return;
     try {
       const cs = getComputedStyle(card);
-      if (cs.backgroundColor && cs.backgroundColor !== 'rgba(0, 0, 0, 0)') {
-        if (ui.root.style.background !== cs.backgroundColor) {
-          ui.root.style.background = cs.backgroundColor;
-        }
+      if (cs.backgroundColor && cs.backgroundColor !== 'rgba(0, 0, 0, 0)' &&
+          ui.root.style.background !== cs.backgroundColor) {
+        ui.root.style.background = cs.backgroundColor;
       }
     } catch (e) { /* keep the stylesheet default */ }
   }
 
-  // A line at every whole point of HP, so the bar can be read as a number of
-  // hits rather than a length. The spacing is per-animal — a 2.5 HP mouse gets
-  // two marks, a 12 HP dragon eleven — but the bar itself never changes size.
-  //
-  // These are drawn as real elements rather than a repeating gradient, and both
-  // their position and their width are snapped to whole DEVICE pixels. A
-  // gradient places its stops at fractions of the bar's width, which land
-  // between physical pixels and get rounded independently — that is why the
-  // first line came out visibly fatter than the second. Snapping makes every
-  // line occupy the same pixels as every other, at any display scaling.
-  const HP_BAR_PAD_X = 9;        // must match the padding in the stylesheet
-  const HP_TICK_CSS_WIDTH = 2;   // how thick a mark is, in ordinary pixels
-
+  // One mark per whole hit point, in Hit points mode.
   function hpDrawTicks(ui, max, width) {
     const dpr = window.devicePixelRatio || 1;
     const key = max + '@' + width + '@' + dpr;
@@ -11646,7 +6800,6 @@
     const track = width - HP_BAR_PAD_X * 2;
     if (!(max > 1) || !(track > 8)) return;
     const snap = (v) => Math.round(v * dpr) / dpr;
-    // A whole number of device pixels wide, so every mark is the same mark.
     const lineWidth = Math.max(1, Math.round(HP_TICK_CSS_WIDTH * dpr)) / dpr;
     for (let hp = 1; hp < max; hp++) {
       const x = snap(hp / max * track);
@@ -11655,10 +6808,6 @@
       line.className = 'qolc-hpbar-tick';
       line.style.left = x + 'px';
       line.style.width = lineWidth + 'px';
-      // Painted directly rather than inherited. Leaving it to be picked up from
-      // the parent puts the colour one indirection away from the element that
-      // shows it, and if that link ever fails the marks fall back to plain
-      // white with nothing to say why.
       line.style.background = hpBarUI.tickColour;
       ui.ticks.appendChild(line);
     }
@@ -11678,44 +6827,14 @@
     }
     hpBarUI.shown = false;
     hpBarUI.mood = null;
+    hpBarUI.rate.length = 0;
   }
 
-  // Green while healthy, amber in the middle, red when it is nearly over —
-  // the same reading the game's own bar gives, only legible.
-  function hpBarColour(fraction) {
-    if (fraction > 0.6) return '#4ad66d';
-    if (fraction > 0.3) return '#ffd60a';
-    return '#ff4a3d';
-  }
-
-  // The whole-HP marks are a lighter cast of whatever the bar is currently
-  // showing, so they stay legible against the fill without ever reading as a
-  // different thing from the bar they divide. They cross the empty part of the
-  // track too, where a pale line shows up just as well against the dark.
-  function hpTickColour(fraction) {
-    if (fraction > 0.6) return '#bcffd4';
-    if (fraction > 0.3) return '#fff6b8';
-    return '#ffc7c0';
-  }
-
-  // How fast health is climbing, in percentage points per second, measured over
-  // a short window. The game marks "being healed by an aloe" with one flag
-  // whether it came from a leaf or a whole plant — the difference between them
-  // is only ever how QUICKLY it heals, so that is what gets measured rather
-  // than looked up.
-  const HP_RATE_WINDOW_MS = 420;
-  const HP_RATE_FAST = 14;      // points per second that count as a fast heal
-
-  function hpNoteRate(entry, pct, now) {
-    const history = entry.rate || (entry.rate = []);
+  // Points per second over the last ~0.4s; positive while healing.
+  function hpNoteRate(pct, now) {
+    const history = hpBarUI.rate;
     const last = history[history.length - 1];
-    // A sample is taken when the reading moves AND periodically when it does
-    // not. Without the second half, standing at a steady health forever leaves
-    // the last two samples in place — an old jump keeps being divided by an old
-    // interval, and the bar reports a heal that finished long ago.
-    if (!last || Math.abs(last.pct - pct) > 0.01 || now - last.t > 80) {
-      history.push({t: now, pct});
-    }
+    if (!last || Math.abs(last.pct - pct) > 0.01 || now - last.t > 80) history.push({t: now, pct});
     while (history.length > 1 && now - history[0].t > HP_RATE_WINDOW_MS) history.shift();
     if (history.length < 2) return 0;
     const first = history[0], newest = history[history.length - 1];
@@ -11724,32 +6843,21 @@
     return (newest.pct - first.pct) / seconds;
   }
 
-  // What the bar should be doing with itself, given everything happening to
-  // you. Dangers come before comforts — being on fire matters more than the
-  // aloe you are stood on — and healing is ranked fastest-first so a plant is
-  // never reported as a leaf.
-  function hpBarMood(entry, now, rate) {
-    const fx = hpEffectsSay(entry, now);
+  // The bar's glow: what is happening to you right now.
+  function hpBarMood(me, rate) {
+    const fx = me.effects || {};
     if (fx.burning) return 'fire';
     if (fx.frozen) return 'frost';
-    if (fx.poisoned || entry.outline === HP_TINT_POISON) return 'poison';
+    if (fx.poisoned) return 'poison';
     if (fx.aloed) return rate >= HP_RATE_FAST ? 'aloe-strong' : 'aloe';
-    if (fx.healing || entry.outline === HP_TINT_HEALING) return 'gem';
-    // Healing hard with nothing named for it still deserves to be seen.
+    if (fx.healing) return 'gem';
     if (rate >= HP_RATE_FAST) return 'aloe-strong';
     return '';
   }
 
-  // The ability cards are the proof that you are actually playing. On the death
-  // screen the game takes its whole in-game HUD down, and what is left is a
-  // camera sitting where you died with strangers wandering through the middle
-  // of it — which is what had the bar flickering on and off as it locked onto
-  // one animal after another. No cards, no bar. The grace period is there so a
-  // single frame of the HUD rebuilding does not blink it off.
-  const HP_NO_HUD_GRACE_MS = 700;
-
-  function hpUpdateBar(entry, now) {
-    if (!hpBarOn() || !entry) { hpHideBar(); return; }
+  function hpBarTick(now) {
+    const me = myAnimal();
+    if (!hpBarOn() || !me || !inGame()) { hpHideBar(); return; }
     const cluster = hpHudCluster();
     if (!cluster) {
       if (!hpBarUI.noHudAt) hpBarUI.noHudAt = now;
@@ -11758,996 +6866,54 @@
     }
     hpBarUI.noHudAt = 0;
     const percentMode = hpUnitsPercent();
-    const max = hpMaxOf(entry, true, now);
-    const pct = hpPercentOf(entry.bar, entry);
-    // In HP mode an unknown animal takes the bar off screen, because there is
-    // no number to put in it. In percent mode there is always a number, so the
-    // bar stays up for every animal in the game — it just loses its whole-point
-    // marks, which are the only part of it that needed the maximum.
-    //
-    // A moment where the READING is simply unavailable — down a hole,
-    // mid-respawn — leaves the last figure alone rather than flashing
-    // something wrong. That is the `pct != null` guard further down and it is
-    // a different condition from this one.
+    const max = hpMaxOf(me);
     if (!percentMode && !max) { hpHideBar(); return; }
+    // The eased value mope draws its own bar with, so ours moves with it;
+    // the server value when mope has not drawn one yet.
+    const drawn = me.health && Number(me.health.value);
+    const pct = Number.isFinite(drawn) ? drawn : healthOf(me);
+    if (pct == null) { hpHideBar(); return; }
     const ui = hpEnsureBar();
     if (!ui) return;
-    let rate = 0;
-    if (pct != null) {
-      rate = hpNoteRate(entry, pct, now);
-      const fraction = Math.max(0, Math.min(1, pct / 100));
-      // Percent mode reads "62%" — the server's own figure, with no second
-      // number to divide it by. HP mode keeps "7.4 / 12": two decimals would
-      // be inventing precision, and whole-and-a-half reads the way the values
-      // themselves are written.
-      let label;
-      if (percentMode) {
-        label = Math.round(pct) + '%';
-      } else {
-        const hp = fraction * max;
-        const shown = (Math.round(hp * 10) / 10).toFixed(1).replace(/\.0$/, '');
-        label = shown + ' / ' + max;
-      }
-      if (ui.text.textContent !== label) ui.text.textContent = label;
-      const width = (fraction * 100).toFixed(1) + '%';
-      if (ui.fill.style.width !== width) ui.fill.style.width = width;
-      const colour = hpBarColour(fraction);
-      if (ui.fill.style.background !== colour) ui.fill.style.background = colour;
-      hpPaintTicks(ui, hpTickColour(fraction));
+    const rate = hpNoteRate(pct, now);
+    const fraction = Math.max(0, Math.min(1, pct / 100));
+    let label;
+    if (percentMode) {
+      label = Math.round(pct) + '%';
+    } else {
+      const shown = (Math.round(fraction * max * 10) / 10).toFixed(1).replace(/\.0$/, '');
+      label = shown + ' / ' + max;
     }
+    if (ui.text.textContent !== label) ui.text.textContent = label;
+    const width = (fraction * 100).toFixed(1) + '%';
+    if (ui.fill.style.width !== width) ui.fill.style.width = width;
+    const colour = hpBarColour(fraction);
+    if (ui.fill.style.background !== colour) ui.fill.style.background = colour;
+    hpPaintTicks(ui, hpTickColour(fraction));
     hpMatchHudSkin(ui, now);
-
-    // Whatever is currently being done to you, said with the bar itself.
-    const mood = hpBarMood(entry, now, rate);
+    const mood = hpBarMood(me, rate);
     if (hpBarUI.mood !== mood) {
       hpBarUI.mood = mood;
       ui.root.className = mood ? 'qolc-hpbar-' + mood : '';
     }
-
-    // One width for every animal at every tier, sized in the same units the
-    // game sizes its own HUD in — a fraction of the shorter screen axis — so it
-    // stays in proportion on any screen, and neither grows with a bigger
-    // ability card nor changes as you upgrade.
     const vmin = Math.min(innerWidth, innerHeight);
-    const width = Math.max(140, Math.round(vmin * 0.26));
+    const barWidth = Math.max(140, Math.round(vmin * 0.26));
     const gap = Math.max(11, Math.round(vmin * 0.02));
-    // 1.0.0: the marks belong to HIT POINTS mode only. They divide the bar
-    // into whole hit points, which is a reading you can only act on when the
-    // bar is counting them — in percent mode the bar says 62% and the marks
-    // divide it into units the text never names, which reads as clutter.
-    // Passing 0 is how hpDrawTicks is told to draw none; it also covers an
-    // animal whose maximum percent mode can show but cannot name.
-    hpDrawTicks(ui, settings.hpUnits === 'hp' ? (max || 0) : 0, width);
-    layoutStyle(ui.root, 'width', width + 'px');
-    // 1.27.0 shows the bar BEFORE placing it rather than after. Its own height
-    // decides where its top edge goes, and a bar still at display:none has no
-    // height — so the first pass after every respawn used to fall back to the
-    // hardcoded 34 and land a few pixels out until the next tick corrected it.
+    hpDrawTicks(ui, percentMode ? 0 : max, barWidth);
+    layoutStyle(ui.root, 'width', barWidth + 'px');
     if (!hpBarUI.shown) { ui.root.style.display = 'block'; hpBarUI.shown = true; }
-    // Measured from the panel's own height so the gap below it is the gap that
-    // was asked for, whatever the text ends up being.
     const own = ui.root.offsetHeight || 34;
-    layoutPlace(ui.root, {
-      left: Math.round(cluster.left),
-      top: Math.round(cluster.top - own - gap),
-    });
+    layoutPlace(ui.root, {left: Math.round(cluster.left), top: Math.round(cluster.top - own - gap)});
   }
 
-  // ---------------- discovery, driven by the name-colour sweep ----------------
-
-  function hpBeginScan() {
-    hpScan.active = hpReadingNeeded() && prevMenuVisible === false;
-    if (!hpScan.active) return;
-    hpScan.seen = hpScan.seen || new Set();
-    hpScan.seen.clear();
-    hpScan.nodes = hpScan.threes = hpScan.bars = hpScan.animals = 0;
-    hpScan.sample = hpScan.animalSample = hpScan.otherSample = null;
-    hpScan.shapes = {};
+  function hpFrame(now) {
+    if (!hpActive()) { hpHideBar(); return; }
+    if (now - hpState.workAt < HP_WORK_MS) return;
+    hpState.workAt = now;
+    if (inGame()) hpNumbersTick(now);
+    hpBarTick(now);
   }
 
-  // Foods and carcasses carry health bars of their own — they can be eaten
-  // down — so a bar alone does not mean an animal. An animal is built with a
-  // whole row of parts including its name and arena-win labels; a food is a
-  // picture and a health bar. Filtering here keeps a berry lying under you
-  // from competing for the "this one is you" lock, and keeps the per-frame
-  // work down to animals.
-  function hpLooksLikeAnimal(entity) {
-    const kids = entity && entity.children;
-    if (!kids || kids.length < 4) return false;
-    for (let i = 0; i < kids.length && i < 8; i++) {
-      if (kids[i] && typeof kids[i].text === 'string') return true;
-    }
-    return false;
-  }
-
-  // Which animal a health bar belongs to.
-  //
-  // The bar has always sat exactly two levels under its animal, and that was
-  // read straight off `bar.parent.parent`. A fixed depth is the one thing a
-  // game update can move without changing anything else visible, and when it
-  // moves, every part of this feature goes quiet at once: no animal is
-  // recognised, so nothing is locked onto as you, so no bar is drawn and no
-  // damage number is ever counted — not even one dealt to somebody else.
-  //
-  // So the depth is searched for rather than assumed. The old position is
-  // still tried FIRST, so a scene that still looks the way it used to behaves
-  // exactly as it did before. Failing that it climbs, which covers the bar
-  // being moved deeper; failing that it tries one level shallower, last,
-  // because that is the reading most likely to pick up the wrong container.
-  // The test that decides is untouched, so a food or carcass bar is still
-  // refused for exactly the reason it always was.
-  const HP_ENTITY_CLIMB = 4;
-
-  function hpEntityOf(bar) {
-    let node = bar && bar.parent && bar.parent.parent;
-    for (let i = 0; i < HP_ENTITY_CLIMB && node; i++, node = node.parent) {
-      if (hpLooksLikeAnimal(node)) return node;
-    }
-    if (bar && hpLooksLikeAnimal(bar.parent)) return bar.parent;
-    return null;
-  }
-
-  // A snapshot of one health-bar candidate, for __lumiHpDebug() to report.
-  // Nothing here changes behaviour; it exists so that a scene which stops
-  // matching can be described exactly rather than guessed at.
-  function hpSampleOf(node) {
-    const kids = node.children;
-    const entity = hpEntityOf(node);
-    let maskTest = 'none';
-    const pair = hpClippedPair(kids);
-    if (pair) maskTest = 'child ' + kids.indexOf(pair.fill) + ' is masked by child ' + kids.indexOf(pair.clip);
-    const parts = hpBarParts(node);
-    const names = [];
-    return {
-      drawnWidths: kids.map(hpDrawnWidth),
-      drawnHeights: kids.map((k) => Number(k && k.height)),
-      reportedWidths: kids.map((k) => Number(k.width)),
-      // Which children this now thinks are the plate and the fill, by index,
-      // and whether it thinks the container is a bar at all.
-      partsFound: parts
-        ? {
-            plateIndex: kids.indexOf(parts.plate),
-            fillIndex: kids.indexOf(parts.fill),
-            labelIndex: parts.label ? kids.indexOf(parts.label) : -1,
-          }
-        : 'not bar-shaped',
-      maskTest,
-      alpha: Number(node.alpha), visible: node.visible,
-      ownerVisible: node.parent ? node.parent.visible : null,
-      entityChildren: entity && entity.children ? entity.children.length : -1,
-      looksLikeAnimal: !!entity && hpLooksLikeAnimal(entity),
-      identified: entity ? hpIdentify(entity, names) : null,
-      texturePathsSeen: names,
-    };
-  }
-
-  // Called for every node the scene sweep walks past.
-  function hpConsiderNode(node) {
-    hpScan.nodes++;
-    // Discounted, for the same two reasons hpBarParts() discounts: a bar we
-    // have outlined must still be tallied and gated as the four-part bar it
-    // is, or the feature would stop recognising the very bars it is drawing on.
-    const kids = hpVisibleKids(node && node.children);
-    if (!kids) return;
-    // A tally of how many parts the small containers in the scene are built
-    // from, kept so that a bar rebuilt out of a different number of parts says
-    // so outright instead of going silently unmatched.
-    if (kids.length >= 2 && kids.length <= 6) {
-      hpScan.shapes[kids.length] = (hpScan.shapes[kids.length] || 0) + 1;
-      if (kids.length !== 3 && !hpScan.otherSample) {
-        hpScan.otherSample = hpSampleOf(node);
-        hpScan.otherSample.childCount = kids.length;
-      }
-    }
-    // Every container that could BE a bar is offered to the matcher. This line
-    // used to read `!== 3`, from back when three parts was all a bar ever had.
-    // When the game added its own health number as a fourth child, the matcher
-    // was widened to cope — but this gate was not, so the widened matcher was
-    // never once asked about the containers the bar had moved into. Whatever
-    // decides what a bar looks like, it is not this.
-    if (kids.length < 2 || kids.length > HP_BAR_MAX_PARTS) return;
-    hpScan.threes++;
-    if (!hpScan.sample) hpScan.sample = hpSampleOf(node);
-    if (!hpIsHealthBar(node)) return;
-    hpScan.bars++;
-    hpScan.everFound = true;
-    const entity = hpEntityOf(node);
-    if (!entity) return;
-    hpScan.animals++;
-    if (!hpScan.animalSample) hpScan.animalSample = hpSampleOf(node);
-    hpScan.seen.add(node);
-    if (!hpState.bars.has(node)) {
-      hpState.bars.set(node, {
-        bar: node, entity, parts: null,
-        raw: null, rawAt: 0, settled: null, blindAt: 0, plateWidth: 0,
-        ident: null, identAt: 0, max: 0,
-        stack: 0, stackAt: 0,
-        fx: null, outline: -1, burnAt: 0, arenaAt: 0,
-        edge: null,   // our missing-health outline, while the starfield is up
-        // The plate geometry the outline was BUILT for, and when it was last
-        // re-read. Rounded Corners is a live setting, so the shape it was
-        // drawn against can change under it — see hpEdgeApply().
-        edgeKey: "", edgeCheckAt: 0,
-      });
-    }
-  }
-
-  function hpEndScan() {
-    if (!hpScan.active) return;
-    hpScan.active = false;
-    for (const [bar, entry] of hpState.bars) {
-      if (hpScan.seen.has(bar) && bar.parent) continue;
-      // The outline comes off first. A bar can be dropped here while it is
-      // still alive and still parented — walking out of the sweep is enough —
-      // and deleting the entry first would strand a node of ours on it.
-      hpEdgeDetach(entry);
-      hpState.bars.delete(bar);
-    }
-  }
-
-  // ---------------- per-frame tracking ----------------
-
-  // The size of the drawing surface, in the same units the scene graph places
-  // things in — which is what makes "the middle of the screen" a real place.
-  // The renderer answers three different ways depending on its version, so all
-  // three are tried before falling back to the window.
-  function viewportOf(r) {
-    const s = r && r.screen;
-    if (s && s.width > 0) return {w: s.width, h: s.height};
-    const c = (r && (r.canvas || r.view)) || null;
-    const res = (r && r.resolution) || 1;
-    if (c && c.width > 0) return {w: c.width / res, h: c.height / res};
-    return {w: innerWidth, h: innerHeight};
-  }
-
-  function hpScreenPos(node) {
-    const wt = node && node.worldTransform;
-    if (!wt || !Number.isFinite(wt.tx) || !Number.isFinite(wt.ty)) return null;
-    return {x: wt.tx, y: wt.ty};
-  }
-
-  // The camera is locked to your animal, so yours is the one animal sitting at
-  // the middle of the screen. The lock is sticky: an animal swimming over the
-  // top of you cannot take it away for a frame and have a number meant for it
-  // land on you. Only when there is genuinely more than one animal at the
-  // centre is the ability icon consulted, which names your species outright.
-  // How often a lock already held is checked against the ability icon, so a
-  // lock that was made wrongly cannot now be held for ever.
-  const HP_RELOCK_CHECK_MS = 1500;
-
-  // An existing lock, renewed for as long as the animal it points at is still
-  // in the scene — wherever on the screen that animal has moved to.
-  //
-  // This used to sit INSIDE the centre-of-screen test, which made it no lock
-  // at all: it was only ever renewed while you were already in the middle of
-  // the screen, which is the one place you never need a lock to find you. The
-  // arena does not keep the camera pinned to you, so a duel is spent drifting
-  // in and out of that circle, and every time you left it the lock was
-  // dropped: the HP bar vanished, and with no player locked, hpTick discards
-  // every other animal's bar too, so all damage numbers stopped as well. Then
-  // you drifted back and it all returned. That is the flicker.
-  //
-  // Being at the centre of the screen is how you are FOUND. It is not how you
-  // are recognised once you have been.
-  function hpRelock() {
-    if (!hpState.player) return null;
-    for (const entry of hpState.bars.values()) {
-      if (entry.entity !== hpState.player) continue;
-      hpState.playerEntry = entry;
-      return hpState.player;
-    }
-    // That animal has left the scene; find yourself again.
-    //
-    // 1.0.10: the ENTRY is dropped here, and it did not used to be. The entry
-    // is the health-bar reading; once the bar is gone from the scan the entry
-    // is a corpse — a frozen figure with nothing behind it. Leaving it in place
-    // let the two "hold rather than clear" branches below resurrect it on a
-    // truthiness test alone, so partySelfHealth() went on publishing a stale
-    // number as live health, and the arena and draw-order features went on
-    // reading an animal that had left.
-    //
-    // hpState.player is deliberately KEPT. The entity reference is how you are
-    // re-found the moment your bar comes back into the scan, and holding it is
-    // the whole point of "being at the centre of the screen is how you are
-    // FOUND, not how you are recognised once you have been". Only the reading
-    // is stale, so only the reading is dropped.
-    hpState.playerEntry = null;
-    return null;
-  }
-
-  // Whether a held lock has stopped being believable. Checked occasionally
-  // rather than every frame, and only when both readings are actually
-  // available — an unreadable animal is not evidence of anything.
-  function hpLockGoneBad(entry, now) {
-    if (hpState.lockedBy === 'game') return false;   // the game named it; an icon cannot overrule that (1.0.17)
-    if (!entry || now - hpState.playerAt < HP_RELOCK_CHECK_MS) return false;
-    hpState.playerAt = now;
-    const self = hpIdentifySelfFromHud();
-    if (!self) return false;
-    const ident = hpIdentify(entry.entity);
-    if (!ident) return false;
-    return ident.species !== self.species || ident.sub !== self.sub;
-  }
-
-  // The nameplate hanging off an animal, or '' if it has none yet. mope builds
-  // a player as a container whose children include a text node, which is the
-  // same node the scene sweep has been colouring since the first version —
-  // this just reads it instead of painting it.
-  function hpPlateTextOf(entity) {
-    const kids = entity && entity.children;
-    if (!kids || !kids.length) return '';
-    for (let i = 0; i < kids.length; i++) {
-      const k = kids[i];
-      if (k && typeof k.text === 'string' && k.text) return k.text;
-    }
-    return '';
-  }
-
-  // Is this animal YOU, said from the name rather than from where it happens
-  // to be standing? Two strengths, and the difference matters:
-  //
-  //   'tag'  — the nameplate carries the invisible share suffix this client is
-  //            emitting. That suffix belongs to exactly one player, so this is
-  //            an identity, not a resemblance. Only available while colour
-  //            sharing is on.
-  //   'name' — the visible letters match the name you configured. Strong, but
-  //            two players CAN pick the same name, so it is not proof.
-  //
-  // Returns '' for neither. This is the same ladder resolveSelfCandidates()
-  // has used in the scene sweep for years; the HP lock simply never asked.
-  // YOUR NAME, from the nickname you are actually playing under.
-  //
-  // 1.0.4, and it is half the fix for 1.0.3's regression. nameKey() reads the
-  // NAME-COLOUR panel's field, which is empty unless you have set a name
-  // colour — so on most installs the lock had no identity to work with at all,
-  // and the arena refusal below fired on every frame of every duel.
-  //
-  // mope's own nickname box is the authority and is what the server renders
-  // over your animal. It is cached because the menu is hidden during play and
-  // the field can be unreadable while you are in a game, which is precisely
-  // when the lock needs it.
-  let hpNickCache = '';
-  function hpSelfNameKey() {
-    const panel = nameKey();
-    if (panel) return panel;
-    try {
-      const el = document.getElementById('name');
-      const typed = el && typeof el.value === 'string' ? baseKey(el.value) : '';
-      if (typed) hpNickCache = typed;
-    } catch (e) { /* not on the menu */ }
-    return hpNickCache;
-  }
-
-  // Whether we have ANY way to recognise ourselves by name. The arena refusal
-  // is conditioned on this: refusing to guess is only defensible when we had a
-  // question to ask and it came back no. With no name and no tag there was
-  // never a question, and going dark by default is worse than the guess.
-  function hpHaveIdentity() {
-    const key = hpSelfNameKey();
-    return !!(nameColorState.emitted || (key && key !== 'mope.io'));
-  }
-
-  function hpSelfByName(entity) {
-    const text = hpPlateTextOf(entity);
-    if (!text) return '';
-    const emitted = nameColorState.emitted;
-    if (emitted && text.endsWith(emitted)) return 'tag';
-    // Emitting a tag makes the tag the ONLY answer. Your plate carries it, so
-    // a plate without it is somebody else however the letters read — which is
-    // the same rule styleFor() applies to the nameplate colour, and the same
-    // impersonation it was written to stop. Falling through to the visible
-    // name here would hand the lock to anyone who typed your name.
-    if (emitted) return '';
-    const key = hpSelfNameKey();
-    // "mope.io" is what the server renders for every player who set no name,
-    // so it identifies nobody — the same carve-out styleFor() makes.
-    if (key && key !== 'mope.io' && baseKey(text) === key) return 'name';
-    return '';
-  }
-
-  // When the lock last refused to guess, for __lumiHpDebug. A feature that has
-  // gone quiet on purpose should be able to say so.
-  let hpLockRefusedAt = 0;
-  // Why it refused, in words, for the same reason.
-  let hpLockRefusedWhy = '';
-
-  // IS THE IN-GAME HUD ACTUALLY UP? (1.0.10)
-  //
-  // The BAR has asked this since the death screen was first handled — see
-  // HP_NO_HUD_GRACE_MS — but the LOCK never did, and that was the bug. On the
-  // death screen the game takes its whole HUD down, so hpIdentifySelfFromHud()
-  // returns null; with `self` null every species guard below is skipped and the
-  // last line of hpLockPlayer adopts near[0] unconditionally — a stranger
-  // wandering past the camera. Everything downstream then repeats it, and the
-  // one that leaves the screen is the party: partyNeedsSelfHealth() is still
-  // true on the death screen, so this client publishes a STRANGER'S health to
-  // the party as its own.
-  //
-  // Gating the lock on the same evidence the bar uses is the whole fix. Note
-  // the two failure modes it must keep apart, because only one of them is this
-  // one: "the HUD is gone" (nobody can be identified — stand down) and "the HUD
-  // is up but this animal's icon did not match" (the ordinary case for a large
-  // part of the roster — carry on and use position).
-  //
-  // Throttled because hpLockPlayer runs at the HP tick rate whenever no lock is
-  // held, which is exactly the death-screen state, and hpHudCluster() measures
-  // up to six elements. The HUD appears and disappears at human speed; 250ms
-  // costs four measurements a second instead of thirty-three and cannot be
-  // perceived. The grace period is shared with the bar so the two cannot
-  // disagree about a single frame of the HUD rebuilding.
-  const HP_HUD_CHECK_MS = 250;
-  let hpHudCheckAt = -Infinity;
-  let hpHudGoneAt = 0;          // 0 means the cards were there last time we looked
-
-  function hpHudDown(now) {
-    if (now - hpHudCheckAt >= HP_HUD_CHECK_MS) {
-      hpHudCheckAt = now;
-      if (hpHudCluster()) hpHudGoneAt = 0;
-      else if (!hpHudGoneAt) hpHudGoneAt = now;
-    }
-    return hpHudGoneAt !== 0 && now - hpHudGoneAt > HP_NO_HUD_GRACE_MS;
-  }
-
-  // Whether the animal the lock is holding is still IN the scene. This is what
-  // separates the two states hpHudDown() cannot tell apart on its own:
-  //
-  //   death screen  the HUD is gone AND your animal was torn down with it —
-  //                 mope destroys the container, children and all.
-  //   culled duel   the HUD is gone because Arena Culling took the ability
-  //                 wheel out of the document, and your animal is alive in the
-  //                 arena a few pixels from the one trying to kill you.
-  //
-  // 1.0.10 gated the lock on the HUD alone, which is right for the first and
-  // fatal for the second. The first bar hiccup inside a culled duel — a rescan
-  // miss, mope re-parenting the duellists on entry — sent hpLockPlayer through
-  // that gate, the gate refused, and refusing cleared hpState.player, so the
-  // relock had nothing to re-find for the rest of the fight. And a null lock
-  // reads as "not your duel" to arenaSkyPick(), which is how one gate took the
-  // starfield, the bite indicator and the boost counter down together.
-  //
-  // `parent` is the liveness signal this file already trusts: hpEndScan()
-  // drops a bar whose parent is gone, and mope tears a dead animal down with
-  // destroy({children: true}), which detaches it and marks it destroyed.
-  function hpPlayerAlive() {
-    const player = hpState.player;
-    return !!(player && player.destroyed !== true && player.parent);
-  }
-
-  // THE NEW SYSTEM (1.0.17, corrected in 1.0.18): mope's own answer to "which
-  // animal is mine".
-  //
-  // Every lock before 1.0.17 INFERRED identity — from the ability icon, the
-  // nameplate, the outline tint, distance from the centre of the screen — and
-  // §21 of the handoff is five releases of that inference being wrong. It was
-  // wrong again with a bot named "mope.io's bot" a few pixels from a player
-  // named "mope.io": nothing about how two animals LOOK can tell them apart
-  // when they look the same, and in a tier-matched duel they usually do.
-  //
-  // The game does not infer it. mope's singleton — captured by the 1.36.0
-  // game-loop route, see gameCapture — carries `player`: assigned by
-  // setPlayer(e) the moment the server hands you an animal, read by mope
-  // itself for your position, health, name and arena, and set to null on
-  // death and on disconnect.
-  //
-  // WHAT 1.0.17 GOT WRONG, AND IT TOOK SIX FEATURES DOWN AT ONCE. `player` is
-  // NOT the Pixi container the health-bar scan sees. It is the entity MODEL,
-  // and the model OWNS the container: the entity base constructor reads
-  // `this.HUD = new rn, this.container = new rn({visible: !1}), ...`, and the
-  // animal adds [body, name, arenaWins, resourceIndicator, HUD] to that
-  // container — so bar.parent.parent, the thing hpEntityOf() returns, is
-  // `$.player.container`. 1.0.17 demanded `.children` of the model, got none,
-  // returned null, and hpLockPlayer() then REFUSED every animal as "you have
-  // no animal right now" — HP bar, damage numbers, party health, boost
-  // counter, starfield and bite indicator all dark, for everyone, on every
-  // build. The fix is one property hop, and a rule: a shape this file cannot
-  // resolve falls back to the inference and says so. It never refuses.
-  //
-  // Read every time, never cached: the game replaces the model on respawn and
-  // nulls it on death, and both are exactly the moments a stale copy would lie.
-  function hpGameModel() {
-    const game = gameCapture.game;
-    const me = game && game.player;
-    return me && typeof me === 'object' ? me : null;
-  }
-
-  // The scene container for the game's player, or null when the model's
-  // shape is not one this build can resolve. Both shapes are accepted — a
-  // model owning `.container` (mope today) and a container itself (should a
-  // build ever hand the container over directly) — and the debug hook says
-  // which was seen.
-  function hpGamePlayer() {
-    const model = hpGameModel();
-    if (!model) return null;
-    const node = model.container && typeof model.container === 'object' ? model.container : model;
-    if (node.destroyed === true) return null;
-    if (!node.children || typeof node.children.length !== 'number') return null;
-    return node;
-  }
-
-  function hpGamePlayerShape() {
-    const m = hpGameModel();
-    if (!m) return gameCapture.game ? 'null — the game says you have no animal' : 'n/a — no game object';
-    if (m.container && typeof m.container === 'object') return 'a model owning .container (mope today)';
-    if (m.children && typeof m.children.length === 'number') return 'a container';
-    return 'UNRECOGNISED — keys: ' + Object.keys(m).slice(0, 14).join(', ');
-  }
-
-  // The current reading for the authoritative player. Most callers arrive
-  // just after hpTick has filled playerEntry, but arena entry reparents bars
-  // and a failed earlier feature used to leave a stale opponent entry behind.
-  // Match the game-owned container every time; use the heuristic entry only
-  // when that authoritative shape genuinely cannot be resolved.
-  function hpSelfEntry() {
-    const me = hpGamePlayer();
-    if (me) {
-      const current = hpState.playerEntry;
-      if (current && current.entity === me && current.bar && current.bar.parent) return current;
-      for (const entry of hpState.bars.values()) {
-        if (entry && entry.entity === me && entry.bar && entry.bar.parent) return entry;
-      }
-      return null;
-    }
-    // A captured game with no player is an authoritative menu/death answer.
-    if (gameCapture.game && !hpGameModel()) return null;
-    return hpState.playerEntry || null;
-  }
-
-  function hpLockPlayer(scr, now) {
-    // 1.0.17: THE GAME'S OWN ANSWER COMES FIRST. 1.0.18: and it can only ever
-    // REFUSE when the game positively says you have no animal. A player the
-    // game names but whose shape this build cannot resolve to a scene
-    // container is not a refusal — it is the fallback, said out loud. The
-    // first cut refused there, and refused everyone. See hpGamePlayer().
-    if (gameCapture.game) {
-      const model = hpGameModel();
-      if (!model) {
-        hpState.lockedBy = 'game';
-        hpLockRefusedAt = now;
-        hpLockRefusedWhy = 'mope says you have no animal right now (dead, or on the menu)';
-        return hpAdoptPlayer(null);
-      }
-      const me = hpGamePlayer();
-      if (me) {
-        hpState.lockedBy = 'game';
-        for (const entry of hpState.bars.values()) {
-          if (entry.entity === me) { hpLockRefusedAt = 0; return hpAdoptPlayer(entry); }
-        }
-        // Named by the game, bar not in the scan yet — not drawn yet, or this
-        // scan missed it. Hold the container and wait for its bar. Never a
-        // stranger.
-        hpState.player = me;
-        hpState.playerEntry = null;
-        hpLockRefusedAt = now;
-        hpLockRefusedWhy = 'mope names your animal; its health bar is not in the scan yet';
-        return me;
-      }
-      hpState.lockedBy = 'heuristic — the game names an animal of a shape this build cannot resolve';
-    } else {
-      // No singleton: the page loaded without the game-loop route firing.
-      hpState.lockedBy = 'heuristic — the game object was never captured';
-    }
-    // Every line from here down is the inference this file used before
-    // 1.0.17, kept as the fallback the handoff's rule for `$` asks for — and
-    // hpState.lockedBy says why it is running.
-    const kept = hpRelock();
-    if (kept && !hpLockGoneBad(hpState.playerEntry, now)) return kept;
-
-    // No HUD, no NEW lock. Above the searches rather than inside them: with
-    // the cards gone there is no identity to be had, so every pass below is
-    // position guessing among strangers, and the honest answer is no answer.
-    //
-    // 1.0.12: no NEW lock — but an animal already known to be yours, and still
-    // standing in the scene, is HELD. The HUD is down in two states and only
-    // one of them is the death screen: Arena Culling takes the whole ability
-    // wheel out of the document for the length of a duel, and hpHudCluster()
-    // cannot tell that from dying. Refusing here cleared hpState.player, so
-    // the relock had nothing to re-find for the rest of the fight, and every
-    // feature that reads the lock — the starfield, the bite indicator, the
-    // boost counter — went dark together. See hpPlayerAlive().
-    //
-    // Holding is safe on the death screen: your animal is destroyed there, so
-    // hpPlayerAlive() says no and this refuses exactly as 1.0.10 did. What is
-    // held is the ENTITY, not a reading — playerEntry stays null until the bar
-    // is back in the scan, so nothing stale is published in the meantime.
-    if (hpHudDown(now)) {
-      hpLockRefusedAt = now;
-      if (hpPlayerAlive()) {
-        hpLockRefusedWhy = 'the in-game HUD is down but your animal is still in ' +
-          'the scene (a culled duel) — lock held, waiting for its bar';
-        return hpState.player;
-      }
-      hpLockRefusedWhy = 'the in-game HUD is down (death screen or menu)';
-      return hpAdoptPlayer(null);
-    }
-
-    // THE NAME IS ASKED FIRST, AND ACROSS EVERY BAR — not just the ones near
-    // the middle of the screen. That second half is the entire fix, and the
-    // first attempt got it wrong: it scanned only the near-centre candidates,
-    // and a test caught it at once. In an arena you are frequently NOT near
-    // the centre, because the camera pins to neither duellist — so filtering
-    // by position and then asking who somebody is threw the right answer away
-    // before the question was put. Identity is not a fact about where the
-    // camera is pointing, so it is settled before position is consulted.
-    //
-    // What this replaces: species-then-nearest. In ordinary play that is fine,
-    // because the camera follows you and you ARE the middle. In a tier-matched
-    // duel both animals are usually the same species, so the species check
-    // separated nothing and it fell through to "whoever is nearer the centre"
-    // — a coin flip between you and the person trying to kill you. Everything
-    // downstream followed that choice: the HP bar, the damage numbers, the
-    // health published to the party, and the boost counter, which is where it
-    // was noticed.
-    let tagged = null, named = null;
-    for (const entry of hpState.bars.values()) {
-      const how = hpSelfByName(entry.entity);
-      if (how === 'tag') { tagged = entry; break; }
-      if (how === 'name' && !named) named = entry;
-    }
-    if (tagged) { hpLockRefusedAt = 0; return hpAdoptPlayer(tagged); }
-    if (named)  { hpLockRefusedAt = 0; return hpAdoptPlayer(named); }
-
-    const cx = scr.w / 2, cy = scr.h / 2;
-    const limit = Math.min(scr.w, scr.h) * HP_LOCK_FRACTION;
-    const limitSq = limit * limit;
-    const near = [];
-    for (const entry of hpState.bars.values()) {
-      // Squared distances throughout. `dist` is only ever compared against the
-      // limit and used to order `near`, and squaring preserves both — so the
-      // square root Math.hypot() computes was pure waste, on top of hypot being
-      // markedly slower than the arithmetic because of its overflow guards.
-      // Reading the transform here also avoids hpScreenPos()'s fresh {x, y} per
-      // bar per frame.
-      const wt = entry.entity && entry.entity.worldTransform;
-      if (!wt || !Number.isFinite(wt.tx) || !Number.isFinite(wt.ty)) continue;
-      const dx = wt.tx - cx, dy = wt.ty - cy;
-      const dist = dx * dx + dy * dy;
-      if (dist > limitSq) continue;
-      near.push({entry, dist});
-    }
-    const self = hpIdentifySelfFromHud();
-    if (!near.length) return hpAdoptPlayer(hpLockByName(self));
-    near.sort((a, b) => a.dist - b.dist);
-
-    // THE NAME IS ASKED FIRST, and 1.0.3 is the version that starts asking.
-    //
-    // Everything below this used to begin at the species check and end at
-    // "whoever is nearest the middle of the screen". In ordinary play that is
-    // fine, because the camera follows you and you ARE the middle. In an arena
-    // it is not: the camera does not pin to either duellist, so your opponent
-    // drifts through the centre as readily as you do. When the two of you are
-    // the same animal — which in a tier-matched duel is the normal case, not
-    // the exotic one — the species check cannot separate you either, and the
-    // lock silently adopted whoever happened to be nearer.
-    //
-    // Everything downstream then followed the wrong animal: the HP bar, the
-    // damage numbers, the health this client publishes to the party, and the
-    // boost counter, which is where it was noticed.
-    //
-    // A nameplate is a fact about WHICH PLAYER an animal is. Distance from the
-    // centre of the screen is a fact about where the camera is pointing. Only
-    // one of those is an identity, so it goes first.
-
-    // THE SPECIES, ACROSS EVERY BAR, BEFORE POSITION IS CONSULTED AT ALL.
-    //
-    // 1.0.9. hpLockByName() has always been able to answer "exactly one animal
-    // on screen is the animal the HUD says I am" — but it was only ever called
-    // when NOTHING was near the centre, as a last resort. So the strongest
-    // signal available to a player with no name was the one the lock reached
-    // for last, and usually never.
-    //
-    // It is an identity for the same reason a nameplate is: it is a fact about
-    // WHICH ANIMAL this is, not about where the camera happens to be pointing.
-    // Only a unique match counts — hpLockByName returns null the moment two
-    // animals share your species, which is the honest answer in a mirror
-    // match and is why this can sit this high without being reckless.
-    if (self) {
-      const only = hpLockByName(self);
-      if (only) { hpLockRefusedAt = 0; return hpAdoptPlayer(only); }
-    }
-
-    // Then among the ones near the middle. Unlike the pass above this accepts
-    // the FIRST match rather than requiring uniqueness, because being near the
-    // centre is corroborating evidence in its own right.
-    if (near.length > 1 && self) {
-      for (let i = 0; i < near.length && i < 4; i++) {
-        const ident = hpIdentify(near[i].entry.entity);
-        if (ident && ident.species === self.species && ident.sub === self.sub) {
-          hpLockRefusedAt = 0;
-          return hpAdoptPlayer(near[i].entry);
-        }
-      }
-    }
-
-    // NOTHING IDENTIFIED YOU. What is left is position, and position is a
-    // guess — so before taking it, check it does not contradict something we
-    // actually know.
-    //
-    // THIS IS THE BUG FROM THE FIELD REPORT. The species check above used to
-    // be the only one, and it was gated on `near.length > 1`. With a single
-    // animal near the middle it did not run at all — so when the camera sat
-    // nearer the opponent than to you, the lock adopted them WITHOUT EVER
-    // ASKING whether they were your species, even though the HUD could have
-    // said no. The boost counter, the HP bar, the damage numbers and the party
-    // health all followed the opponent, and the draw-order keys inverted,
-    // because "above" then lifted them and "below" lifted everyone but them.
-    //
-    // A candidate we can positively identify as NOT us is worse than no
-    // candidate: it is confidently wrong, and every feature downstream repeats
-    // the mistake.
-    const pick = near[0];
-    if (self && pick) {
-      const ident = hpIdentify(pick.entry.entity);
-      if (ident && (ident.species !== self.species || ident.sub !== self.sub)) {
-        // Hold an existing lock rather than clearing it — the same
-        // anti-thrash rule as below, and for the same reason. hpRelock() has
-        // already dropped the entry if that animal left the scene, so this can
-        // only hold a reading that is still live.
-        if (hpState.playerEntry) {
-          hpLockRefusedAt = now;
-          hpLockRefusedWhy = 'nearest animal is not our species; holding the existing lock';
-          return hpState.player;
-        }
-        hpLockRefusedAt = now;
-        hpLockRefusedWhy = 'nearest animal is positively a different species';
-        return hpAdoptPlayer(null);
-      }
-    }
-
-    // Ambiguous rather than contradicted: more than one plausible candidate and
-    // a name we could have matched but did not.
-    //
-    // 1.0.3 refused here whenever an arena was running, and that shipped a
-    // regression worth recording. Refusing means hpAdoptPlayer(null), and
-    // arenaSkyPick() opens by reading hpState.playerEntry and hands it to
-    // arenaSkyLockIsSelf(), which returns false on a null entry — so a refusal
-    // did not merely withhold the HP bar, it made the duel read as not-yours,
-    // which took the starfield down and stopped biteTick() ever running. And it
-    // FLASHED, because a refusal is not stable: whenever one fighter drifted
-    // out of the near-centre circle there was one candidate, the lock adopted,
-    // and the moment both were near again it refused.
-    //
-    // So it is conditioned on hpHaveIdentity() — refusing to guess is only
-    // defensible when a question was asked and came back no — and an existing
-    // lock is HELD rather than cleared.
-    if (near.length > 1 && arenaDuel.active && hpHaveIdentity()) {
-      if (hpState.playerEntry) {
-        hpLockRefusedAt = now;
-        hpLockRefusedWhy = 'ambiguous in an arena; holding the existing lock';
-        return hpState.player;
-      }
-      hpLockRefusedAt = now;
-      hpLockRefusedWhy = 'ambiguous in an arena and identity is available';
-      return hpAdoptPlayer(null);
-    }
-    hpLockRefusedAt = 0;
-    hpLockRefusedWhy = '';
-    return hpAdoptPlayer(near[0].entry);
-  }
-
-  function hpAdoptPlayer(entry) {
-    hpState.playerEntry = entry || null;
-    hpState.player = entry ? entry.entity : null;
-    // Adopting anything is the end of a refusal, so the reason is cleared here
-    // rather than at each of the four sites that adopt — a refusal path calls
-    // this with null and its reason survives, which is the whole distinction.
-    if (entry) hpLockRefusedWhy = '';
-    return hpState.player;
-  }
-
-  // Fallback for when nothing is at the middle of the screen at all. The arena
-  // is the case that matters: it rearranges where the duellists are drawn, and
-  // without this the whole feature goes quiet for the length of a fight. Only
-  // an unambiguous answer is accepted — if two animals on screen are the same
-  // species as you, this declines rather than guess which one you are.
-  function hpLockByName(self) {
-    if (!self) return null;
-    let found = null;
-    for (const entry of hpState.bars.values()) {
-      const ident = hpIdentify(entry.entity);
-      if (!ident || ident.species !== self.species || ident.sub !== self.sub) continue;
-      if (found) return null;   // more than one candidate: no answer is safer
-      found = entry;
-    }
-    return found;
-  }
-
-  // Maximum HP for the animal this bar belongs to, re-checked occasionally
-  // because an upgrade swaps the animal underneath without replacing anything
-  // in the scene. 0 means "not something we can name a number for".
-  function hpMaxOf(entry, isPlayer, now) {
-    if (entry.ident && now - entry.identAt < HP_IDENT_MS) return entry.max;
-    const ident = (isPlayer && hpIdentifySelfFromHud()) || hpIdentify(entry.entity);
-    entry.identAt = now;
-    entry.ident = ident || {species: '', sub: ''};
-    entry.max = ident ? hpMaxFor(ident.species, ident.sub) : 0;
-    // Only when the animal could not be named AT ALL does the XP bar get a
-    // say, and only for your own. An animal that was named and then refused —
-    // an unclassified rare, a King Dragon — must stay refused; falling back to
-    // its tier there would hand out exactly the wrong number on purpose.
-    if (!ident && isPlayer) {
-      const tier = hpTierFromXp();
-      if (tier > 0 && tier < 17) entry.max = HP_TIER_MAX[tier - 1];
-    }
-    return entry.max;
-  }
-
-  function hpTick(renderer, now) {
-    if (!hpReadingNeeded() || prevMenuVisible !== false) {
-      if (hpState.bars.size || hpState.player) hpReset();
-      return;
-    }
-    if (document.hidden) return;
-    // Whether this pass is allowed to DRAW anything. With damage numbers
-    // switched off, the party list is the only thing here that wants a
-    // reading, and it only ever wants YOUR health — so the loop below skips
-    // every other animal before it measures anything, which is where nearly
-    // all the cost of this feature is.
-    const drawing = hpActive();
-
-    const scr = viewportOf(renderer);
-    const player = hpLockPlayer(scr, now);
-    const cx = scr.w / 2, cy = scr.h / 2;
-    const fightRange = Math.min(scr.w, scr.h) * HP_FIGHT_FRACTION;
-    const fightRangeSq = fightRange * fightRange;
-    const toCssX = innerWidth / (scr.w || innerWidth);
-    const toCssY = innerHeight / (scr.h || innerHeight);
-
-    // Your own arena standing decides what everyone else's means, so it is
-    // settled before anything is counted.
-    const playerEntry = hpState.playerEntry;
-    if (playerEntry) hpNoteOutline(playerEntry, now);
-    const youAreDuelling = hpInArena(playerEntry, now);
-    hpUpdateBar(playerEntry, now);
-
-    // Whether the missing-health outline should be on, asked once for the whole
-    // pass. The test is that the starfield is ACTUALLY DRAWING, not that its
-    // switch is on — the switch can be on and the duel yours while the sky has
-    // still refused to attach, and an outline that outlived the background it
-    // exists for would be a change to mope's bars for no reason at all.
-    const edging = arenaSkyLit();
-
-    for (const entry of hpState.bars.values()) {
-      const bar = entry.bar;
-      if (!bar.parent) continue;
-
-      // The outline is applied before anything decides whether this bar is
-      // worth MEASURING. It is not a reading — it is a change to the bar
-      // itself — and every branch below this drops bars that are still on
-      // screen and still want outlining.
-      hpEdgeApply(entry, edging, now);
-
-      // Nobody is told who dealt the damage, so an animal that is not you only
-      // counts while it is close enough to be something you are fighting.
-      // Everything else is dropped here rather than after being measured: a
-      // busy screen holds a hundred health bars, and measuring all of them
-      // every frame would be the expensive part of this feature.
-      const isPlayer = entry.entity === player;
-      // With nothing being drawn, you are the only animal this feature has
-      // anything to say about — dropped here, before the transform read and
-      // the bar measurement below, which is the whole reason a party can carry
-      // health without paying for damage numbers.
-      if (!isPlayer && !drawing) { entry.raw = null; entry.settled = null; continue; }
-      if (!isPlayer) {
-        // This is the hottest line in the script: it runs for every health bar
-        // on screen, every frame, and a busy screen holds a hundred of them.
-        // hpScreenPos() returned a fresh {x, y} for each one, and Math.hypot()
-        // then took a square root only to throw it away in a comparison.
-        // Reading the transform inline and comparing squared distances removes
-        // both. A missing or non-finite transform leaves dx/dy as NaN, and
-        // every NaN comparison below is false — so the Number.isFinite guards
-        // stand in for the old `!where` test rather than duplicating it.
-        const wt = entry.entity && entry.entity.worldTransform;
-        const wx = wt ? wt.tx : NaN;
-        const wy = wt ? wt.ty : NaN;
-        const dx = wx - cx, dy = wy - cy;
-        if (!player || !Number.isFinite(wx) || !Number.isFinite(wy) ||
-            dx * dx + dy * dy > fightRangeSq) {
-          // Forget it entirely, so an animal that wanders back in half dead
-          // does not report the whole gap as one enormous hit.
-          entry.raw = null;
-          entry.settled = null;
-          continue;
-        }
-        hpNoteOutline(entry, now);
-        // Duels are private. Two strangers fighting beside you are none of your
-        // business, and while you are in one yourself, the only other animal
-        // that matters is the one across from you.
-        const duelling = hpInArena(entry, now);
-        if (youAreDuelling ? !duelling : duelling) {
-          entry.raw = null;
-          entry.settled = null;
-          continue;
-        }
-      }
-
-      // A bar goes unreadable whenever the game hides an animal's HUD — down a
-      // hole, or invisible. Damage taken in there is still real, so a short
-      // blackout keeps its baseline and reports the loss on reappearing. A long
-      // one gives the baseline up: turning up minutes later with a single huge
-      // number attached to nothing you can remember is worse than saying
-      // nothing at all.
-      const pct = hpPercentOf(bar, entry);
-      if (pct == null) {
-        entry.raw = null;
-        if (!entry.blindAt) entry.blindAt = now;
-        else if (now - entry.blindAt > HP_BLIND_MS) entry.settled = null;
-        continue;
-      }
-      entry.blindAt = 0;
-
-      // Wait for the animated bar to come to rest; only then is the reading
-      // the whole percent the server actually sent.
-      if (entry.raw == null || Math.abs(pct - entry.raw) > 0.05) {
-        entry.raw = pct;
-        entry.rawAt = now;
-        continue;
-      }
-      if (now - entry.rawAt < HP_SETTLE_MS) continue;
-      const value = Math.max(0, Math.min(100, Math.round(pct)));
-      if (entry.settled === value) continue;
-      const previous = entry.settled;
-      entry.settled = value;
-      if (previous == null || value >= previous) continue; // first sight, or regen
-      // A settled reading is all the party list ever wanted. Everything past
-      // this point works out what the damage WAS and puts a number on screen.
-      if (!drawing) continue;
-
-      // In percent mode the drop IS the number, and every animal has one.
-      // In HP mode it has to be multiplied by a maximum, and an animal whose
-      // maximum is not published gets no number at all rather than a guessed
-      // one — an unclassified rare, an animal wearing a skin this cannot name,
-      // a King Dragon. That refusal is the single biggest reason the indicator
-      // reads as inconsistent, and it is exactly what percent mode removes.
-      const percentMode = hpUnitsPercent();
-      const max = hpMaxOf(entry, isPlayer, now);
-      if (!percentMode && !max) continue;
-      const damage = percentMode ? previous - value : (previous - value) / 100 * max;
-      // A percent drop cannot be smaller than one whole point, so the noise
-      // floor that HP mode needs would never fire — but it is still written
-      // per mode rather than shared, because the two are different units and
-      // a single constant covering both would be a coincidence, not a rule.
-      if (damage < (percentMode ? HP_MIN_DAMAGE_PCT : hpMinDamageFor(max))) continue;
-
-      const at = hpScreenPos(bar);
-      if (!at) continue;
-      // Several numbers on one animal in quick succession would land on top of
-      // each other; walk them upward instead.
-      entry.stack = now - entry.stackAt < HP_STACK_MS ? Math.min(4, entry.stack + 1) : 0;
-      entry.stackAt = now;
-      const kind = hpDamageKind(entry, isPlayer, now);
-      hpNoteDamage(entry, previous, value, max, damage, kind, isPlayer, percentMode);
-      hpShowNumber(at.x * toCssX, at.y * toCssY - entry.stack * 17,
-        damage, kind, isPlayer, percentMode);
-    }
-
-    // The bar is the one piece of this that could quietly stop matching if the
-    // game ever rebuilds it differently. Say so rather than looking broken.
-    if (!hpScan.everFound && !hpScan.warnedAt) {
-      hpScan.warnedAt = now;
-    } else if (!hpScan.everFound && now - hpScan.warnedAt > 45000) {
-      hpScan.warnedAt = Infinity;
-      console.warn(TAG, 'no health bars were recognised in the scene — HP ' +
-        'damage numbers cannot be drawn. Everything else is unaffected.');
-    }
-  }
-
-  function applyHpNumbers() {
-    if (hpActive()) {
-      injectExtrasStyles();
-    } else if (!hpReadingNeeded()) {
-      // Only torn down when nothing at all still wants a reading. Switching
-      // damage numbers off during a party used to take the party list's health
-      // with it until the next scan refilled hpState, which looked like the
-      // list breaking rather than like the switch it actually was.
-      hpReset();
-    }
-    dbg('HP damage numbers', hpActive() ? 'running' : 'stopped');
-  }
-
-  // Nothing is torn down or rebuilt when the unit changes: both consumers read
-  // it live, on the tick they are already running. Numbers already in flight
-  // keep the unit they were printed in and fade out on their own — reprinting
-  // them would be rewriting a figure the player has already read.
   function setHpUnits(mode) {
     const value = mode === 'hp' ? 'hp' : 'percent';
     if (settings.hpUnits === value) return;
@@ -12757,681 +6923,272 @@
     dbg('HP units', value);
   }
 
-  // Type __lumiHpDebug() in the console while in game to see exactly how far
-  // this gets: whether the scene is being walked at all, how many health bars
-  // it recognises, which animal it thinks is you, and what HP it has decided
-  // you have. Every stage that can quietly come up empty is listed, so one
-  // paste of the output says which one did.
-  // A structural dump of one real health bar, preferring one that is actually
-  // on screen. Measuring the bar is the step with the least margin for error,
-  // so if it ever reads wrong again this says exactly what shape the drawing
-  // commands are in rather than leaving it to be inferred.
-  function hpBarInternals() {
-    let target = null;
-    for (const entry of hpState.bars.values()) {
-      if (!target) target = entry;
-      if (Number(entry.bar.alpha) > 0.002) { target = entry; break; }
-    }
-    if (!target) return null;
-    const describe = (shape) => {
-      const list = shape && shape.context && shape.context.instructions;
-      const out = {
-        drawnWidth: hpDrawnWidth(shape),
-        fromContext: hpWidthFromContext(shape),
-        fromGeometry: hpWidthFromGeometry(shape),
-        widthGetter: Number(shape && shape.width),
-        scaleX: shape && shape.scale ? Number(shape.scale.x) : null,
-        instructionCount: Array.isArray(list) ? list.length : -1,
-        actions: Array.isArray(list) ? list.map((i) => i && i.action).slice(0, 6) : null,
-        pathSteps: null,
-      };
-      if (Array.isArray(list)) {
-        for (const ins of list) {
-          const data = ins && ins.data;
-          const path = data && (data.path || data);
-          const steps = path && path.instructions;
-          if (Array.isArray(steps)) {
-            out.pathSteps = steps.slice(0, 4).map((s) => ({
-              action: s && s.action,
-              data: Array.isArray(s && s.data) ? s.data.slice(0, 5).map(Number) : typeof (s && s.data),
-            }));
-            break;
-          }
-        }
+  function applyHpNumbers() {
+    if (!hpActive() || !settings.hpBar) hpHideBar();
+  }
+
+  function hpDebug() {
+    const me = myAnimal();
+    const report = {
+      version: VERSION,
+      enabled: hpActive(),
+      units: hpUnitsPercent() ? 'percent' : 'hit points',
+      you: me ? {
+        species: speciesOf(me) || '(unknown)',
+        rare: rareOf(me) || '(none)',
+        tier: me.tier,
+        serverHealth: healthOf(me),
+        drawnHealth: me.health ? Math.round(me.health.value * 10) / 10 : null,
+        maxHp: hpMaxOf(me) || '(unknown — no HP figure for this animal)',
+        effects: me.effects ? Object.keys(me.effects).filter((k) => me.effects[k] === true) : [],
+      } : '(no animal — not in a game)',
+      watching: me ? hpWatched(me, performance.now()).length + ' animal(s)' : 0,
+      numbersOnScreen: hpState.live,
+      lastHits: hpState.recent.slice(),
+    };
+    console.log(TAG, 'health', report);
+    return report;
+  }
+
+  /* ============================== camera zoom ==============================
+   *
+   * Extras' seat at the shared hub. Extras OWNS the camera when its switch is
+   * on (zoomPriority 2); Moderator Extras joins at 1 and defers to it.
+   */
+
+  const ZOOM_MEMBER_ID = 'extras';
+  const ZOOM_PANEL_SOURCE = 'extras-panel';
+
+  const zoomSeat = zoomHub.join(ZOOM_MEMBER_ID, {
+    panelSource: ZOOM_PANEL_SOURCE,
+    toastPriority: 1,
+    zoomPriority: 2,
+    onChange(change) {
+      store.set('zoomLevel', change.level);
+      syncZoomUI();
+    },
+    showToast: showZoomToast,
+    // While the panel is open its keys belong to the panel; the wheel still
+    // zooms unless it is over one of our own surfaces.
+    ignoreEvent(event) {
+      if (extras && extras.panel && extras.panel.style.display === 'block' &&
+          event.type !== 'wheel') return true;
+      const target = event.target;
+      return !!(target && target.closest && target.closest(QOLC_OWN_UI));
+    },
+  });
+
+  function zoomActive() {
+    return !!settings.masterEnabled && !!settings.cameraZoom;
+  }
+
+  function syncZoomSeat() {
+    zoomSeat.setActive(zoomActive());
+  }
+
+  // 1.0.x kept a copy of the level under maut:zoomLevel; the hub's own key is
+  // the real one. A level only the old key holds is carried over once.
+  (function migrateStoredZoom() {
+    const stored = zoomHub.normalize(store.get('zoomLevel', 1));
+    if (stored !== 1 && zoomHub.getLevel() === 1) zoomHub.setLevel(stored, 'migrate');
+    syncZoomSeat();
+  })();
+
+  // mope's own zoom (`rendering.zoom`) is saved, can only zoom in, and is
+  // moved by any notch our hub declines (a touchpad pinch is ctrl+wheel). So
+  // while this zoom is on it is held at 1 — written through mope's own
+  // settings object, exactly as mope's settings UI would. Left alone when off.
+  const nativeZoomHold = {resets: 0, lastUndone: null};
+
+  function holdNativeZoom() {
+    if (!zoomActive()) return;
+    const proxy = mopeSettingsProxy();
+    if (!proxy) return;
+    try {
+      const rendering = proxy.rendering;
+      if (!rendering || typeof rendering !== 'object') return;
+      const value = rendering.zoom;
+      if (value === 1 || typeof value !== 'number') return;
+      rendering.zoom = 1;
+      nativeZoomHold.resets += 1;
+      nativeZoomHold.lastUndone = value;
+      dbg('camera zoom: undid mope\'s own zoom (' + value.toFixed(3) + ' -> 1)');
+    } catch (e) { /* never let this break the game's settings */ }
+  }
+  PAGE.addEventListener('wheel', holdNativeZoom, {passive: true});
+  setInterval(holdNativeZoom, 1000);
+
+  /* ----- in-game readout ----- */
+
+  let zoomToast = null;
+  let zoomToastTimer = 0;
+
+  function zoomStatusSuffix() {
+    if (!settings.masterEnabled) return ' (extras off)';
+    if (!settings.cameraZoom) return ' (zoom off)';
+    if (!zoomHub.hooked()) return ' (not applied)';
+    return '';
+  }
+
+  function showZoomToast() {
+    try {
+      if (!zoomToast || !zoomToast.isConnected) {
+        if (!document.body) return false;
+        zoomToast = document.getElementById('qolc-zoom') || document.createElement('div');
+        zoomToast.id = 'qolc-zoom';
+        zoomToast.style.cssText = [
+          'position:fixed', 'right:10px', 'bottom:10px', 'z-index:2147483647',
+          'pointer-events:none', 'font:12px/1.4 monospace', 'color:#fff',
+          'background:rgba(0,0,0,.55)', 'padding:3px 7px', 'border-radius:3px',
+          'white-space:nowrap',
+        ].join(';');
+        document.body.appendChild(zoomToast);
       }
-      try {
-        const b = shape.getLocalBounds();
-        out.localBounds = [b.minX, b.minY, b.maxX, b.maxY].map(Number);
-      } catch (e) { out.localBounds = 'threw'; }
-      return out;
+      zoomToast.textContent =
+        'View: ' + Math.round(zoomHub.getLevel() * 100) + '%' + zoomStatusSuffix();
+      zoomToast.style.display = '';
+      clearTimeout(zoomToastTimer);
+      zoomToastTimer = setTimeout(() => {
+        if (zoomToast) zoomToast.style.display = 'none';
+      }, 850);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function syncZoomUI() {
+    syncZoomSeat();
+    if (!extras || !extras.zoomUi) return;
+    const refs = extras.zoomUi;
+    const hooked = zoomHub.hooked();
+    refs.hookRow.classList.toggle('qolc-hook-ok', hooked);
+    refs.hookRow.classList.toggle('qolc-hook-bad', !hooked);
+    refs.hookNote.textContent = hooked
+      ? 'Attached to the game camera'
+      : 'Waiting for the game to finish loading';
+  }
+
+  function zoomDebug() {
+    const report = Object.assign({
+      version: VERSION,
+      featureEnabled: settings.cameraZoom,
+      mopeOwnZoomUndone: nativeZoomHold.resets + ' time(s)' +
+        (nativeZoomHold.lastUndone !== null
+          ? ', last from ' + nativeZoomHold.lastUndone.toFixed(3) : ''),
+    }, zoomHub.status());
+    console.table ? console.table(report) : console.log(report);
+    return report;
+  }
+
+  /* ============================== turn speed ==============================
+   *
+   * How quickly animals rotate toward the angle the server sent. mope turns
+   * every animal inside Animal.update(); this wraps that one method on the
+   * class the bridge hands over, scales the step it took, and clamps it so
+   * it can never pass the server's angle — a rate setting, never a heading
+   * the server did not send. Client-side only: nobody else sees a thing.
+   *
+   * 1.0.x had to wait for an animal to go through a Map.prototype.set trap to
+   * learn which prototype to wrap. The class is simply known now.
+   */
+
+  const turnState = {wrapped: null, applied: 0};
+
+  function turnMultiplier() {
+    if (!settings.masterEnabled || !settings.turnSpeed) return 1;
+    return settings.turnSpeedValue / TURN_NEUTRAL;
+  }
+
+  function turnWrapAngle(angle) {
+    return Math.atan2(Math.sin(angle), Math.cos(angle));
+  }
+
+  function turnShapedMultiplier(multiplier, toTarget) {
+    const style = settings.turnStyle;
+    if (style === 'linear') return multiplier;
+    const closeness = Math.min(Math.abs(toTarget) / Math.PI, 1);
+    if (style === 'ease-out') return multiplier * (0.5 + closeness);
+    if (style === 'ease-in') return multiplier * (1.5 - closeness);
+    return multiplier;
+  }
+
+  function turnApply(animal, before) {
+    const multiplier = turnMultiplier();
+    const instant = settings.masterEnabled && settings.turnSpeed &&
+      settings.turnStyle === 'instant';
+    if (multiplier === 1 && !instant) return;
+    const after = animal.angle;
+    const target = animal.target && animal.target.angle;
+    if (typeof after !== 'number' || typeof target !== 'number' ||
+        typeof before !== 'number') return;
+    const toTarget = turnWrapAngle(target - before);
+    if (!toTarget) return;
+    let step = instant
+      ? toTarget
+      : turnWrapAngle(after - before) * turnShapedMultiplier(multiplier, toTarget);
+    if (toTarget > 0) step = Math.min(Math.max(step, 0), toTarget);
+    else step = Math.max(Math.min(step, 0), toTarget);
+    if (step === after - before) return;
+    animal.angle = before + step;
+    // Animal.update() copied the angle onto the body before we got here.
+    if (animal.body && typeof animal.body.rotation === 'number') {
+      animal.body.rotation = animal.angle;
+    }
+    turnState.applied += 1;
+  }
+
+  function turnInstall() {
+    const Animal = bridge.Animal;
+    const prototype = Animal && Animal.prototype;
+    if (!prototype || turnState.wrapped === prototype) return;
+    const original = prototype.update;
+    if (typeof original !== 'function') return;
+    // Another copy of this script got here first: its wrapper already turns
+    // every animal, and a second would apply the multiplier twice.
+    if (original.__lumiTurnWrapper) { turnState.wrapped = prototype; return; }
+    const wrapper = function () {
+      const before = this.angle;
+      const result = original.apply(this, arguments);
+      try { turnApply(this, before); } catch (e) { /* never break a frame */ }
+      return result;
     };
-    const parts = target.parts || hpBarParts(target.bar) || {};
-    const kids = target.bar.children;
-    return {
-      alpha: Number(target.bar.alpha), visible: target.bar.visible,
-      readsAs: hpPercentOf(target.bar, target),
-      childCount: kids.length,
-      // Which child ended up as which, and how the answer was arrived at. If
-      // `gamesOwnNumber` is a figure, nothing below it was even consulted.
-      plateIndex: kids.indexOf(parts.plate),
-      fillIndex: kids.indexOf(parts.fill),
-      labelIndex: parts.label ? kids.indexOf(parts.label) : -1,
-      gamesOwnNumber: hpPercentFromLabel(parts.label),
-      labelRaw: parts.label ? {
-        text: String(parts.label.text),
-        visible: parts.label.visible, alpha: Number(parts.label.alpha),
-      } : 'no text child in the bar',
-      plate: describe(parts.plate),
-      fill: describe(parts.fill),
-      // Every part, measured every way there is. If the fill still cannot be
-      // read, the right number is somewhere in here.
-      allChildren: kids.slice(0, 6).map((k, i) => ({
-        index: i,
-        label: hpNameOf(k) || '(none)',
-        type: (k && k.constructor && k.constructor.name) || '?',
-        isText: typeof (k && k.text) === 'string' ? String(k.text) : false,
-        visible: k && k.visible, alpha: Number(k && k.alpha),
-        widthGetter: Number(k && k.width), heightGetter: Number(k && k.height),
-        fromContext: hpWidthFromContext(k),
-        fromGeometry: hpWidthFromGeometry(k),
-        scaleX: k && k.scale ? Number(k.scale.x) : null,
-      })),
-    };
+    try { Object.defineProperty(wrapper, '__lumiTurnWrapper', {value: true}); } catch (e) { /* cosmetic */ }
+    prototype.update = wrapper;
+    turnState.wrapped = prototype;
+    dbg('turn speed: Animal.prototype.update wrapped');
   }
 
-  // ---------------- finding the bar again, when the game moves it ----------------
-  //
-  // Every test above is a claim about how the game builds its health bar, and
-  // one update can falsify all of them at once — which is exactly what
-  // happened. This is the tool for that, and it does not make claims: it
-  // watches.
-  //
-  // Run __lumiBarHunt() and then take damage. Anything whose drawn width
-  // CHANGES while your health is dropping is the fill, by definition — no
-  // assumption about depth, child count, order, colour or shape is involved.
-  // What it prints is that node and everything around it, which is what the
-  // matcher above has to be rewritten against.
-  const HUNT_DEFAULT_MS = 9000;
-  const HUNT_SAMPLE_MS = 150;
-  const HUNT_MAX_NODES = 24000;
-  const HUNT_MAX_REPORT = 8;
-
-  function huntSize(node) {
-    const w = Number(node && node.width);
-    const h = Number(node && node.height);
-    return {
-      w: Number.isFinite(w) ? Math.round(w * 100) / 100 : null,
-      h: Number.isFinite(h) ? Math.round(h * 100) / 100 : null,
-    };
+  function setTurnSpeed(value) {
+    const next = normalizeTurnSpeed(value);
+    if (next === settings.turnSpeedValue) return;
+    settings.turnSpeedValue = next;
+    store.set('turnSpeedValue', next);
+    syncTurnUI();
   }
 
-  function huntWalk(stage, visit) {
-    const stack = [stage];
-    let seen = 0;
-    while (stack.length && seen < HUNT_MAX_NODES) {
-      const n = stack.pop();
-      if (!n) continue;
-      seen++;
-      visit(n);
-      const kids = n.children;
-      if (kids) for (let i = 0; i < kids.length; i++) stack.push(kids[i]);
+  function setTurnStyle(value) {
+    const next = normalizeTurnStyle(value);
+    if (next === settings.turnStyle) return;
+    settings.turnStyle = next;
+    store.set('turnStyle', next);
+    syncTurnUI();
+  }
+
+  function syncTurnUI() {
+    if (!extras || !extras.turnUi) return;
+    const refs = extras.turnUi;
+    const instant = settings.turnStyle === 'instant';
+    refs.level.classList.toggle('qolc-row-off', !settings.turnSpeed || instant);
+    refs.styleRow.classList.toggle('qolc-row-off', !settings.turnSpeed);
+    refs.value.textContent =
+      Math.round(100 * settings.turnSpeedValue / TURN_NEUTRAL) + '%';
+    refs.minus.disabled = instant || settings.turnSpeedValue <= TURN_MIN;
+    refs.plus.disabled = instant || settings.turnSpeedValue >= TURN_MAX;
+    for (const button of refs.styles) {
+      button.classList.toggle('active', button.dataset.turnStyle === settings.turnStyle);
     }
-    return seen;
   }
-
-  function huntChain(node) {
-    const out = [];
-    let n = node;
-    for (let i = 0; i < 6 && n; i++, n = n.parent) {
-      out.push({
-        label: hpNameOf(n) || '(none)',
-        children: n.children ? n.children.length : 0,
-        type: (n.constructor && n.constructor.name) || '?',
-      });
-    }
-    return out;
-  }
-
-  function huntReport(rec) {
-    const node = rec.node;
-    const parent = node.parent;
-    const kids = (parent && parent.children) || [];
-    let animal = null;
-    for (let up = parent, i = 0; i < 6 && up; i++, up = up.parent) {
-      if (hpLooksLikeAnimal(up)) { animal = up; break; }
-    }
-    const at = hpScreenPos(node);
-    return {
-      label: hpNameOf(node) || '(none)',
-      widthWas: rec.first, widthLow: rec.min, widthHigh: rec.max,
-      timesItChanged: rec.changes,
-      height: rec.h,
-      aspect: rec.h > 0 ? Math.round((rec.max / rec.h) * 10) / 10 : null,
-      alpha: Number(node.alpha), visible: node.visible,
-      screenPos: at ? {x: Math.round(at.x), y: Math.round(at.y)} : null,
-      // The container it lives in, and everything else in there. If this is a
-      // health bar's fill, its siblings are the plate and the mask.
-      parentChildCount: kids.length,
-      indexInParent: kids.indexOf(node),
-      siblings: kids.slice(0, 6).map((k) => {
-        const s = huntSize(k);
-        let isMyMask = 'no';
-        try { isMyMask = node.mask === k ? 'YES' : 'no'; } catch (e) { isMyMask = 'threw'; }
-        return {
-          label: hpNameOf(k) || '(none)',
-          w: s.w, h: s.h, alpha: Number(k.alpha), visible: k.visible,
-          isMyMask,
-        };
-      }),
-      ancestry: huntChain(node),
-      onAnimal: !!animal,
-      animalIs: animal ? hpIdentify(animal) : null,
-    };
-  }
-
-  function barHunt(ms) {
-    if (!hpLastStage) {
-      return Promise.resolve('No scene yet — be in game with HP damage numbers on.');
-    }
-    const stage = hpLastStage;
-    const runFor = Number(ms) > 0 ? Number(ms) : HUNT_DEFAULT_MS;
-    const track = new Map();
-    const sample = () => {
-      huntWalk(stage, (n) => {
-        const s = huntSize(n);
-        if (s.w == null || !(s.w > 0)) return;
-        const rec = track.get(n);
-        if (!rec) {
-          track.set(n, {node: n, first: s.w, h: s.h, min: s.w, max: s.w, last: s.w, changes: 0});
-          return;
-        }
-        if (Math.abs(s.w - rec.last) > 0.5) { rec.changes++; rec.last = s.w; }
-        if (s.w < rec.min) rec.min = s.w;
-        if (s.w > rec.max) rec.max = s.w;
-        if (s.h > 0) rec.h = s.h;
-      });
-    };
-    sample();
-    console.log(TAG, 'bar hunt running for ' + Math.round(runFor / 1000) +
-      ' seconds — TAKE DAMAGE NOW. Stand in fire, let something bite you, ' +
-      'anything that moves your health.');
-    return new Promise((resolve) => {
-      const ticker = setInterval(sample, HUNT_SAMPLE_MS);
-      setTimeout(() => {
-        clearInterval(ticker);
-        // Widest swing first: the fill of a bar that emptied moved further
-        // than anything incidental.
-        const hits = [...track.values()]
-          .filter((r) => r.changes > 0 && r.max - r.min > 0.5)
-          .sort((a, b) => (b.max - b.min) - (a.max - a.min))
-          .slice(0, HUNT_MAX_REPORT)
-          .map(huntReport);
-        const out = {
-          version: VERSION,
-          watchedForMs: runFor,
-          nodesWatched: track.size,
-          changedWidth: hits,
-          note: hits.length
-            ? 'The health bar fill is in here: look for a wide, thin one that ' +
-              'shrank, sitting on an animal.'
-            : 'Nothing changed width at all — either no damage landed during ' +
-              'the window, or the bar is no longer drawn by resizing anything.',
-        };
-        console.log(TAG, 'bar hunt result', out);
-        resolve(out);
-      }, runFor);
-    });
-  }
-
-  function installBarHunt() {
-    try {
-      Object.defineProperty(PAGE, '__lumiBarHunt', {configurable: true, value: barHunt});
-    } catch (e) { dbg('could not install __lumiBarHunt', e); }
-  }
-
-  function installHpDebug() {
-    try {
-      Object.defineProperty(PAGE, '__lumiHpDebug', {
-        configurable: true,
-        value: () => {
-          const player = hpState.player;
-          const playerEntry = hpState.playerEntry;
-          const playerIdent = (player && hpIdentifySelfFromHud()) ||
-            (player ? hpIdentify(player) : null);
-          return {
-            version: VERSION,
-            on: settings.hpNumbers,
-            // 1.31.0. Worth reading first when a figure looks wrong: in
-            // percent mode nothing below `you` can affect the number, because
-            // the identification is not consulted at all. In HP mode it is
-            // the whole story.
-            units: settings.hpUnits,
-            masterSwitch: settings.masterEnabled,
-            inGame: prevMenuVisible === false,
-            renderersHooked: renderers.length,
-            scan: {
-              nodesWalked: hpScan.nodes,
-              // Read these four downward: the first one that is 0 is where the
-              // feature stops, and everything below it is a consequence rather
-              // than a second fault.
-              barCandidatesOffered: hpScan.threes,
-              recognisedAsHealthBars: hpScan.bars,
-              ofThoseOnAnimals: hpScan.animals,
-              // If threeChildContainers is 0, the health bar is no longer
-              // built from three parts and this says what it IS built from.
-              containersByChildCount: hpScan.shapes,
-              nowTracking: hpState.bars.size,
-              ofThoseIdentifiable: [...hpState.bars.values()]
-                .filter((e) => !!hpIdentify(e.entity)).length,
-              // The missing-health outline. Both figures, because a want with no
-              // outlines is hpPlateShape() refusing to read the plate, and
-              // outlines with no want is one that failed to come off.
-              outlinesWanted: arenaSkyLit(),
-              outlinesAttached: hpEdgeLive,
-            },
-            you: {
-              locked: !!player,
-              fromAbilityIcon: hpIdentifySelfFromHud(),
-              fromArtwork: player ? hpIdentify(player) : null,
-              xpRequirement: xpDenom,
-              xpTier: hpTierFromXp(),
-              // Worked out fresh — the cached figure is only filled in on the
-              // first hit, so at full health it would always read 0 and look
-              // like a fault that is not there.
-              maxHP: playerIdent ? hpMaxFor(playerIdent.species, playerIdent.sub) : 0,
-              healthPercent: playerEntry ? hpPercentOf(playerEntry.bar, playerEntry) : null,
-              lastSettled: playerEntry ? playerEntry.settled : null,
-            },
-            // Why you are or are not locked onto. Nothing else in this feature
-            // works while `locked` is false: with no player, every OTHER
-            // animal's bar is skipped too, so not one damage number can be
-            // drawn — for you or for anything you are fighting.
-            lock: (() => {
-              const scr = renderers[0] ? viewportOf(renderers[0])
-                : {w: innerWidth, h: innerHeight};
-              const cx = scr.w / 2, cy = scr.h / 2;
-              const refusedMsAgo = hpLockRefusedAt
-                ? Math.round(performance.now() - hpLockRefusedAt) : null;
-              return {
-                screen: scr,
-                mustBeWithinPx: Math.round(Math.min(scr.w, scr.h) * HP_LOCK_FRACTION),
-                // 1.0.10. These two were recorded from the first release that
-                // could refuse and reported by nothing, so a lock that had gone
-                // quiet ON PURPOSE looked exactly like one that was broken.
-                refusedMsAgo,
-                refusedBecause: hpLockRefusedWhy || null,
-                // 1.0.17/1.0.18. WHICH system made the lock, and what the game's
-                // player object actually looks like. 'game' is mope's own
-                // $.player and cannot be on the wrong animal; anything else is
-                // the old inference, with the reason it is running. The shape
-                // row is the one that would have caught 1.0.17 in a single paste.
-                lockSource: hpState.lockedBy === 'game' ? "mope's own $.player"
-                  : (hpState.lockedBy || 'inference'),
-                gamePlayerShape: hpGamePlayerShape(),
-                gameNamesAnimal: !!hpGamePlayer(),
-                // The gate that stands the lock down on the death screen. When
-                // this is true a null lock is correct and not a fault.
-                hudIsDown: hpHudDown(performance.now()),
-                // 1.0.12. True through a culled duel whenever the bar drops out
-                // of a scan: the entity is kept, the reading is not.
-                heldWithoutReading: !!(hpState.player && !hpState.playerEntry),
-                barsAndHowFarOffCentre: [...hpState.bars.values()].map((e) => {
-                  const at = hpScreenPos(e.entity);
-                  const ident = hpIdentify(e.entity);
-                  return {
-                    species: (ident && ident.species) || '?',
-                    at: at ? {x: Math.round(at.x), y: Math.round(at.y)} : null,
-                    distance: at ? Math.round(Math.hypot(at.x - cx, at.y - cy)) : null,
-                    readsAs: hpPercentOf(e.bar, e),
-                  };
-                }),
-              };
-            })(),
-            effects: playerEntry ? {
-              outlineTint: (() => {
-                const t = hpOutlineTint(player);
-                return t < 0 ? 'none' : '#' + t.toString(16).padStart(6, '0');
-              })(),
-              effectsGroupFound: !!hpEffectsOf(player),
-              effectsSay: hpEffectsSay(playerEntry, performance.now()),
-              resourceDry: hpResourceDry(),
-              inArena: hpInArena(playerEntry, performance.now()),
-              // What the bar is currently doing, and the healing rate the
-              // aloe-leaf-versus-whole-plant split is decided on.
-              barState: hpBarUI.mood || 'plain',
-              healPercentPerSecond: Math.round(
-                hpNoteRate(playerEntry, hpPercentOf(playerEntry.bar, playerEntry) ?? 0,
-                  performance.now()) * 10) / 10,
-              hudCardsFound: !!hpHudCluster(),
-              kindRightNow: hpDamageKind(playerEntry, true, performance.now()),
-              groupChildren: (() => {
-                const fx = hpEffectsOf(player);
-                if (!fx || !fx.children) return null;
-                return fx.children.slice(0, 16).map((c) => ({
-                  tint: '#' + ((Number(c.tint) & 0xffffff) || 0).toString(16).padStart(6, '0'),
-                  alpha: Math.round(Number(c.alpha) * 100) / 100,
-                  visible: c.visible,
-                  animated: !!(c.textures || typeof c.animationSpeed === 'number'),
-                }));
-              })(),
-            } : null,
-            recentDamage: hpRecent.slice().reverse(),
-            barInternals: hpBarInternals(),
-            firstCandidate: hpScan.sample,
-            firstOnAnAnimal: hpScan.animalSample,
-            // One container that is not three parts, dumped the same way. Only
-            // worth reading when the three-part test has stopped finding
-            // anything: if the bar was rebuilt, this is the new bar.
-            firstNonThreeContainer: hpScan.otherSample,
-          };
-        },
-      });
-    } catch (e) { dbg('could not install __lumiHpDebug', e); }
-  }
-
-  // ------------------------------------------------------- arena starfield
-  //
-  // A night sky behind a 1v1 duel, in place of the terrain the game leaves
-  // showing. Z turns it on and off mid-match; the panel row is the same
-  // switch. It only ever draws in a duel of YOUR OWN — see arenaSkyPick() for
-  // the participation test and arenaPlaying() for the two ways that used to be
-  // got wrong.
-  //
-  // WHAT IT REPLACES. mope's own "Arena Culling" setting can be set to HIDE,
-  // and with it every entity that would draw inside the arena stops being drawn
-  // — trees, food, everyone else — and the HUD goes with them. What it does NOT
-  // hide is the ground: entities are only culled if `showUnderArena` is false,
-  // and that flag defaults to `isStatic`, so rivers, lakes, hills and rocks all
-  // stay. That is why a culled arena still leaves you fighting on ordinary
-  // terrain. This fills in exactly that gap and nothing else.
-  //
-  // Since 1.17.1 the switch sets that setting too, so the two halves move
-  // together — see the Arena Culling section just above for how the setting is
-  // reached, which is the harder half of the whole feature.
-  //
-  // WHERE IT DRAWS, which is the whole difficulty. mope builds its world out
-  // of about forty named RenderLayers in a fixed order — map, rivers, lakes,
-  // hills, rocks, food, pumpkins, then `arenaBase`, then `belowAnimal` and
-  // `defaultAnimal`, then trees, then `arenaWalls` and the HUD. `arenaBase` is
-  // the last layer before anything alive, which makes it the one place a
-  // backdrop can cover every piece of terrain without covering a fighter.
-  //
-  // A RenderLayer decides draw order and nothing else; a display object has to
-  // be in the scene graph as well, for its transform. So our sky is added as a
-  // child of the arena's own container (which gives it the arena's position,
-  // no scale and full opacity) and then ATTACHED to the layer that mope's own
-  // arena floor is attached to. Both halves are needed and the engine says so
-  // itself — it warns "Container must be added to both layer and scene graph"
-  // when only one is done.
-  //
-  // If that layer cannot be found, this draws NOTHING. The fallback would be
-  // to leave the sky parented to the arena container alone, and the arena
-  // container is attached to `arenaWalls` — above the animals. A backdrop
-  // painted over both duellists mid-duel is far worse than no backdrop, so the
-  // failure is reported through __lumiArenaDebug() instead of guessed at.
-  //
-  // The sky is world-anchored rather than screen-anchored: it is a child of
-  // the arena, so it holds still as you move, the way a sky should. Stars are
-  // SIZED in screen pixels though — the geometry is rebuilt from the live
-  // world-to-screen scale — so they stay pin-sharp instead of swelling into
-  // discs when the camera zooms in.
-  //
-  // It hangs off the shape of mope's arena container (six children: floor,
-  // walls graphic, two player labels, timer, message). That is a lot of shape
-  // to depend on, and a build that rearranges it turns this off rather than
-  // breaking anything.
-
-  /* ----- mope's own Arena Culling ----- */
-
-  // mope's settings UI calls this "Arena Culling" in as many words, and it is
-  // `gameplay.arena.outsideWorld`: SHOW (0) or HIDE (1). On HIDE, an entity's
-  // `isVisible()` returns false for everything but the two duellists and the
-  // arena itself, and `Lr()` also drops the HUD — which is why a culled duel
-  // loses the leaderboard and the minimap along with the scenery.
-  //
-  // There is no faking it from outside. `Po.frameOutsideWorld` is re-read from
-  // this setting on EVERY frame of the game loop, so writing that static does
-  // nothing that survives to the next frame. The setting itself is the only
-  // lever, and 1.17.0 shipped without it — the sky went on, the world stayed.
-  //
-  // HOW THE SETTING IS REACHED, which is the awkward part. `$.settings` is
-  // `Vr = p(structuredClone(ar))`, a Svelte 5 `$state` deep proxy over a
-  // module-scoped object that is never put on window. An accessor is no use:
-  // the proxy's `get` trap answers out of an internal signal cache and never
-  // consults the target, so `defineProperty` on the raw object succeeds and is
-  // then ignored from the moment a signal exists for the key — and one always
-  // does here, since the loop reads it every frame. `defineProperty` on the
-  // proxy throws outright. Plain assignment THROUGH the proxy is the only
-  // route, so the proxy is what has to be caught.
-  //
-  // Svelte builds it with `new Proxy(target, handler)`, so `Proxy` itself is
-  // hooked at document-start and the settings object is recognised by the
-  // shape of its target. It is the cheapest possible test — `version !== 1`
-  // rejects almost everything on the first comparison — and the hook takes
-  // itself back out the instant it captures, which happens while mope's bundle
-  // is still evaluating its module body. It also gives up after twenty seconds
-  // whether or not anything matched, so the page is never left wrapped.
-  //
-  // Reading the TARGET rather than the proxy for the fingerprint matters:
-  // touching the proxy is what creates signals, and there is no reason to
-  // create them for every `$state` on the page just to look at one.
-  const MOPE_CULL_SHOW = 0;
-  const MOPE_CULL_HIDE = 1;
-  const MOPE_SETTINGS_GIVE_UP_MS = 20000;
-
-  const mopeSettings = {
-    proxy: null,
-    why: 'not installed',
-    seen: 0,          // proxies inspected before standing down
-  };
-
-  function mopeSettingsLooksRight(target) {
-    if (!target || typeof target !== 'object') return false;
-    if (target.version !== 1 || typeof target.language !== 'string') return false;
-    const play = target.gameplay;
-    if (!play || typeof play !== 'object') return false;
-    const arena = play.arena;
-    if (!arena || typeof arena !== 'object' || !('outsideWorld' in arena)) return false;
-    return !!(target.rendering && target.networking && target.interpolation);
-  }
-
-  // ---- why the renderer hook caught nothing (1.20.1) -------------------------
-  //
-  // Which renderer mope actually built: 'webgl', 'webgpu' or 'canvas'. Read
-  // off the captured settings object rather than off Pixi, because the whole
-  // reason for asking is that Pixi was never captured.
-  //
-  // This reads THROUGH the proxy, which creates a Svelte signal for the key —
-  // the one thing the capture notes warn against. It is one key, read once,
-  // twenty seconds after load, and only on a path where something has already
-  // gone wrong. That is a different cost from reading a target at frame rate.
-  function mopeRendererName() {
-    const p = mopeSettingsProxy();
-    if (!p) return null;
-    try {
-      const r = p.rendering && p.rendering.renderer;
-      return typeof r === 'string' ? r.toLowerCase() : null;
-    } catch (e) { return null; }
-  }
-
-  // The sentence appended to "no Pixi renderer was captured" when the settings
-  // can name a reason.
-  //
-  // Canvas2D is a real reason and a completely silent one. mope ships Pixi
-  // 8.19.0, which fires `__PIXI_RENDERER_INIT__` from an extension registered
-  // for `[WebGLSystem, WebGPUSystem]` only — `CanvasSystem` is a separate type
-  // and is not on that list — and mope never fires `__PIXI_APP_INIT__` at all,
-  // so the second hook is not a fallback, it is dead code on this page. On
-  // Canvas the entire per-frame path therefore dies at once, which is exactly
-  // the "several unrelated features are quietly dead" report that costs the
-  // most to diagnose from the outside.
-  //
-  // Anything that is NOT canvas is reported verbatim rather than interpreted:
-  // a value nobody has seen before is worth more in a bug report intact than
-  // it is guessed at.
-  function mopeRendererNote() {
-    const name = mopeRendererName();
-    if (!name) {
-      return ' mope\'s own renderer setting could not be read (' +
-        mopeSettings.why + '), so the cause is unknown.';
-    }
-    // Since 1.36.0 Canvas2D is no longer a cause of this at all — the game
-    // loop route captures it. So a Canvas player seeing this message is a
-    // DIFFERENT fault from the one 1.20.1 wrote this to explain, and saying
-    // "switch to WebGL" would send them to fix something that is not broken.
-    if (name.indexOf('canvas') !== -1) {
-      return ' mope is set to render with Canvas2D. That used to be the whole ' +
-        'cause of this — the devtools hook is registered for WebGL and WebGPU ' +
-        'only — but since 1.36.0 the game loop is captured directly and Canvas ' +
-        'works. So this is something else: run __lumiCaptureDebug().';
-    }
-    return ' mope\'s renderer setting says "' + name + '", which does fire the ' +
-      'hook, so the cause is something else.';
-  }
-
-  function mopeSettingsInstall() {
-    const NativeProxy = PAGE.Proxy;
-    if (typeof NativeProxy !== 'function') {
-      mopeSettings.why = 'this browser has no Proxy';
-      return;
-    }
-    let live = true;
-
-    function standDown(why) {
-      if (!live) return;
-      live = false;
-      try { if (PAGE.Proxy === Wrapped) PAGE.Proxy = NativeProxy; } catch (e) {}
-      if (!mopeSettings.proxy) mopeSettings.why = why;
-    }
-
-    function Wrapped(target, handler) {
-      const proxy = new NativeProxy(target, handler);
-      if (live) {
-        mopeSettings.seen++;
-        try {
-          if (mopeSettingsLooksRight(target)) {
-            mopeSettings.proxy = proxy;
-            mopeSettings.why = 'captured after ' + mopeSettings.seen + ' proxies';
-            standDown('captured');
-          }
-        } catch (e) { /* a capture must never break the page's own work */ }
-      }
-      return proxy;
-    }
-    Wrapped.prototype = NativeProxy.prototype;
-    try { Wrapped.revocable = NativeProxy.revocable.bind(NativeProxy); } catch (e) {}
-
-    try { PAGE.Proxy = Wrapped; }
-    catch (e) { mopeSettings.why = 'Proxy is not writable here'; return; }
-    mopeSettings.why = 'installed, waiting for the settings object';
-    setTimeout(() => standDown('mope built no settings object within ' +
-      Math.round(MOPE_SETTINGS_GIVE_UP_MS / 1000) + 's'), MOPE_SETTINGS_GIVE_UP_MS);
-  }
-
-  // At document-start, which is the only time that works: the settings proxy is
-  // built while mope's bundle evaluates, long before any panel exists to switch
-  // this feature on. Installing it lazily would mean the toggle did nothing
-  // until a reload.
-  mopeSettingsInstall();
-
-  // The settings object, from whichever route reached it.
-  //
-  // 1.0.12. The Proxy hook above is a RACE: it has to be armed before mope's
-  // bundle builds the settings proxy, and a script injected a beat late misses
-  // it and is told 'mope built no settings object within 20s' — which is the
-  // "Arena Culling unavailable" toast. But 1.36.0's game-loop route captures
-  // mope's own singleton, and `settings` on that singleton IS the proxy the
-  // hook was waiting for. So the second route backs up the first, exactly as
-  // it already does for the renderer — and the handoff's "the $ capture is
-  // used for one thing only" stops being true here.
-  //
-  // Lazy and cached rather than done inside the trap, so it works in either
-  // capture order and costs nothing until something asks. The shape check
-  // reads two keys THROUGH the proxy, once — the cost mopeRendererName()
-  // already accepts, and nothing like a per-frame read of a Svelte signal.
-  function mopeSettingsProxy() {
-    if (mopeSettings.proxy) return mopeSettings.proxy;
-    const game = gameCapture.game;
-    const candidate = game && game.settings;
-    if (!candidate || typeof candidate !== 'object') return null;
-    try {
-      const play = candidate.gameplay;
-      const arena = play && play.arena;
-      if (!arena || typeof arena !== 'object' || !('outsideWorld' in arena)) return null;
-    } catch (e) { return null; }
-    mopeSettings.proxy = candidate;
-    mopeSettings.why = 'captured from the game object (the Proxy hook missed: ' +
-      mopeSettings.why + ')';
-    return candidate;
-  }
-
-  // -1 for "could not be read", so it can never be confused with SHOW.
-  function mopeCullingValue() {
-    const settingsProxy = mopeSettingsProxy();
-    if (!settingsProxy) return -1;
-    try {
-      const play = settingsProxy.gameplay;
-      const arena = play && play.arena;
-      if (!arena) return -1;
-      const value = arena.outsideWorld;
-      return value === MOPE_CULL_HIDE ? MOPE_CULL_HIDE
-        : value === MOPE_CULL_SHOW ? MOPE_CULL_SHOW : -1;
-    } catch (e) { return -1; }
-  }
-
-  // Written only on a deliberate toggle, never from the per-frame tick: this is
-  // one of the player's own game settings and mope persists it to localStorage
-  // on change, so it is not something to be writing sixteen times a second.
-  //
-  // The write is read back before it is believed. Assignment through a Svelte
-  // proxy can be swallowed in more than one way, and reporting a culled arena
-  // that is not culled would send someone hunting the wrong thing.
-  function mopeSetCulling(hide) {
-    const settingsProxy = mopeSettingsProxy();
-    if (!settingsProxy) return false;
-    const want = hide ? MOPE_CULL_HIDE : MOPE_CULL_SHOW;
-    try {
-      const play = settingsProxy.gameplay;
-      const arena = play && play.arena;
-      if (!arena) return false;
-      if (arena.outsideWorld !== want) arena.outsideWorld = want;
-    } catch (e) { return false; }
-    return mopeCullingValue() === want;
-  }
-
-  // Whether the player has bound one of mope's OWN actions to a key, so this
-  // script can decline to take it.
-  //
-  // `settings.binds` sits at the top level of that same object, as
-  // `{ action: [ {code, value}, … ] }` with `code` a KeyboardEvent.code —
-  // `KeyW`, `Space`, `ArrowUp` — or a `Pointer<n>` for a mouse button. The
-  // shipped defaults are W, A, X, S, Space, Enter, Escape, the arrows and Q,
-  // so Z is free out of the box; anyone who has moved a bind onto it, though,
-  // would rather have their own binding than ours, and would have no way of
-  // knowing why their dive stopped working.
-  //
-  // Read through the proxy like everything else here. Returns the action's
-  // name so the toast can say WHICH one, and null both when nothing is bound
-  // and when the settings object was never captured — an unreadable bind list
-  // is not evidence of a conflict, and refusing the hotkey on it would break
-  // the feature for everyone the capture ever misses.
-  function mopeBindFor(code) {
-    const settingsProxy = mopeSettingsProxy();
-    if (!settingsProxy) return null;
-    try {
-      const binds = settingsProxy.binds;
-      if (!binds || typeof binds !== 'object') return null;
-      for (const action of Object.keys(binds)) {
-        const list = binds[action];
-        if (!Array.isArray(list)) continue;
-        for (const bind of list) {
-          if (bind && bind.code === code) return action;
-        }
-      }
-    } catch (e) { return null; }
-    return null;
-  }
-
   const ARENA_SKY_FADE_MS = 260;
   const ARENA_SKY_WORK_MIN_MS = 60;
   // How far the sky reaches. The camera follows you and you can only be as far
@@ -13564,688 +7321,6 @@
     const want = String(settings.arenaTheme || '');
     for (const t of ARENA_THEMES) if (t.id === want) return t;
     return ARENA_THEMES[0];
-  }
-
-  const arenaScan = {
-    active: false,
-    found: [],        // every arena container the last sweep walked past
-    nearMiss: [],     // and the ones that ALMOST matched, for the debug hook
-  };
-
-  const arenaSky = {
-    node: null,       // our Graphics
-    host: null,       // the arena container it hangs off
-    layer: null,      // the RenderLayer it was attached to
-    shownAt: 0,
-    builtSpan: 0,     // the field radius the geometry was drawn for
-    builtUnit: 0,     // and the world-units-per-pixel it was drawn at
-    builtStars: 0,    // and how many stars that came to
-    alignedFor: null, // the arena whose culling has already been set to match
-    duelling: false,  // whether the game says we are one of the two fighters
-    nameSays: null,   // the name-visibility reading, or null if unrecognised
-    nameAt: -1,       // where the name/wins pair was found (1.0.13)
-    gameSays: 'n/a',  // mope's own duelling answer, when the lock is the game's (1.0.17)
-    arenaBy: '',      // how the arena was chosen: by reference, or by geometry
-    identAt: -Infinity,
-    identOk: true,
-    identFor: null,   // which entity that verdict was for (1.0.12)
-    why: 'off',       // why there is nothing on screen, for the debug hook
-    lockUsed: false,  // whether the player's own position was available
-    arenas: 0,
-  };
-
-  function arenaSkyOn() {
-    return settings.masterEnabled && settings.arenaSky;
-  }
-
-  /* ----- am I actually playing? ----- */
-
-  // SPECTATE IS NOT A GAME, and until 1.19.0 this feature could not tell.
-  //
-  // `prevMenuVisible === false` means "no Play button is on screen", which is
-  // the test every in-game feature here uses. It is true in a game. It is also
-  // true while SPECTATING, because mope's spectate screen is not the menu — it
-  // renders the live world from another player's camera with no menu over it.
-  // So watching somebody else's duel put the camera on a fighter, the
-  // participation test read that fighter's hidden name off the animal the HP
-  // lock had settled on, and the sky came up over a fight that was not ours.
-  //
-  // The identity guard below (arenaSkyLockIsSelf) is meant for exactly this
-  // shape of mistake and could not catch it either: it compares the locked
-  // animal against YOUR animal as read off `#ability1Button`, and the spectate
-  // screen has no ability button at all. With nothing to compare against it
-  // passes, by design — an animal that cannot be named is not evidence of
-  // anything. Fine as a tie-breaker, useless as the only line.
-  //
-  // What settles it is mope's own screen state. The client is in exactly one
-  // of `menu`, `HUD` and `spectating` at a time, and while that variable is
-  // module-scoped and unreachable, each screen renders its own root into the
-  // DOM. `spectating` renders `#spectateMenu` with the Back button
-  // `#stopSpectating` inside it, and the game screen renders `#gameUI`; the
-  // three are mutually exclusive branches of one conditional, so neither
-  // spectate id can exist in a game.
-  //
-  // Written as "spectating?" rather than "is #gameUI there?" deliberately.
-  // Keying on the positive would make every future screen mope adds — a
-  // replay, a lobby, a cutscene — read as "not playing" and silently turn the
-  // feature off, whereas keying on the negative fails the way this script
-  // already fails everywhere else: unknown state, carry on. The one screen
-  // that is known to be wrong is the one named.
-  const ARENA_SPECTATE_IDS = ['spectateMenu', 'stopSpectating'];
-
-  function arenaSpectating() {
-    for (let i = 0; i < ARENA_SPECTATE_IDS.length; i++) {
-      if (document.getElementById(ARENA_SPECTATE_IDS[i])) return true;
-    }
-    return false;
-  }
-
-  // The whole "this is my own game" test, in one place, so the hotkey and the
-  // per-frame tick can never drift apart on it.
-  function arenaPlaying() {
-    return prevMenuVisible === false && !arenaSpectating();
-  }
-
-  function arenaFocusOn() {
-    return settings.masterEnabled && settings.arenaFocus;
-  }
-
-  /* ----- draw order override (1.0.21) -----
-   * Own one RenderLayer adjacent to the animal layers and attach only self.
-   * Reconcile each native frame; mutate only changed attachments/indices.
-   * Native model identity and layer restoration are independent of HP work.
-   * See docs/visual-contracts.md and tests/visual-contracts.test.cjs.
-   */
-  const zorder = {
-    // 1.0.10: seeded from the stored setting. It used to be a literal 0 while
-    // zorderSet() faithfully wrote the mode to storage and the panel rows took
-    // settings.zorderMode as their initial state — so the setting round-tripped
-    // through disk perfectly and was then overwritten by syncZorderRows()
-    // reading this 0 back out. Three call sites each assumed a fourth that did
-    // not exist, and the mode silently reset on every reload.
-    mode: settings.zorderMode,   // 0 off, 1 above everything, -1 below everything
-    at: 0,          // last time it was applied
-    api: '',        // what the engine turned out to support, for the debug hook
-    layers: 0,      // how many distinct animal layers the last pass saw
-    movedTo: -1,    // the rank of the layer it moved onto
-    // The layer mope had YOU on before any of this touched you, so turning
-    // the feature off can put you back. Without it a dove promoted onto the
-    // big-animal layer stays there for the rest of the session.
-    home: null,
-    homeFor: null,  // which entity that home belongs to
-    model: null,
-    layer: null,    // the sole render layer owned by this feature
-    applied: 0,     // how many objects the last pass moved
-  };
-
-  function zorderOn() { return settings.masterEnabled && zorder.mode !== 0; }
-
-  // WHICH LAYER DRAWS LAST, 1.0.8 and the fix for "it does nothing".
-  //
-  // 1.0.6 re-attached you to YOUR OWN layer, on the theory that a layer draws
-  // its objects in attach order and going last therefore puts you on top. That
-  // is true, and it is not enough: mope does not keep every animal on one
-  // layer. It has `belowAnimal` and `defaultAnimal` at least, and it decides
-  // between them — so a tier 2 dove re-attached to the end of `belowAnimal` is
-  // still under every dragon on `defaultAnimal`, no matter how last it is.
-  // Reported exactly that way: a dove that would not draw over a dragon.
-  //
-  // So the layer has to be chosen, not inherited. A RenderLayer is itself a
-  // child of a container, and mope builds them in draw order — so the layer's
-  // index among its parent's children IS its depth, and comparing two of them
-  // is comparing two integers. Nothing here needs to know a layer's NAME,
-  // which is what keeps it working when mope renames or reorders them.
-  function zorderRank(layer) {
-    try {
-      const p = layer && layer.parent;
-      const kids = p && p.children;
-      if (!kids || typeof kids.indexOf !== 'function') return -1;
-      return kids.indexOf(layer);
-    } catch (e) { return -1; }
-  }
-
-  // Native layers from the animal model registry, regardless of health-bar
-  // visibility. HP discovery is only a fallback for missing registry access.
-  function zorderLayers(me) {
-    const seen = [];
-    const add = layer => {
-      if (!layer || layer === zorder.layer || layer.destroyed || typeof layer.attach !== 'function') return;
-      if (!seen.some(row => row.layer === layer)) seen.push({layer, rank: zorderRank(layer)});
-    };
-    add(zorder.homeFor === me ? zorder.home : me && me.parentRenderLayer);
-    const models = gameModels('animal');
-    if (models.length) {
-      for (const model of models) {
-        const node = model && model.container;
-        if (node && node.parent && !node.destroyed && model.spawned !== false) add(node.parentRenderLayer);
-      }
-    } else {
-      for (const entry of hpState.bars.values()) {
-        if (entry.entity && entry.entity.parent && !entry.entity.destroyed) add(entry.entity.parentRenderLayer);
-      }
-    }
-    return seen;
-  }
-
-  function zorderMove(obj, to) {
-    if (!obj || obj.destroyed || !to || to.destroyed || typeof to.attach !== 'function') return false;
-    const from = obj.parentRenderLayer;
-    if (from === to) return true;
-    if (from && typeof from.detach !== 'function') return false;
-    try {
-      if (from) from.detach(obj);
-      to.attach(obj);
-      if (obj.parentRenderLayer !== to) throw Error('layer did not accept the animal');
-      return true;
-    } catch (e) {
-      // Roll back partial attachment before returning to the native renderer.
-      try { if (typeof to.detach === 'function') to.detach(obj); } catch (ignored) {}
-      try { if (from && !from.destroyed) from.attach(obj); } catch (ignored) {}
-      frameFailed('draw order move', e);
-      return false;
-    }
-  }
-
-  function zorderApply(now, force) {
-    if (!zorderOn()) { if (zorder.homeFor || zorder.layer) zorderRestore(); return; }
-    // A missing health bar, identical nickname or stale HP lock never changes self.
-    const me = hpGamePlayer();
-    if (zorder.homeFor && zorder.homeFor !== me) zorderRestore();
-    if (!me || me.destroyed || !me.parent) {
-      zorder.api = 'waiting for the game-owned player'; zorder.applied = 0; return;
-    }
-    if (me.parentRenderLayer !== zorder.layer) {
-      zorder.homeFor = me;
-      zorder.home = me.parentRenderLayer;
-      zorder.model = hpGameModel();
-    }
-    const home = zorder.home;
-    const parent = home && home.parent;
-    const pool = zorderLayers(me).filter(row => row.rank >= 0 && row.layer.parent === parent);
-    if (!parent || !pool.length || typeof parent.addChildAt !== 'function' ||
-        typeof parent.setChildIndex !== 'function') {
-      zorder.api = 'waiting for comparable animal render layers'; return;
-    }
-    let target = pool[0];
-    for (const row of pool) {
-      if (zorder.mode > 0 ? row.rank > target.rank : row.rank < target.rank) target = row;
-    }
-    if (zorder.layer && (zorder.layer.destroyed || zorder.layer.parent !== parent)) {
-      zorderRestore();
-      zorder.homeFor = me; zorder.home = me.parentRenderLayer; zorder.model = hpGameModel();
-    }
-    if (!zorder.layer) {
-      const layer = new home.constructor();
-      if (typeof layer.attach !== 'function' || typeof layer.detach !== 'function') {
-        if (typeof layer.destroy === 'function') layer.destroy();
-        zorder.api = 'render layer constructor unavailable'; return;
-      }
-      layer.__lumiZOrder = true;
-      parent.addChildAt(layer, parent.children.indexOf(target.layer));
-      zorder.layer = layer;
-    }
-    const layer = zorder.layer;
-    const without = parent.children.filter(child => child !== layer);
-    const index = without.indexOf(target.layer) + (zorder.mode > 0 ? 1 : 0);
-    if (parent.children.indexOf(layer) !== index) parent.setChildIndex(layer, index);
-    zorder.applied = zorderMove(me, layer) ? 1 : 0;
-    zorder.layers = pool.length; zorder.movedTo = zorderRank(layer); zorder.at = now;
-    zorder.api = zorder.applied ? 'dedicated layer beside the animal layers' : 'layer move failed; restored native layer';
-  }
-
-  // Setting a mode clears the other one: above and below are the same question
-  // answered two ways, so holding both would be a state with no meaning.
-  // Pressing the key you are already in turns it off, which is what makes one
-  // key enough for each.
-  function zorderSet(mode, source) {
-    const want = zorder.mode === mode ? 0 : mode;
-    zorder.mode = want;
-    zorder.at = 0;
-    zorder.api = '';
-    settings.zorderMode = want;
-    store.set('zorderMode', want);
-    syncZorderRows();
-    qolcToast(want > 0 ? 'Drawing above other players'
-      : want < 0 ? 'Drawing below other players'
-      : 'Draw order back to normal', want ? '' : 'quiet');
-    dbg('draw order', want, source);
-    if (want) { zorderApply(performance.now(), true); return; }
-    // Off means OFF, which includes undoing the layer move. Restoring beats
-    // leaving it: mope chooses your layer by what you are, and a dove left on
-    // the big-animal layer is a change the player did not ask to keep.
-    zorderRestore();
-  }
-
-  // Put back on the layer mope had chosen, if we still know which that was and
-  // it is still the same animal. A respawn replaces the entity, and mope picks
-  // the new one's layer itself — so there is nothing to restore and nothing to
-  // get wrong.
-  function zorderRestore() {
-    const me = zorder.homeFor;
-    const layer = zorder.layer;
-    if (me && !me.destroyed && me.parent && me.parentRenderLayer === layer) {
-      // Ask the model to restore today's layer (dive/fly/arena may have changed).
-      try {
-        if (zorder.model && typeof zorder.model.updateLayer === 'function') zorder.model.updateLayer();
-      } catch (e) { frameFailed('draw order restore', e); }
-      if (me.parentRenderLayer === layer && !zorderMove(me, zorder.home)) return;
-    }
-    if (layer && !layer.destroyed) {
-      try { if (layer.parent) layer.parent.removeChild(layer); layer.destroy(); }
-      catch (e) { frameFailed('draw order cleanup', e); return; }
-    }
-    zorder.layer = null; zorder.model = null;
-    zorder.home = null; zorder.homeFor = null;
-    zorder.movedTo = -1; zorder.applied = 0;
-  }
-
-  function zorderDebug() {
-    const report = {
-      mode: zorder.mode > 0 ? 'above' : zorder.mode < 0 ? 'below' : 'off',
-      engine: zorder.api || '(not applied yet)',
-      movedLastPass: zorder.applied,
-      animalLayersSeen: zorder.layers,
-      movedOntoLayerRank: zorder.movedTo,
-      playerLocked: !!hpGamePlayer(),
-      animalsTracked: hpState.bars.size,
-    };
-    console.log(TAG, 'draw order', report);
-    return report;
-  }
-  try { PAGE.__lumiZOrderDebug = zorderDebug; }
-  catch (e) { window.__lumiZOrderDebug = zorderDebug; }
-
-  function biteOn() {
-    return settings.masterEnabled && settings.biteIndicator;
-  }
-
-  // 1.28.0. The starfield used to be the only reason to look for an arena, so
-  // the scan, the scene sweep and the HP lock all hung off arenaSkyNeeded()
-  // directly. Two more features now need the same reading — which arena is
-  // yours, and are you one of the two fighters — so that question is asked
-  // once, here, on behalf of all three.
-  //
-  // Deliberately NOT folded into arenaPlaying(), which answers something else
-  // entirely and is named for it.
-  function arenaNeeded() {
-    // 1.35.0 adds the boost counter as a fourth. It needs the same reading as
-    // the other three — which duel is yours — and it needs the HP lock as its
-    // anchor, which hpReadingNeeded() gets from this same call.
-    return arenaPlaying() &&
-      (arenaSkyOn() || arenaFocusOn() || biteOn() || boostOn());
-  }
-
-  // Shared duel state, filled in once a frame by arenaDuelTick().
-  //
-  // `active` is the participation signal and nothing weaker: you are one of
-  // the two fighters in an arena the scene can actually show us. Focus mode
-  // and the bite indicator both hang off it, and so does everything they draw,
-  // which is what makes both features free outside a duel.
-  const arenaDuel = {
-    active: false,
-    mine: null,      // {node, base, scale, worldRadius} for YOUR arena
-    since: 0,
-    ended: 0,
-  };
-
-  // Focus mode is hiding the party right now.
-  function arenaFocusHiding() {
-    return arenaFocusOn() && arenaDuel.active;
-  }
-
-  // The gate the scene sweep and the HP reading both consult. The player lock
-  // is what says which arena is YOURS, so this feature needs the same reading
-  // the party list does — see hpReadingNeeded().
-  function arenaSkyNeeded() {
-    return arenaSkyOn() && arenaPlaying();
-  }
-
-  // A STRONGER statement than arenaSkyNeeded(): whether the sky is on screen
-  // right now. Everything above can be true — the switch on, the duel yours,
-  // not spectating — while the sky itself refused to attach, because the arena
-  // floor was not on a render layer or the participation reading said no.
-  //
-  // The missing-health outline hangs off this rather than off the switch, so
-  // that it is on exactly when the background that makes it necessary is, and
-  // comes off by itself the moment that background does.
-  function arenaSkyLit() {
-    return !!(arenaSky.node && arenaSky.node.parent);
-  }
-
-  /* ----- finding an arena in the scene ----- */
-
-  // mope's arena container is built as
-  //   [ base (Sprite), walls (Graphics), player1 (Text), player2 (Text),
-  //     timer (Text), message (Text) ]
-  // and nothing else in the tree is shaped like that. The Graphics is found by
-  // two of its own methods rather than by constructor name, since the engine is
-  // minified and class names do not survive it.
-  //
-  // OUR OWN SKY IS DISCOUNTED, and that is not a nicety. It is added as a child
-  // of this container, which takes the count to seven — so a matcher keying on
-  // six stops recognising the very container it just attached to, drops the
-  // sky, sees six again, re-attaches, and flickers forever at the sweep rate.
-  // The party map marks its dots `__lumiPartyDot` for exactly this reason;
-  // this is the same trick under a different name.
-
-  // THE ARENA'S PARTS, FOUND BY SHAPE (1.0.13).
-  //
-  // This used to demand EXACTLY six own children and then read the parts by
-  // index: 0 base, 1 walls, 2-5 the labels. That is a deny-list wearing a
-  // matcher's clothes — it recognises the arena mope shipped and refuses every
-  // arena mope might ship — and §21's rule says the fix for that is to say
-  // what the thing IS, not to enumerate what it is not. An arena carrying one
-  // extra child was not merely mis-measured, it was invisible: the scan never
-  // recorded it, arenaSkyPick() found no arena to be inside, and the sky, the
-  // bite indicator and the boost counter went off together, which is one of
-  // the two shapes the culled-duel report arrived in.
-  //
-  // The fingerprint is unchanged and still specific: a floor with a texture
-  // and a real width, a Graphics that can draw a circle, and at least four
-  // Text labels. Anything else in there is counted and ignored.
-  //
-  // ORDER MATTERS. Text is tested first, because a Text node also carries a
-  // texture and a finite width and would otherwise be taken for the floor.
-  // Our own sky is skipped, the same trick as `__lumiPartyDot`.
-  // BOUNDS, NOT A FINGERPRINT — and every number here is a guess until it is
-  // read off a live duel (1.0.14).
-  //
-  // The authoritative model supplies its parts directly. The fallback scans
-  // by shape with no child-count ceiling; extensions and BD/KD rebuilds can
-  // add children. LOOK limits diagnostic work only, never arena acceptance.
-  const ARENA_KIDS_MIN = 6;
-  const ARENA_KIDS_LOOK = 64;   // still REPORTED up to here, even when refused
-
-  function arenaPartsOf(node, model) {
-    if (model && model.container === node && model.base && model.walls &&
-        model.base.parent === node && model.walls.parent === node &&
-        !model.base.destroyed && !model.walls.destroyed) {
-      return {base: model.base, walls: model.walls,
-        labels: [model.textPlayer1, model.textPlayer2, model.timer, model.message], extra: 0};
-    }
-    const kids = node && node.children;
-    if (!kids || kids.length < ARENA_KIDS_MIN) return null;
-    let base = null, walls = null, extra = 0;
-    const labels = [];
-    for (let i = 0; i < kids.length; i++) {
-      const kid = kids[i];
-      if (!kid || kid.__lumiArenaSky) continue;
-      if (typeof kid.text === 'string') { labels.push(kid); continue; }
-      if (!walls && typeof kid.clear === 'function' && typeof kid.circle === 'function') {
-        walls = kid; continue;
-      }
-      if (!base && kid.texture && Number.isFinite(Number(kid.width))) { base = kid; continue; }
-      extra++;
-    }
-    if (!base || !walls || labels.length < 4) return null;
-    return {base, walls, labels, extra};
-  }
-
-  function arenaBeginScan() {
-    arenaScan.active = arenaNeeded();
-    if (arenaScan.active) { arenaScan.found.length = 0; arenaScan.nearMiss.length = 0; }
-  }
-
-  // Acceptance has no upper size gate. Bound diagnostic detail only after a
-  // shape failed, so extension children can never silently disable an arena.
-  function arenaConsiderNode(node) {
-    const kids = node && node.children;
-    if (!kids || kids.length < ARENA_KIDS_MIN) return;
-    const parts = arenaPartsOf(node);
-    if (parts) { arenaScan.found.push(node); return; }
-    if (kids.length > ARENA_KIDS_LOOK) return;
-    if (arenaScan.nearMiss.length >= 4) return;
-    let texts = 0, hasWalls = false, hasBase = false;
-    for (let i = 0; i < kids.length; i++) {
-      const kid = kids[i];
-      if (!kid || kid.__lumiArenaSky) continue;
-      if (typeof kid.text === 'string') { texts++; continue; }
-      if (typeof kid.clear === 'function' && typeof kid.circle === 'function') hasWalls = true;
-      else if (kid.texture && Number.isFinite(Number(kid.width))) hasBase = true;
-    }
-    if (!hasWalls && texts < 2) return;   // not arena-ish at all; say nothing
-    arenaScan.nearMiss.push({
-      children: kids.length, texts, floor: hasBase, walls: hasWalls,
-      why: !hasBase ? 'no floor with a texture and a width'
-        : !hasWalls ? 'no Graphics that can draw a circle'
-        : 'only ' + texts + ' text labels, needs 4',
-    });
-  }
-
-  function arenaEndScan() {
-    if (!arenaScan.active) return;
-    arenaScan.active = false;
-    arenaSky.arenas = arenaScan.found.length;
-  }
-
-  // THE participation signal, and it is exact.
-  //
-  // mope hides a duellist's name: `get isNameVisible() { return
-  // !this.shouldHideHUD && !this.arena }`. A fighter's name comes off their
-  // animal and goes onto the arena's own two labels instead, which is why the
-  // animals inside a duel have nothing written under them while everybody
-  // walking past still does. `this.arena` is set only on `arena.player1` and
-  // `arena.player2`, so a hidden name means participation and nothing else.
-  //
-  // This replaced the duellist OUTLINE colour, which 1.17.3 used. That was
-  // sound in principle — mope paints cyan and yellow on the two fighters and
-  // on nobody else — but the reading of it goes through a scan of the animal's
-  // body parts looking for a tint that means something, and on a tier-15+
-  // animal it was coming back cyan for a player who was only walking past. The
-  // name is not a scan and not a colour: it is one boolean the game sets on one
-  // object every frame, for exactly this reason.
-  //
-  // `shouldHideHUD` is the other half of that getter and is only true for an
-  // animal that is despawned, zero-sized or fully transparent — never for a
-  // live player, whose opacity bottoms out at 0.35 even down a hole. So on the
-  // animal we are locked to, a hidden name means an arena.
-  //
-  // container.children = [ body, name, arenaWins, resourceIndicator, HUD ]
-  // null means "this is not a container I recognise", which is different from
-  // "not duelling" and is treated differently below.
-  //
-  // 1.0.13: the pair is found BY SHAPE rather than at a fixed index. 1.18.1
-  // pinned it to children 1 and 2 deliberately — guessing is how the bug
-  // before it happened — and the fingerprint is kept exactly: two ADJACENT
-  // Text children, the first of which is the name. What is dropped is only the
-  // assumption about WHERE that pair sits, because a bigger animal carries
-  // extra art ahead of it and the pair simply shifts along. An animal whose
-  // name could not be found at index 1 used to return null, fall through to
-  // the arena memory, and — with no reading to hand inside a culled duel —
-  // take every arena feature down with it.
-  //
-  // Bounded so this cannot become a walk: the pair is within the first few
-  // children on every animal mope builds.
-  // A Black Dragon or King Dragon carries more art than a tier-15 animal, and
-  // in their arenas every fighter is scaled up to match — so the pair can sit
-  // further along than a normal animal's. Bounded, but generously (1.0.14).
-  const ARENA_NAME_SEARCH_MAX = 16;
-  let arenaNameIndex = -1;   // where the pair was found, for the debug hook
-
-  function arenaNameHidden(container) {
-    const kids = container && container.children;
-    if (!kids || kids.length < 3) { arenaNameIndex = -1; return null; }
-    const last = Math.min(kids.length - 1, ARENA_NAME_SEARCH_MAX);
-    for (let i = 0; i < last; i++) {
-      const name = kids[i];
-      const wins = kids[i + 1];
-      if (!name || !wins) continue;
-      if (typeof name.text !== 'string' || typeof wins.text !== 'string') continue;
-      arenaNameIndex = i;
-      return name.visible === false;
-    }
-    arenaNameIndex = -1;
-    return null;
-  }
-  // Whether the animal the HP feature locked onto is actually ours.
-  //
-  // It normally is, because the camera is on you — but inside an arena there
-  // are two animals a few pixels apart and BOTH wear a duellist outline, so a
-  // lock on the wrong one would sail through the participation test below while
-  // you stood outside watching. Compared against the ability button's icon,
-  // which is written from your own animal and nothing else.
-  //
-  // Throttled, because identifying an animal means walking its textures. An
-  // animal that cannot be named is not evidence of anything and passes.
-  //
-  // 1.0.12: takes the ENTITY, not the bar reading. The lock can be held with
-  // no reading to hand — hpLockPlayer() does exactly that through a culled
-  // duel, where the ability wheel is gone and the bar can drop out of a scan
-  // for a frame — and this used to answer "not you" the moment the reading was
-  // missing: the same question answered the same wrong way that 1.0.4 had to
-  // revert. The identity was always on the entity; the entry never had it.
-  // The cached verdict is keyed on WHICH entity it was for, since the lock can
-  // change animals on arena entry inside one throttle window.
-  const ARENA_SKY_IDENT_MS = 1500;
-
-  function arenaSkyLockIsSelf(player, now) {
-    // 1.0.17: a lock the GAME named is yours by definition; the ability icon
-    // has nothing to add and has been wrong before. See hpGamePlayer().
-    if (player && hpState.lockedBy === 'game') {
-      arenaSky.identOk = true; arenaSky.identFor = player; return true;
-    }
-    if (!player) return false;
-    if (arenaSky.identFor === player && now - arenaSky.identAt < ARENA_SKY_IDENT_MS) {
-      return arenaSky.identOk;
-    }
-    arenaSky.identAt = now;
-    arenaSky.identFor = player;
-    const self = hpIdentifySelfFromHud();
-    if (!self) { arenaSky.identOk = true; return true; }
-    const ident = hpIdentify(player);
-    if (!ident) { arenaSky.identOk = true; return true; }
-    // A shop skin drops the rare variant out of the path at one end or the
-    // other, so the variant only has to agree when both ends could see it.
-    const sameSub = ident.sub === self.sub || ident.skinned || self.skinned;
-    arenaSky.identOk = ident.species === self.species && sameSub;
-    return arenaSky.identOk;
-  }
-
-  // Being INSIDE an arena is not the same as being IN one, and 1.17.2 could not
-  // tell the difference: it lit the sky whenever the geometry said "inside",
-  // which fired on other people's duels as you walked across them. The walls do
-  // not keep a passer-by out.
-  //
-  // mope marks the two participants and nobody else. An animal's `outlineColor`
-  // getter returns `$.colors.arena.player1` / `.player2` when its own `arena`
-  // field names it as a duellist, and predator, prey or biome colours in every
-  // other case — so the cyan-or-yellow outline is the game's own answer to "am
-  // I in this fight", and the HP feature already reads it.
-  //
-  // That reading is not quite continuous: healing, poison, bleeding and
-  // freezing all outrank the arena colour in that same getter, so a duellist
-  // who is on fire briefly stops looking like one. hpInArena() therefore
-  // remembers the last sighting for thirty seconds rather than asking fresh,
-  // which is exactly the behaviour wanted here too.
-  //
-  // The geometry still runs, but only to say WHICH arena is yours once the
-  // outline has said that one of them is.
-  // `mine` — the record every arena feature works from — built from an arena
-  // container. Split out in 1.0.17 so the arena the game hands over by
-  // reference is described exactly the way the geometry pick describes one.
-  function arenaMineOf(node, model) {
-    if (!node || node.destroyed || !node.parent) return null;
-    const parts = arenaPartsOf(node, model);
-    const wt = node.worldTransform;
-    if (!parts || !wt) return null;
-    const scale = Math.hypot(Number(wt.a) || 0, Number(wt.b) || 0);
-    const worldRadius = Number(parts.base.width) / 2;
-    if (!(scale > 0) || !(worldRadius > 0)) return null;
-    return {node, base: parts.base, walls: parts.walls, labels: parts.labels, scale, worldRadius};
-  }
-
-  function arenaSkyPick(scr, now) {
-    // Arena ownership is game state, not a side effect of the HP scanner.
-    // Prefer the singleton's player/container directly even if hpTick has not
-    // produced a lock or bar reading yet. That breaks the historical chain in
-    // which one missed health reading took the theme, bite and boost state
-    // down together.
-    const gameKnown = !!gameCapture.game && 'player' in gameCapture.game &&
-      (gameCapture.game.player === null || !!(hpGameModel() && 'arena' in hpGameModel()));
-    const model = hpGameModel();
-    const gamePlayer = hpGamePlayer();
-    const player = gamePlayer || hpState.player;
-    const entry = hpSelfEntry();
-    const lock = player && player.worldTransform;
-    const haveLock = !!(lock && Number.isFinite(lock.tx) && Number.isFinite(lock.ty));
-    arenaSky.lockUsed = haveLock;
-
-    // The name test is authoritative where the container is recognised. The
-    // outline tint is kept only as a fallback for a build this was not written
-    // against — and reported either way, so the two can be compared.
-    // 1.0.17: THE GAME'S OWN ANSWER FIRST. mope sets `arena` on the two
-    // fighters' MODELS and on nobody else — it is what its own outline getter
-    // and isNameVisible read — so when the lock is the game's, "am I duelling"
-    // is a field read on the model, and "which arena" is that field. The arena
-    // is a model too (1.0.18), and owns the container the scan finds, so the
-    // match is against `arena.container`. The name test and the outline
-    // memory below are the fallback for a page where the singleton was never
-    // captured, and are still reported beside it.
-    const gameArena = model && model.arena && typeof model.arena === 'object' ? model.arena : null;
-    const gameArenaNode = !gameArena ? null
-      : (gameArena.container && typeof gameArena.container === 'object') ? gameArena.container
-      : gameArena;
-    arenaSky.gameSays = gameKnown
-      ? (model ? (gameArena ? 'duelling' : 'not duelling') : 'no player')
-      : 'n/a';
-    const hidden = arenaNameHidden(player);
-    arenaSky.nameSays = hidden;
-    arenaSky.nameAt = arenaNameIndex;
-    if (gameKnown) {
-      arenaSky.duelling = !!gameArena;
-    } else {
-      // The memory is asked of the ANIMAL as well as of the reading, because
-      // inside a culled duel there is routinely no reading — see hpArenaSeen.
-      arenaSky.duelling = (hidden === null
-        ? (hpInArena(entry, now) || hpEntityInArena(player, now))
-        : hidden) && arenaSkyLockIsSelf(player, now);
-    }
-    if (!arenaSky.duelling) return null;
-    // The arena BY REFERENCE, when the game handed one over and the scan can
-    // see its container in the scene — no geometry and no child-counting for
-    // the arena you are actually in. Geometry remains for a page without the
-    // singleton, and for an arena the game names but the scan did not
-    // recognise.
-    if (gameArenaNode) {
-      const byRef = arenaMineOf(gameArenaNode, gameArena);
-      arenaSky.arenaBy = byRef ? 'the game (player.arena.container)'
-        : 'waiting for the game-owned arena geometry';
-      return byRef; // never substitute a nearby stranger's arena during rebuild
-    }
-    arenaSky.arenaBy = 'geometry (game arena ownership unavailable)';
-
-    // The screen centre is the fallback, and it is right whenever the camera is
-    // following you — which is mope's default. It is wrong in an arena set to
-    // a FIXED camera, and that is exactly when the lock matters.
-    const px = haveLock ? lock.tx : scr.w / 2;
-    const py = haveLock ? lock.ty : scr.h / 2;
-
-    let best = null;
-    let bestDist = Infinity;
-    for (const node of arenaScan.found) {
-      if (!node.parent) continue;
-      // Resolved by shape, once, and carried on `mine` — so the sky's Graphics
-      // lookup and the bite indicator's score labels stop counting children
-      // for themselves. An extra child used to shift both of those silently.
-      const parts = arenaPartsOf(node);
-      const wt = node.worldTransform;
-      if (!parts || !wt) continue;
-      const base = parts.base;
-      // The world-to-screen scale, taken off the transform itself rather than
-      // assumed, so camera zoom and the renderer's resolution are both already
-      // in it.
-      const scale = Math.hypot(Number(wt.a) || 0, Number(wt.b) || 0);
-      const worldRadius = Number(base.width) / 2;
-      if (!(scale > 0) || !(worldRadius > 0)) continue;
-      const dx = Number(wt.tx) - px;
-      const dy = Number(wt.ty) - py;
-      const dist = Math.hypot(dx, dy);
-      if (!(dist <= worldRadius * scale)) continue;
-      if (dist >= bestDist) continue;
-      bestDist = dist;
-      best = {node, base, walls: parts.walls, labels: parts.labels, scale, worldRadius};
-    }
-    return best;
   }
 
   /* ----- the HUD corner, while the sky is up ----- */
@@ -14466,62 +7541,161 @@
     }
   }
 
-  /* ----- putting it in the scene, and taking it out again ----- */
+
+  /* ----- where the arena is -----
+   *
+   * `$.player.arena` is your duel, set by mope the moment you are one of the
+   * two fighters and cleared when it ends. It owns its geometry —
+   * container, base (the floor sprite, on the `arenaBase` render layer),
+   * walls, the two labels that carry "Bites: N", timer and message — and its
+   * two fighters, player1 and player2. 1.0.x found all of this by shape and
+   * decided whether you were in it from your nameplate's visibility; none of
+   * that is needed now, and a stranger's arena can never be mistaken for
+   * yours because the game says which one is yours.
+   */
+
+  // The world is drawn in the arena container's frame; its scale on screen
+  // and its radius in world units are what the sky is sized from.
+  function arenaMine() {
+    const me = myAnimal();
+    const arena = me && me.arena;
+    if (!arena || typeof arena !== 'object') return null;
+    const node = arena.container;
+    const base = arena.base;
+    if (!node || node.destroyed || !node.parent || !base || base.destroyed) return null;
+    const wt = node.worldTransform;
+    if (!wt) return null;
+    const scale = Math.hypot(Number(wt.a) || 0, Number(wt.b) || 0);
+    const worldRadius = Number(base.width) / 2;
+    if (!(scale > 0) || !(worldRadius > 0)) return null;
+    return {
+      arena, node, base, walls: arena.walls,
+      labels: [arena.textPlayer1, arena.textPlayer2, arena.timer, arena.message],
+      fighters: [arena.player1, arena.player2].filter(Boolean),
+      scale, worldRadius,
+    };
+  }
+
+  // In a game as a player — not on the menu, not spectating somebody else.
+  function arenaPlaying() {
+    return inGame();
+  }
+
+  /* ----- mope's own Arena Culling ----- */
+
+  const MOPE_CULL_SHOW = 0;
+  const MOPE_CULL_HIDE = 1;
+
+  function mopeCullingValue() {
+    const proxy = mopeSettingsProxy();
+    try {
+      const arena = proxy && proxy.gameplay && proxy.gameplay.arena;
+      if (!arena) return -1;
+      const value = arena.outsideWorld;
+      return value === MOPE_CULL_HIDE ? MOPE_CULL_HIDE
+        : value === MOPE_CULL_SHOW ? MOPE_CULL_SHOW : -1;
+    } catch (e) { return -1; }
+  }
+
+  // Written through mope's settings object and read back, so a write that
+  // did not take reports as failed rather than as done. mope persists it.
+  function mopeWriteCulling(want) {
+    const proxy = mopeSettingsProxy();
+    try {
+      const arena = proxy && proxy.gameplay && proxy.gameplay.arena;
+      if (!arena) return false;
+      if (arena.outsideWorld !== want) arena.outsideWorld = want;
+    } catch (e) { return false; }
+    return mopeCullingValue() === want;
+  }
+
+  // The theme needs mope's Arena Culling on (HIDE), or the world is drawn
+  // over the sky. It is YOUR mope setting, though, so whatever it was before
+  // the theme first changed it is remembered (across reloads) and put back
+  // when the theme goes off — by its own switch or the master switch —
+  // rather than forced to SHOW.
+  function mopeSetCulling(hide) {
+    if (hide) {
+      if (store.get('cullingBeforeTheme', null) === null) {
+        const current = mopeCullingValue();
+        if (current === MOPE_CULL_HIDE || current === MOPE_CULL_SHOW) {
+          store.set('cullingBeforeTheme', current);
+        }
+      }
+      return mopeWriteCulling(MOPE_CULL_HIDE);
+    }
+    const saved = store.get('cullingBeforeTheme', null);
+    if (saved === null) return true;
+    const ok = mopeWriteCulling(saved === MOPE_CULL_HIDE ? MOPE_CULL_HIDE : MOPE_CULL_SHOW);
+    if (ok) store.set('cullingBeforeTheme', null);
+    return ok;
+  }
+
+  /* ----- the sky ----- */
+
+  const arenaSky = {
+    node: null,       // our Graphics
+    host: null,       // the arena container it hangs off
+    layer: null,      // the RenderLayer it is attached to
+    shownAt: 0,
+    builtSpan: 0,
+    builtUnit: 0,
+    builtStars: 0,
+    alignedFor: null, // the arena whose culling has been set to match
+    why: 'off',
+  };
+
+  function arenaSkyOn() {
+    return settings.masterEnabled && settings.arenaSky;
+  }
+
+  function arenaSkyLit() {
+    return !!(arenaSky.node && arenaSky.node.parent);
+  }
 
   function arenaSkyDetach(why) {
     arenaHudApply(false);
+    hpEdgeClearAll();
     arenaSky.why = why || 'off';
     const node = arenaSky.node;
-    arenaSky.node = null;
-    arenaSky.host = null;
-    arenaSky.builtSpan = 0;
-    arenaSky.builtUnit = 0;
-    arenaSky.alignedFor = null;
-    arenaSky.shownAt = 0;
     const layer = arenaSky.layer;
-    arenaSky.layer = null;
+    Object.assign(arenaSky, {node: null, host: null, layer: null, builtSpan: 0,
+      builtUnit: 0, alignedFor: null, shownAt: 0});
     if (!node) return;
-    // Detached from the layer BEFORE it is destroyed. A RenderLayer holds its
-    // own list of what to draw, and a destroyed object left on that list is a
-    // dead reference the engine will still walk.
     try { if (layer && typeof layer.detach === 'function') layer.detach(node); } catch (e) {}
     try { if (node.parent) node.parent.removeChild(node); } catch (e) {}
     try { if (typeof node.destroy === 'function') node.destroy(); } catch (e) {}
   }
 
+  // Two attachments, both needed: a CHILD of the arena container for its
+  // transform, and attached to the floor's RenderLayer for its depth — which
+  // puts it above all terrain and below every animal. If the floor is not on
+  // a layer there is no safe depth left (the only other one is above the
+  // fighters), so it refuses to draw rather than cover them.
   function arenaSkyAttach(mine) {
+    const layer = mine.base.parentRenderLayer;
     if (arenaSky.node && !arenaSky.node.destroyed && arenaSky.host === mine.node &&
-        arenaSky.node.parent === mine.node && arenaSky.layer === mine.base.parentRenderLayer &&
-        arenaSky.node.parentRenderLayer === arenaSky.layer) {
+        arenaSky.node.parent === mine.node && arenaSky.layer === layer &&
+        arenaSky.node.parentRenderLayer === layer) {
       return arenaSky.node;
     }
     arenaSkyDetach('re-attaching');
-
-    // The layer decision comes FIRST, because there is no acceptable way to
-    // draw without it. See the note at the top of this section.
-    const layer = mine.base.parentRenderLayer;
-    if (!layer || layer.destroyed || typeof layer.attach !== 'function' || typeof layer.detach !== 'function') {
+    if (!layer || layer.destroyed || typeof layer.attach !== 'function' ||
+        typeof layer.detach !== 'function') {
       arenaSky.why = 'the arena floor is not on a render layer — refusing to ' +
         'draw, since the only other depth available is above the fighters';
       return null;
     }
-
-    // Built from the arena's own Graphics rather than from an engine import,
-    // which a userscript has no way to reach: its constructor is the class.
-    // Taken from the parts resolved by shape (1.0.13) rather than from child
-    // index 1, which an extra child would have shifted.
-    const wallsPart = mine.walls;
-    const Graphics = wallsPart && wallsPart.constructor;
+    const Graphics = mine.walls && mine.walls.constructor;
     let node = null;
     try { if (typeof Graphics === 'function') node = new Graphics(); }
     catch (e) { arenaSky.why = 'could not build a Graphics: ' + e; return null; }
     if (!node) { arenaSky.why = 'could not build a Graphics'; return null; }
-
     try {
-      node.__lumiArenaSky = true;   // so the matcher above never counts it
+      node.__lumiArenaSky = true;
       node.alpha = 0;
-      mine.node.addChild(node);   // for its transform
-      layer.attach(node);         // for its depth
+      mine.node.addChild(node);
+      layer.attach(node);
     } catch (e) {
       arenaSky.why = 'could not place the sky: ' + e;
       try { layer.detach(node); } catch (e2) {}
@@ -14529,1805 +7703,433 @@
       try { node.destroy(); } catch (e2) {}
       return null;
     }
-
-    arenaSky.node = node;
-    arenaSky.host = mine.node;
-    arenaSky.layer = layer;
-    arenaSky.shownAt = 0;
+    Object.assign(arenaSky, {node, host: mine.node, layer, shownAt: 0});
     return node;
   }
 
-  function arenaSkyTick(renderer, now) {
-    // Its own try/catch, like every other per-frame feature here: hookRenderer
-    // runs them all inside ONE silent catch, so without this a throw in here
-    // would take the party map and the HP numbers down with it.
-    try {
-      // Four separate reasons to draw nothing, kept apart in the message
-      // because "off", "not playing", "spectating" and "tab in the background"
-      // send anyone reading the debug hook to four different places.
-      if (!arenaSkyOn() || !arenaPlaying() || document.hidden) {
-        arenaHudApply(false);
-        const idle = !arenaSkyOn() ? 'off'
-          : arenaSpectating() ? 'spectating — this is not your duel'
-          : prevMenuVisible !== false ? 'not in a game'
-          : 'tab is in the background';
-        if (arenaSky.node) arenaSkyDetach(idle);
-        else arenaSky.why = idle;
-        return;
-      }
-      const scr = viewportOf(renderer);
-      const mine = arenaSkyPick(scr, now);
-      if (!mine) {
-        // Two different states, said apart, because one of them is the whole
-        // point of 1.17.3: standing in somebody else's arena is not being in a
-        // duel, and now looks like nothing at all.
-        const why = arenaSky.duelling
-          ? 'duelling, but not inside any arena the scene knows about'
-          : arenaScan.found.length
-            ? 'not one of the fighters — walking past an arena, not in it'
-            : 'no arena in the scene';
-        arenaHudApply(false);
-        if (arenaSky.node) arenaSkyDetach(why);
-        else arenaSky.why = why;
-        return;
-      }
-
-      const node = arenaSkyAttach(mine);
-      if (!node) { arenaHudApply(false); return; }
-
-      // Once per duel, bring mope's Arena Culling into line with the switch.
-      // Without this a session that starts with the feature already on — it is
-      // remembered between sessions — draws the sky over a world that is still
-      // there, until the button is pressed twice. Only ever in the ON
-      // direction: forcing SHOW here would take culling away from somebody who
-      // wants it without the sky, and the switch is off in that case anyway.
-      if (arenaSky.alignedFor !== mine.node) {
-        arenaSky.alignedFor = mine.node;
-        if (mopeCullingValue() !== MOPE_CULL_HIDE) mopeSetCulling(true);
-      }
-
-      const unit = 1 / mine.scale;
-      // Half the screen diagonal plus one arena radius is the whole of what
-      // can ever be looked at from inside this arena. See ARENA_SKY_MARGIN.
-      const halfDiag = Math.hypot(scr.w, scr.h) / 2;
-      const span = Math.max(mine.worldRadius * ARENA_SKY_MIN_SPAN,
-        mine.worldRadius + halfDiag * unit * ARENA_SKY_MARGIN);
-      // Density, not a count: the field grows with the window, and a fixed
-      // number of stars over a bigger field is a thinner sky.
-      const fieldPx = span * 2 * mine.scale;
-      const stars = Math.max(ARENA_SKY_STARS_MIN,
-        Math.min(ARENA_SKY_STARS_MAX,
-          Math.round((fieldPx * fieldPx) / ARENA_SKY_STAR_AREA)));
-      if (!arenaSky.builtSpan ||
-          Math.abs(span - arenaSky.builtSpan) > arenaSky.builtSpan * ARENA_SKY_REBUILD_AT ||
-          Math.abs(unit - arenaSky.builtUnit) > arenaSky.builtUnit * ARENA_SKY_REBUILD_AT) {
-        arenaSkyPaint(node, span, unit, stars);
-        arenaSky.builtSpan = span;
-        arenaSky.builtUnit = unit;
-        arenaSky.builtStars = stars;
-      }
-
-      // Faded in rather than cut in. The toggle is a key press in the middle
-      // of a fight and a quarter of a second of ramp is the difference between
-      // it reading as deliberate and reading as a glitch.
-      if (!arenaSky.shownAt) arenaSky.shownAt = now;
-      const alpha = Math.min(1, (now - arenaSky.shownAt) / ARENA_SKY_FADE_MS);
-      if (node.alpha !== alpha) node.alpha = alpha;
-      arenaSky.why = 'drawing';
-      // The HUD corner follows the sky exactly — it is only rearranged while
-      // there is something to rearrange it around.
-      arenaHudApply(true);
-    } catch (e) {
-      arenaSky.why = 'threw: ' + e;
-      frameFailed('arena theme', e);
-      dbg('arena starfield: tick failed —', e);
+  function arenaSkyTick(mine, now) {
+    if (!arenaSkyOn() || !arenaPlaying() || document.hidden) {
+      const idle = !arenaSkyOn() ? 'off' : !arenaPlaying() ? 'not playing' : 'tab hidden';
+      if (arenaSky.node) arenaSkyDetach(idle); else { arenaHudApply(false); arenaSky.why = idle; }
+      return;
     }
-  }
-
-  function applyArenaSky() {
-    if (!arenaSkyOn()) arenaSkyDetach('off');
-    dbg('arena starfield', arenaSkyOn() ? 'armed' : 'stopped');
+    if (!mine) {
+      if (arenaSky.node) arenaSkyDetach('not in a duel'); else { arenaHudApply(false); arenaSky.why = 'not in a duel'; }
+      return;
+    }
+    const node = arenaSkyAttach(mine);
+    if (!node) { arenaHudApply(false); return; }
+    if (arenaSky.alignedFor !== mine.node) {
+      arenaSky.alignedFor = mine.node;
+      if (mopeCullingValue() !== MOPE_CULL_HIDE) mopeSetCulling(true);
+    }
+    const view = canvasRect(now);
+    const scrW = view ? view.w : innerWidth;
+    const scrH = view ? view.h : innerHeight;
+    const unit = 1 / mine.scale;
+    const halfDiag = Math.hypot(scrW, scrH) / 2;
+    const span = Math.max(mine.worldRadius * ARENA_SKY_MIN_SPAN,
+      mine.worldRadius + halfDiag * unit * ARENA_SKY_MARGIN);
+    const fieldPx = span * 2 * mine.scale;
+    const stars = Math.max(ARENA_SKY_STARS_MIN,
+      Math.min(ARENA_SKY_STARS_MAX, Math.round((fieldPx * fieldPx) / ARENA_SKY_STAR_AREA)));
+    if (!arenaSky.builtSpan ||
+        Math.abs(span - arenaSky.builtSpan) > arenaSky.builtSpan * ARENA_SKY_REBUILD_AT ||
+        Math.abs(unit - arenaSky.builtUnit) > arenaSky.builtUnit * ARENA_SKY_REBUILD_AT) {
+      arenaSkyPaint(node, span, unit, stars);
+      arenaSky.builtSpan = span;
+      arenaSky.builtUnit = unit;
+      arenaSky.builtStars = stars;
+    }
+    if (!arenaSky.shownAt) arenaSky.shownAt = now;
+    const alpha = Math.min(1, (now - arenaSky.shownAt) / ARENA_SKY_FADE_MS);
+    if (node.alpha !== alpha) node.alpha = alpha;
+    arenaSky.why = 'drawing';
+    arenaHudApply(true);
+    hpEdgeTick(mine);
   }
 
   function arenaSkySet(on, source) {
     settings.arenaSky = !!on;
     store.set('arenaSky', settings.arenaSky);
-    // mope's own Arena Culling moves with it, which is the whole point of the
-    // button: one press should give the clear arena AND the sky rather than
-    // half of each. 1.17.0 did only the sky.
-    //
-    // On means HIDE and off means SHOW, rather than off restoring whatever was
-    // there before. A toggle that sometimes changes nothing visible — which is
-    // what restoring would do for anyone already set to HIDE — is not a toggle.
     const culled = mopeSetCulling(settings.arenaSky);
-    applyArenaSky();
+    if (!arenaSkyOn()) arenaSkyDetach('off');
     syncArenaSkyRow();
     if (source === 'hotkey' && arenaPlaying()) {
-      // Said out loud when the culling could not be reached, because the
-      // difference is plainly visible and guessing at why is not.
       qolcToast(
         (settings.arenaSky ? 'Arena starfield on' : 'Arena starfield off') +
           (culled ? '' : ' — Arena Culling unavailable'),
         culled ? 'is-info' : 'is-bad');
     }
+    dbg('arena theme', settings.arenaSky ? 'on' : 'off', source);
   }
 
-  /* ----- the Z hotkey ----- */
+  /* ----- the missing-health outline -----
+   *
+   * mope's health bar is a dark plate with a coloured fill. On the starfield
+   * the plate disappears, so a fighter at 40% looks like a short bar rather
+   * than a bar that is 60% empty. While the sky is drawn, each fighter's bar
+   * gets a faint white outline of its full length.
+   */
+  const hpEdges = new Map();   // fighter entity -> our Graphics
 
-  // Z, replacing mouse button 5 as of 1.19.0.
-  //
-  // Button 5 was a bad key twice over. Plenty of mice do not have it at all,
-  // and on the ones that do it is wired to browser history at a level no
-  // listener sits above — so the old handler had to cancel the default on
-  // mousedown, mouseup AND auxclick just to stop a duel ending with the page
-  // navigating backwards, and then act on exactly one of the three. Z costs
-  // none of that.
-  //
-  // mope's shipped binds are W, A, X, S, Space, Enter, Escape, the arrows and
-  // Q, so Z is free out of the box. It is rebindable, though, so the bind list
-  // is checked and this stands down rather than quietly eating somebody's
-  // dive — with a toast, because a hotkey that silently does nothing is worse
-  // than one that is not there.
-  const ARENA_SKY_KEY = 'KeyZ';
-  // A clash is reported at most this often. Whoever has Z bound to their dive
-  // is going to press it a great many times in a fight, and one explanation is
-  // help where forty of them is a second problem.
-  const ARENA_SKY_CLASH_TOAST_MS = 15000;
-  let arenaSkyClashSaidAt = -Infinity;
-
-  // The `code` is what mope's own binds use, and it is the right thing for a
-  // key chosen for its POSITION rather than its letter: on an AZERTY keyboard
-  // `KeyZ` is the key under the left hand where a QWERTY player's Z is, which
-  // is where a hotkey pressed mid-fight wants to be. `key` is kept as a
-  // fallback for the handful of environments that report no code at all.
-  function arenaSkyIsHotkey(event) {
-    if (event.code) return event.code === ARENA_SKY_KEY;
-    return event.key === 'z' || event.key === 'Z';
+  // mope's bar: a 30 x 7 plate centred on health.container, corners 2.5 when
+  // rounded corners are on. Read off the entity rather than assumed.
+  function healthBarBox(entity) {
+    const health = entity && entity.health;
+    if (!health || !health.container || health.container.destroyed) return null;
+    const size = health.size;
+    const w = size && Number(size.x) > 0 ? Number(size.x) : 30;
+    const h = size && Number(size.y) > 0 ? Number(size.y) : 7;
+    let rounded = true;
+    try { rounded = !!mopeSettingsProxy().rendering.roundedCorners; } catch (e) { /* default */ }
+    return {container: health.container, Graphics: health.wrapper && health.wrapper.constructor,
+      w, h, r: rounded ? 2.5 : 0};
   }
 
-  function arenaSkyTypingElsewhere() {
-    // mope's public chat box exists only while the player is deliberately
-    // talking, so its presence alone is enough to stand down — the input does
-    // not have to still hold focus for the next keystroke to be meant for it.
-    if (document.getElementById('chatInput')) return true;
-    const active = document.activeElement;
-    if (!active) return false;
-    return active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' ||
-      active.tagName === 'SELECT' || active.isContentEditable === true;
+  function drawBox(g, box, width) {
+    if (box.r > 0 && typeof g.roundRect === 'function') g.roundRect(0, 0, width, box.h, box.r);
+    else g.rect(0, 0, width, box.h);
   }
 
-  // The draw-order keys. Bracket keys deliberately: they are unused by mope,
-  // unused by this script, and sit together on the right hand so "above" and
-  // "below" are one key apart rather than two unrelated letters. Matched on
-  // CODE for the reason Z is — position beats letter on a non-QWERTY layout.
-  PAGE.addEventListener('keydown', (event) => {
-    if (!event.isTrusted) return;
-    if (event.shiftKey) return;
-    // Only in a game. On the menu there is nothing to reorder and the key
-    // keeps whatever meaning it already had. Everything else — repeat,
-    // modifiers, typing, the bind itself and whether we may act on it — is
-    // kbHit's job now.
-    if (prevMenuVisible !== false) return;
-    const above = kbHit('zAbove', event);
-    const below = !above && kbHit('zBelow', event);
-    if (!above && !below) return;
-    event.preventDefault();
-    event.stopPropagation();
-    zorderSet(above ? 1 : -1, 'hotkey');
-  }, true);
+  function hpEdgeTick(mine) {
+    const live = new Set(mine.fighters);
+    for (const [entity, node] of hpEdges) {
+      if (live.has(entity) && node.parent && !node.destroyed) continue;
+      try { if (node.parent) node.parent.removeChild(node); node.destroy(); } catch (e) {}
+      hpEdges.delete(entity);
+    }
+    for (const fighter of mine.fighters) {
+      if (hpEdges.has(fighter)) continue;
+      const box = healthBarBox(fighter);
+      if (!box || typeof box.Graphics !== 'function') continue;
+      let node = null;
+      try {
+        node = new box.Graphics();
+        node.__lumiHpEdge = true;
+        node.pivot.set(box.w / 2, box.h / 2);
+        drawBox(node, box, box.w);
+        node.stroke({color: 0xffffff, alpha: 0.5, width: 0.7});
+        box.container.addChild(node);
+        hpEdges.set(fighter, node);
+      } catch (e) {
+        try { if (node) { if (node.parent) node.parent.removeChild(node); node.destroy(); } } catch (e2) {}
+      }
+    }
+  }
 
-  // On the window at capture, like every other hotkey in this script: the
-  // capture phase visits window before document, and mope's own handlers are
-  // on the window. Registering here also puts this AFTER the party-chat
-  // handler on the same target, which is what keeps typing a "z" into the
-  // party input from toggling the sky — that handler calls
-  // stopImmediatePropagation while its field owns the event, and this one is
-  // downstream of it.
-  PAGE.addEventListener('keydown', (event) => {
-    if (!event.isTrusted || event.repeat) return;
-    if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
-    if (!kbHit('arenaTheme', event)) return;
-    if (!settings.masterEnabled) return;
-    // Off the menu, and while spectating, Z keeps whatever meaning it already
-    // had. Spectate is checked here and not only in the tick so that the key
-    // cannot flip mope's Arena Culling from a screen where nothing would come
-    // of it.
-    if (!arenaPlaying()) return;
-    if (arenaSkyTypingElsewhere()) return;
-    if (extras && extras.panel && extras.panel.style.display === 'block') return;
-    const target = event.target;
-    if (target && target.closest && target.closest(QOLC_OWN_UI)) return;
+  function hpEdgeClearAll() {
+    for (const node of hpEdges.values()) {
+      try { if (node.parent) node.parent.removeChild(node); node.destroy(); } catch (e) {}
+    }
+    hpEdges.clear();
+  }
 
-    // 1.0.7 REMOVED a second clash check that used to sit here. It asked
-    // mopeBindFor(ARENA_SKY_KEY) — a frozen 'KeyZ' — AFTER kbHit had already
-    // decided. That made Override inoperative for this bind (kbHit says yes,
-    // then this said no on the exact case Override exists for) and it carried
-    // Z's clash onto whatever the bind was moved to. kbHit owns the question
-    // now, for every bind, in one place.
+  /* ----- draw order -----
+   *
+   * Moves ONLY your animal onto a dedicated RenderLayer placed just above (or
+   * below) the highest (or lowest) layer any animal is drawn on. Nobody
+   * else's draw list is touched. Restored with mope's own updateLayer(),
+   * which puts the animal back wherever mope wants it right now (diving,
+   * flying, in an arena).
+   */
+  const zorder = {
+    mode: settings.zorderMode,   // 0 off, 1 above everything, -1 below everything
+    api: '',
+    layers: 0,
+    home: null,
+    homeFor: null,     // the animal entity that home belongs to
+    layer: null,       // the one layer this feature owns
+    applied: 0,
+  };
 
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    arenaSkySet(!settings.arenaSky, 'hotkey');
-  }, true);
+  function zorderOn() { return settings.masterEnabled && zorder.mode !== 0; }
 
-  // Type __lumiArenaDebug() in the console during a duel. Every stage that can
-  // come up empty is listed separately, because "the sky is not showing" has
-  // half a dozen causes and only one of them is a bug.
-  function arenaDebug() {
-    const renderer = renderers[0] || null;
-    const scr = renderer ? viewportOf(renderer) : {w: innerWidth, h: innerHeight};
-    const mine = arenaScan.found.length ? arenaSkyPick(scr, performance.now()) : null;
-    const entry = hpSelfEntry();
-    const report = {
-      version: VERSION,
-      masterEnabled: settings.masterEnabled,
-      featureEnabled: !!settings.arenaSky,
-      // Which of mope's screens is up. Since 1.19.0 these are two questions,
-      // not one: "no Play button" is true in a game AND while spectating, and
-      // reading them as the same thing is what put the sky over other people's
-      // duels. `#spectateMenu` is the spectate screen's own root.
-      screen: prevMenuVisible !== false ? 'menu'
-        : arenaSpectating() ? 'SPECTATING — the feature stands down here'
-        : 'in a game',
-      inGame: arenaPlaying(),
-      // The hotkey, and the one thing that can take it away.
-      // Read from the registry rather than from a frozen constant, so this
-      // reports the key the feature is actually on.
-      hotkey: kbLabelOf(kbCode('arenaTheme')) + ' (' + kbPrio('arenaTheme') + ')' +
-        (kbConflicts('arenaTheme').length
-          ? ' - CLASH: ' + kbConflicts('arenaTheme')
-              .map(function (c) { return c.kind + ': ' + c.what; }).join(', ')
-          : ''),
-      state: arenaSky.why,
-      // The health-bar outline rides this feature, so it is reported with it.
-      // "lit" is the gate; a lit sky with no outlines means the plate's drawing
-      // commands could not be read and the feature refused to guess.
-      barOutlines: arenaSkyLit()
-        ? hpEdgeLive + ' attached'
-        : 'none — the sky is not on screen',
-      // The HUD rearrangement, and the one measurement worth having: `fixed`
-      // answers to a transformed ancestor rather than the viewport, so where
-      // the stats block ACTUALLY landed is reported rather than assumed. A
-      // figure past the middle of the screen means it did not cross.
-      hudRearranged: arenaHud.on ? 'yes' : 'no',
-      statsBlockLeftPx: arenaHud.on
-        ? arenaHud.statsLeft + (arenaHud.statsLeft > innerWidth / 2
-            ? ' — DID NOT CROSS, a transformed ancestor is holding it' : ' (left corner)')
-        : '(not moved)',
-      thirdPartyButton: arenaHud.starWhy,
-      // mope's own Arena Culling, and whether this script can reach it at all.
-      // "the sky is on but the world is still there" is answered entirely by
-      // these two rows.
-      // 1.0.12. The lock, and the state that used to be invisible: an animal
-      // known to be yours with no bar reading to hand. That is the whole of a
-      // culled duel from the lock's point of view, and it is NOT a fault.
-      lockState: entry ? 'locked, with a reading'
-        : hpState.player
-          ? 'HELD — your animal is known; its bar is not in the scan right now'
-          : 'none' + (hpLockRefusedWhy ? ' (' + hpLockRefusedWhy + ')' : ''),
-      // 1.0.17. mope's own answer, and how the arena was chosen. When these
-      // read 'n/a' / 'geometry' the singleton was never captured.
-      gameSaysDuelling: arenaSky.gameSays,
-      arenaPickedBy: arenaSky.arenaBy || '(none yet)',
-      // 1.0.13. "No arena in the scene" was the least actionable sentence this
-      // feature could produce, and it is what an over-strict matcher says. The
-      // containers that ALMOST matched are listed with the test each one
-      // failed, so a duel that comes up empty says why rather than just no.
-      arenasFound: arenaScan.found.length,
-      // THE REAL NUMBERS. Every ceiling in the matcher above is a guess until
-      // somebody reads one off a live duel, and a Black Dragon or King Dragon
-      // arena is the case that scales everything up. These two rows are what a
-      // paste from such a duel should be checked against first.
-      arenaChildren: mine && mine.node && mine.node.children
-        ? mine.node.children.length + ' (no child-count ceiling)'
-        : '(no arena picked)',
-      yourAnimalChildren: hpState.player && hpState.player.children
-        ? hpState.player.children.length + ' (nameplate searched up to ' +
-          ARENA_NAME_SEARCH_MAX + ')'
-        : '(no lock)',
-      arenasAlmost: arenaScan.nearMiss.length
-        ? arenaScan.nearMiss.map(function (m) {
-            return m.children + ' children, ' + m.texts + ' labels, floor=' +
-              m.floor + ' walls=' + m.walls + ' — ' + m.why;
-          })
-        : '(none — nothing arena-shaped was rejected)',
-      arenaCulling: mopeCullingValue() === MOPE_CULL_HIDE ? 'HIDE — world culled'
-        : mopeCullingValue() === MOPE_CULL_SHOW ? 'SHOW — world drawn'
-        : 'could not be read',
-      settingsCapture: mopeSettingsProxy()
-        ? mopeSettings.why
-        : 'FAILED: ' + mopeSettings.why + ' (the sky still works; the culling ' +
-          'switch does not, so set Arena Culling in mope\'s own settings)',
-      // 1.20.1. Reported here because this is where the settings capture is
-      // already reported, and because it is the one setting that can kill
-      // every per-frame feature in the script at once — the arena sky first
-      // among them. 'canvas' means nothing below this line can ever draw.
-      // Two different questions, and until 1.36.0 only the first was answerable.
-      // `rendererSetting` is what the player ASKED for, read out of mope's own
-      // settings; `rendererBuilt` is what Pixi actually made, read off the
-      // captured renderer. They can disagree — mope silently forces canvas for
-      // a weak GPU — and it is the second one that decides what works.
-      rendererSetting: mopeRendererName() || 'could not be read',
-      rendererBuilt: gameRendererName() || 'nothing captured',
-      capturedVia: gameCapture.rendererVia ||
-        (renderers.length ? 'Pixi devtools hook' : 'nothing captured'),
-      arenaContainersInScene: arenaSky.arenas,
-      insideOne: mine ? 'yes' : 'no',
-      // The gate, since 1.18.1: mope hides a duellist's NAME and puts it on the
-      // arena's own labels instead, so a hidden name is participation and
-      // nothing else. The outline tint below is what this replaced — reported
-      // rather than used, because on a tier-15+ animal it was reading as a
-      // duellist for a player only walking past.
-      duelling: arenaSky.duelling ? 'yes — the game marks you as a fighter'
-        : entry ? 'no — not marked as a fighter (walking past does not count)'
-        : 'unknown — the HP feature has not locked onto your animal',
-      nameSignal: arenaSky.nameSays === null
-        ? 'container not recognised — falling back to the arena memory'
-        : arenaSky.nameSays ? 'your name is HIDDEN, so you are in an arena'
-        : 'your name is shown, so you are not',
-      // 1.0.13. WHERE the name/wins pair was found. It used to be required at
-      // index 1 exactly; a bigger animal carries extra art ahead of it, and an
-      // animal whose pair had shifted read as "not recognised" and fell
-      // through to a memory that a culled duel had already emptied.
-      nameFoundAt: arenaSky.nameAt >= 0
-        ? 'children[' + arenaSky.nameAt + '] and [' + (arenaSky.nameAt + 1) + ']'
-        : 'NOT FOUND — no adjacent pair of Text children on your animal',
-      outlineSignal: !entry ? '(no player lock reading)'
-        : (hpInArena(entry, performance.now()) ? 'cyan/yellow seen within 30s' : 'no duellist tint') +
-          (arenaSky.nameSays === null ? ' — IN USE, the container was not recognised'
-            : ' — not used, the name signal above decides'),
-      // The same memory asked of the ANIMAL, which is the copy that survives
-      // the bar reading being dropped (1.0.13).
-      arenaMemory: hpEntityInArena(hpState.player, performance.now())
-        ? 'your animal wore a duellist outline within the last 30s'
-        : 'no duellist outline remembered for your animal',
-      lockIsYou: arenaSky.identOk
-        ? 'the locked animal matches your ability icon'
-        : 'MISMATCH — locked onto somebody else, so participation is refused',
-      playerLock: arenaSky.lockUsed
-        ? 'yes — using your animal\'s position'
-        : 'no — falling back to the screen centre',
-      arenaRadiusWorld: mine ? Math.round(mine.worldRadius) : '(n/a)',
-      worldToScreen: mine ? Number(mine.scale.toFixed(4)) : '(n/a)',
-      skyPlaced: !!arenaSky.node,
-      depth: arenaSky.layer
-        ? 'attached to the arena floor\'s render layer (below the fighters)'
-        : '(not attached)',
-      fieldRadiusWorld: arenaSky.builtSpan ? Math.round(arenaSky.builtSpan) : '(nothing drawn)',
-      stars: arenaSky.builtStars || 0,
-      alpha: arenaSky.node ? Number(Number(arenaSky.node.alpha).toFixed(2)) : 0,
+  function zorderRank(layer) {
+    try {
+      const kids = layer && layer.parent && layer.parent.children;
+      return kids && typeof kids.indexOf === 'function' ? kids.indexOf(layer) : -1;
+    } catch (e) { return -1; }
+  }
+
+  function zorderMove(obj, to) {
+    if (!obj || obj.destroyed || !to || to.destroyed || typeof to.attach !== 'function') return false;
+    const from = obj.parentRenderLayer;
+    if (from === to) return true;
+    if (from && typeof from.detach !== 'function') return false;
+    try {
+      if (from) from.detach(obj);
+      to.attach(obj);
+      if (obj.parentRenderLayer !== to) throw Error('layer did not accept the animal');
+      return true;
+    } catch (e) {
+      try { if (typeof to.detach === 'function') to.detach(obj); } catch (ignored) {}
+      try { if (from && !from.destroyed) from.attach(obj); } catch (ignored) {}
+      frameFailed('draw order move', e);
+      return false;
+    }
+  }
+
+  function zorderApply() {
+    if (!zorderOn()) { if (zorder.homeFor || zorder.layer) zorderRestore(); return; }
+    const me = myAnimal();
+    if (zorder.homeFor && zorder.homeFor !== me) zorderRestore();
+    const node = me && me.container;
+    if (!node || node.destroyed || !node.parent) {
+      zorder.api = 'waiting for your animal'; zorder.applied = 0; return;
+    }
+    if (node.parentRenderLayer !== zorder.layer) {
+      zorder.homeFor = me;
+      zorder.home = node.parentRenderLayer;
+    }
+    const home = zorder.home;
+    const parent = home && home.parent;
+    if (!parent || typeof parent.addChildAt !== 'function' ||
+        typeof parent.setChildIndex !== 'function') {
+      zorder.api = 'waiting for an animal render layer'; return;
+    }
+    // Every layer an animal is drawn on, under the same parent.
+    const pool = [];
+    const add = (layer) => {
+      if (!layer || layer === zorder.layer || layer.destroyed || layer.parent !== parent) return;
+      if (typeof layer.attach !== 'function') return;
+      if (!pool.some((row) => row.layer === layer)) pool.push({layer, rank: zorderRank(layer)});
     };
-    console.table ? console.table(report) : console.log(report);
-    if (!arenaSky.arenas && arenaPlaying()) {
-      console.log(TAG, 'arena starfield: no arena container was recognised in ' +
-        'the scene. That is expected outside a 1v1 — the container only exists ' +
-        'while a duel does.');
+    add(home);
+    for (const animal of liveAnimals()) add(animal.container.parentRenderLayer);
+    const ranked = pool.filter((row) => row.rank >= 0);
+    if (!ranked.length) { zorder.api = 'waiting for comparable animal render layers'; return; }
+    let target = ranked[0];
+    for (const row of ranked) {
+      if (zorder.mode > 0 ? row.rank > target.rank : row.rank < target.rank) target = row;
     }
-    return report;
-  }
-  try { PAGE.__lumiArenaDebug = arenaDebug; }
-  catch (e) { window.__lumiArenaDebug = arenaDebug; }
-
-  /* ----- the shared duel tick, and the bite indicator ----- */
-
-  // One reading of "am I in a duel, and which arena is it", made once a frame
-  // on behalf of focus mode and the bite indicator.
-  //
-  // It reuses arenaSkyPick() rather than re-deriving any of it. That function
-  // is the starfield's, historically, but nothing in it is about the sky: it
-  // reads the participation signal, checks the HP lock is actually ours, and
-  // then picks the nearest arena that contains us. Three releases went into
-  // getting it right (1.17.3, 1.18.1, 1.19.0) and a second copy of that
-  // reasoning is the last thing this file needs.
-  function arenaDuelTick(renderer, now) {
-    if (!arenaNeeded() || document.hidden) {
-      if (arenaDuel.active) arenaDuelEnd(now);
-      return;
+    if (zorder.layer && (zorder.layer.destroyed || zorder.layer.parent !== parent)) {
+      zorderRestore();
+      zorder.homeFor = me; zorder.home = node.parentRenderLayer;
     }
-    const mine = arenaScan.found.length
-      ? arenaSkyPick(viewportOf(renderer), now)
-      : null;
-    if (mine && !arenaDuel.active) {
-      arenaDuel.active = true;
-      arenaDuel.since = now;
-      arenaFocusEnter();
-      biteEnterDuel(mine, now);
-      dbg('arena: duel started');
-    } else if (!mine && arenaDuel.active) {
-      arenaDuelEnd(now);
+    if (!zorder.layer) {
+      const layer = new home.constructor();
+      if (typeof layer.attach !== 'function' || typeof layer.detach !== 'function') {
+        if (typeof layer.destroy === 'function') layer.destroy();
+        zorder.api = 'render layer constructor unavailable'; return;
+      }
+      layer.__lumiZOrder = true;
+      parent.addChildAt(layer, parent.children.indexOf(target.layer));
+      zorder.layer = layer;
     }
-    arenaDuel.mine = mine;
-    if (mine && biteOn()) biteTick(mine, now);
+    const layer = zorder.layer;
+    const without = parent.children.filter((child) => child !== layer);
+    const index = without.indexOf(target.layer) + (zorder.mode > 0 ? 1 : 0);
+    if (parent.children.indexOf(layer) !== index) parent.setChildIndex(layer, index);
+    zorder.applied = zorderMove(node, layer) ? 1 : 0;
+    zorder.layers = ranked.length;
+    zorder.api = zorder.applied ? 'dedicated layer beside the animal layers'
+      : 'layer move failed; restored native layer';
   }
 
-  function arenaDuelEnd(now) {
-    arenaDuel.active = false;
-    arenaDuel.mine = null;
-    arenaDuel.ended = now;
-    biteClearAll();
-    dbg('arena: duel ended');
+  function zorderRestore() {
+    const me = zorder.homeFor;
+    const node = me && me.container;
+    const layer = zorder.layer;
+    if (node && !node.destroyed && node.parent && node.parentRenderLayer === layer) {
+      try { if (typeof me.updateLayer === 'function') me.updateLayer(); }
+      catch (e) { frameFailed('draw order restore', e); }
+      if (node.parentRenderLayer === layer && !zorderMove(node, zorder.home)) return;
+    }
+    if (layer && !layer.destroyed) {
+      try { if (layer.parent) layer.parent.removeChild(layer); layer.destroy(); }
+      catch (e) { frameFailed('draw order cleanup', e); return; }
+    }
+    Object.assign(zorder, {layer: null, home: null, homeFor: null, applied: 0});
   }
 
-  // ---------------------------------------------------------- focus mode
-  //
-  // "Ignore the party while I am fighting." Everything the party DRAWS stands
-  // down — the minimap dots, the in-world name tags, the party list and party
-  // chat — and everything it SENDS carries on, so the rest of the party still
-  // sees your position and your health the whole way through the duel. The
-  // point is not to leave the party, it is to stop being talked at during the
-  // ten seconds that decide the fight.
-  //
-  // Implemented as three gates rather than as a fourth thing that hides
-  // overlays, because the gates already exist and each one already has a
-  // correct hide path behind it — partyListTick() hides the list when
-  // partyListOn() goes false, and the peer loop hides dots and tags when the
-  // dots switch does. Adding a condition to each is the whole feature.
+  function zorderSet(mode, source) {
+    const want = zorder.mode === mode ? 0 : mode;
+    zorder.mode = want;
+    zorder.api = '';
+    settings.zorderMode = want;
+    store.set('zorderMode', want);
+    syncZorderRows();
+    qolcToast(want > 0 ? 'Drawing above other players'
+      : want < 0 ? 'Drawing below other players'
+      : 'Draw order back to normal', want ? '' : 'quiet');
+    dbg('draw order', want, source);
+    if (want) zorderApply(); else zorderRestore();
+  }
+
+  /* ----- duels: focus mode, the bite indicator, the boost counter ----- */
+
+  const arenaDuel = {
+    active: false,
+    mine: null,
+    since: 0,
+  };
+
+  function arenaFocusOn() {
+    return settings.masterEnabled && settings.arenaFocus;
+  }
+
+  // Focus mode hides party dots, tags, list and chat during your own duel;
+  // publishing continues, so the party still sees you.
+  function arenaFocusHiding() {
+    return arenaFocusOn() && arenaDuel.active;
+  }
+
   function arenaFocusEnter() {
     if (!arenaFocusOn()) return;
-    // The one thing the gates cannot do for themselves. A composer left open
-    // when the overlays go would sit there with focus, swallowing the keys you
-    // are trying to fight with, on a stack that is no longer drawn.
     if (partyChat.open) partyChatCloseInput();
   }
 
-  // ------------------------------------------------------- bite indicator
-  //
-  // In a 1v1, a player who has just been bitten cannot be bitten again for a
-  // short window. This turns that window into something you can see: the
-  // bitten fighter's health bar goes purple until it is over.
-  //
-  // WHAT THE CLIENT ACTUALLY KNOWS, read out of mope's bundle rather than
-  // guessed at, because the accuracy of the whole feature rests on it:
-  //
-  //   - The arena entity carries a per-fighter BITE COUNT. It is a uint8 sent
-  //     by the server, and the arena prints it on its own two labels as
-  //     "name\n(N wins)\nBites: N". A bite landing is therefore not something
-  //     to infer from damage — the server says so, and says it exactly once.
-  //   - Damage is a per-animal uint8 health value, also from the server. mope
-  //     detects being hurt by comparing the new byte against the old one
-  //     (`t < this.target.health && this.effects.hurt()`), which is the same
-  //     test used here to say WHO was bitten.
-  //   - There is NO invulnerability flag anywhere. Not in the animal effects
-  //     (hurt, healing, poison, sweat, bleed, stink, aloe, stun, freeze, burn,
-  //     constrict, web, dive), not on the arena entity, not in the wire
-  //     protocol. `spawnImmunity` is transmitted, but that is spawn
-  //     protection and nothing to do with this.
-  //
-  // So the START of the window is exact and server-timed, and its LENGTH is
-  // the one number that cannot be read off the client. BITE_IMMUNE_MS below is
-  // therefore a measured constant, and __lumiBiteDebug() is what measured it —
-  // and is kept in, because a server-side number can be retuned in a balance
-  // patch and this is the only thing that would notice.
-  //
-  // MEASURED, 2026-08-28, over 21 bites in two live duels. Three seconds.
-  //
-  // The first thirteen bites were an ordinary fight, where the gaps are just
-  // how often two players happen to connect: 3084, 5359, 7538, 7805, 9726,
-  // 9893, 11601, 12489, 12947, 13810, 14018, 17715ms. Those bound the answer
-  // from above and nothing more — except the 3084, which was already sitting
-  // suspiciously close to a floor.
-  //
-  // The measurement is the other eight, with the opponent biting as fast as
-  // the game would let them:
-  //
-  //     3013  3025  3026  3055  3066  2963  3084     mean 3033
-  //
-  // Every one of those is a player TRYING to bite sooner and being refused, so
-  // the cluster is the window itself rather than a sample of human timing. The
-  // spread is 121ms, which is what this script's own observation error looks
-  // like: a bite is seen 0-60ms after the server sent it (ARENA_SKY_WORK_MIN_MS
-  // is 60), so the gap between two sightings carries +/-60ms before the network
-  // adds anything. That is also why one reading came in at 2963 — UNDER the
-  // real window, which a true floor cannot be, and the clearest possible sign
-  // that the noise is ours and the constant is round.
-  //
-  // 3000 exactly, then. Not rounded to taste: a server constant is a round
-  // number, the mean is 3033 against an expected +30 bias from the opponent not
-  // being infinitely fast, and no reading is more than 84ms off it.
-  //
-  // What would disprove it: a gap materially below ~2940 that is not explained
-  // by a laggy frame. __lumiBiteDebug() keeps reporting the shortest gap seen
-  // for exactly that reason, so this stays checkable rather than becoming
-  // folklore.
-  const BITE_IMMUNE_MS = 3000;
-
-  // How far apart a score bump and a health drop may be and still be the same
-  // event. They arrive in the same server frame, but they are read by two
-  // different parts of this script on two different throttles, so they are
-  // matched within a window rather than required to be simultaneous.
-  const BITE_MATCH_MS = 320;
-
-  const bite = {
-    score1: -1,
-    score2: -1,
-    node: null,          // the arena the scores above were read from
-    // entity -> {until, entry, node, shape, drawn}
-    marked: new Map(),
-    // entity -> last health percent seen, for the drop test
-    health: new Map(),
-    // score bumps still waiting for a health drop to name a victim
-    pending: [],
-    // ---- measurement, which is the point of this build ----
-    log: [],             // {n, who, at, gap}
-    lastHitAt: new Map(),
-    bites: 0,
-    minGap: Infinity,
-    unmatched: 0,        // bumps that never found a victim
-    // Read through a getter rather than copied in, so flipping the sub-option
-    // in the panel is picked up by the next redraw with nothing to notify —
-    // and mid-window, which is when somebody switching styles is looking.
-    // 1.0.4: the outline style is gone and the full bar is the only one. The
-    // getter stays so every call site keeps its shape, and now answers with a
-    // constant instead of a setting nobody can reach.
-    get fullBar() { return true; },
-  };
-
-  const BITE_LOG_MAX = 60;
-
-  function biteEnterDuel(mine, now) {
-    bite.score1 = bite.score2 = -1;
-    bite.node = mine ? mine.node : null;
-    bite.pending.length = 0;
-    bite.health.clear();
-    bite.lastHitAt.clear();
+  function biteOn() {
+    return settings.masterEnabled && settings.biteIndicator;
   }
-
-  // "Bites: 12" off one of the arena's own labels.
-  function biteScoreOf(label) {
-    const text = label && typeof label.text === 'string' ? label.text : '';
-    const m = /Bites:\s*(\d+)/.exec(text);
-    if (!m) return -1;
-    const n = Number(m[1]);
-    return Number.isFinite(n) ? n : -1;
-  }
-
-  // The two fighters, as animals we can actually draw on.
-  //
-  // Found the same way the sky finds YOU — a hidden name means a duellist and
-  // nothing else — and then filtered by geometry to this arena, because a
-  // second duel on screen would otherwise put four fighters in the list.
-  function biteDuellists(mine) {
-    const out = [];
-    const wt = mine.node.worldTransform;
-    if (!wt) return out;
-    const cx = Number(wt.tx), cy = Number(wt.ty);
-    const reach = mine.worldRadius * mine.scale;
-    if (!Number.isFinite(cx) || !Number.isFinite(cy) || !(reach > 0)) return out;
-    for (const entry of hpState.bars.values()) {
-      const entity = entry && entry.entity;
-      if (!entity || !entity.parent) continue;
-      if (arenaNameHidden(entity) !== true) continue;
-      const t = entity.worldTransform;
-      if (!t) continue;
-      const dx = Number(t.tx) - cx, dy = Number(t.ty) - cy;
-      if (!(Math.hypot(dx, dy) <= reach)) continue;
-      out.push(entry);
-    }
-    return out;
-  }
-
-  // Mark a fighter as bitten, and record the gap since the last time they were.
-  //
-  // That gap is the measurement. Consecutive bites on the SAME player cannot
-  // be closer together than the immunity window, so the floor of these numbers
-  // over a real duel IS the window — approached from above, which is why the
-  // debug hook prints the minimum rather than an average.
-  function biteMark(entry, now) {
-    if (!entry || !entry.entity) return;
-    const prev = bite.lastHitAt.get(entry.entity);
-    const gap = prev ? now - prev : 0;
-    bite.lastHitAt.set(entry.entity, now);
-    bite.bites++;
-    if (gap > 0 && gap < bite.minGap) bite.minGap = gap;
-    bite.log.push({
-      n: bite.bites,
-      who: entry === hpState.playerEntry ? 'you' : 'opponent',
-      at: Math.round(now),
-      gap: gap ? Math.round(gap) : null,
-    });
-    if (bite.log.length > BITE_LOG_MAX) bite.log.shift();
-
-    const mark = bite.marked.get(entry.entity);
-    if (mark) { mark.until = now + BITE_IMMUNE_MS; return; }
-    // The ENTRY is held, not the fill node. Which child of a bar is the fill
-    // is re-derived whenever the parts are rebuilt underneath us, and
-    // hpPercentOf() — which biteTick() calls on both fighters anyway — is what
-    // keeps entry.parts current. Holding the entry means the per-frame paint
-    // below is two property reads and never a search.
-    bite.marked.set(entry.entity, {until: now + BITE_IMMUNE_MS, entry, node: null, shape: null, drawn: -1});
-  }
-
-  function biteTick(mine, now) {
-    const kids = mine.node.children;
-    if (!kids) return;
-
-    // A different arena than the one the scores were read from is a new duel,
-    // and its counts start again from zero. Without this, walking out of one
-    // duel and into another reads the new arena's 0 as a drop and then its
-    // first bite as a bump of one from a stale baseline.
-    if (bite.node !== mine.node) biteEnterDuel(mine, now);
-    bite.node = mine.node;
-
-    // The two score labels, resolved by shape on the arena. Falling back to
-    // resolving them here keeps this working for any caller that hands over a
-    // bare {node} — the labels are a convenience carried on `mine`, not a
-    // precondition, and a silent -1 here would stop the indicator dead.
-    const labels = mine.labels || (arenaPartsOf(mine.node) || {}).labels || [];
-    const s1 = biteScoreOf(labels[0]);
-    const s2 = biteScoreOf(labels[1]);
-    // A label that cannot be parsed is not a zero. Leaving the baseline alone
-    // means one unreadable frame costs nothing, rather than manufacturing a
-    // bump on the frame after it.
-    if (s1 < 0 || s2 < 0) return;
-
-    const fighters = biteDuellists(mine);
-
-    // Health first, so a drop is already recorded when the bump is examined.
-    const dropped = [];
-    for (const entry of fighters) {
-      const pct = hpPercentOf(entry.bar, entry);
-      if (pct == null) continue;
-      const was = bite.health.get(entry.entity);
-      bite.health.set(entry.entity, pct);
-      // The same test mope itself uses: a health value BELOW the last one is
-      // damage. Any drop at all counts — a bite for a fraction of a point is
-      // still a bite, and the server is the one that decided so.
-      if (was != null && pct < was - 0.01) dropped.push({entry, at: now});
-    }
-
-    if (bite.score1 >= 0 && bite.score2 >= 0) {
-      const bumped = Math.max(0, s1 - bite.score1) + Math.max(0, s2 - bite.score2);
-      for (let i = 0; i < bumped; i++) bite.pending.push({at: now});
-    }
-    bite.score1 = s1;
-    bite.score2 = s2;
-
-    // Match bumps to drops. Both directions are allowed within the window,
-    // because which of the two readings arrives first is a property of this
-    // script's throttles rather than of the game.
-    if (bite.pending.length) {
-      for (const hit of dropped) {
-        const idx = bite.pending.findIndex((p) => Math.abs(hit.at - p.at) <= BITE_MATCH_MS);
-        if (idx < 0) continue;
-        bite.pending.splice(idx, 1);
-        biteMark(hit.entry, now);
-      }
-      // A bump nothing ever claimed. Counted rather than guessed at: a bite
-      // that did no damage should not paint a bar, and if this number is not
-      // near zero after a duel then the matching is wrong and the debug hook
-      // is where that shows up.
-      for (let i = bite.pending.length - 1; i >= 0; i--) {
-        if (now - bite.pending[i].at > BITE_MATCH_MS) {
-          bite.pending.splice(i, 1);
-          bite.unmatched++;
-        }
-      }
-    } else if (dropped.length) {
-      // Damage with no bite behind it — the closing walls, or anything else
-      // the server does to a fighter. Deliberately NOT painted: this feature
-      // is about bites, and the score is what makes something a bite.
-    }
-
-    // Expire finished windows.
-    for (const [entity, mark] of bite.marked) {
-      if (now < mark.until) continue;
-      biteMarkDetach(mark);
-      bite.marked.delete(entity);
-    }
-
-    // Redraw what is left. Last, so a mark that expired on this tick is gone
-    // rather than being drawn at zero width and removed on the next one.
-    bitePaint(now);
-  }
-
-  // ---- the paint ----
-  //
-  // 1.29.0 replaced a tint with a node of our own, and the change deleted more
-  // than it added.
-  //
-  // 1.28.x set `fill.tint` purple. That worked, but it had to fight for it:
-  // mope writes `bar.tint = tr(value)` inside renderHealthRect() on every
-  // frame the bar's value is moving, which is exactly the window being
-  // painted — so the tint had to be re-applied on EVERY frame, outside the
-  // render hook's 12ms budget, with the previous colour saved and restored on
-  // expiry and a guard against reading back our own purple. All of that is
-  // gone. mope does not touch a child we added, so this is redrawn on the
-  // ordinary arena tick and simply stays put.
-  //
-  // It also buys the thing the tint could never have done: the mark now SHOWS
-  // THE TIME LEFT. Both styles deplete left-to-right, the same direction the
-  // health fill itself reads, so a shrinking purple mark and a shrinking green
-  // one mean the same thing without being confusable — one is a hairline
-  // around the bar, the other is the bar.
-  //
-  //   Outline (default) — a purple frame around the bar that unwinds.
-  //     Keeps mope's health colour readable underneath, which matters: the
-  //     ramp is how you judge whether the next bite finishes them.
-  //   Full bar (sub-option) — the whole bar goes purple and drains.
-  //     Impossible to miss, at the cost of hiding the health colour for three
-  //     seconds. Off by default for that reason.
-  const BITE_MARK_COLOR = 0x9b30ff;
-  const BITE_MARK_ALPHA = 0.95;
-  // Opaque, and that is the entire fix for the mark blending into the health
-  // bar underneath it. Anything below 1 lets mope's green through and the
-  // draining edge stops being an edge.
-  const BITE_FILL_ALPHA = 1;
-  const BITE_MARK_WIDTH = 0.7;    // world units, on a bar mope draws 30 x 7
-
-  // Same bookkeeping as the missing-health outline: while this is 0, no
-  // container in the scene carries one of ours.
-  let biteMarkLive = 0;
-
-  function biteMarkDetach(mark) {
-    const node = mark && mark.node;
-    if (!node) return;
-    mark.node = null;
-    mark.shape = null;
-    if (biteMarkLive > 0) biteMarkLive--;
-    try { if (node.parent) node.parent.removeChild(node); } catch (e) {}
-    try { if (typeof node.destroy === 'function') node.destroy(); } catch (e) {}
-  }
-
-  // Build the node, once, into mope's own bar container.
-  //
-  // Deliberately the same construction hpEdgeAttach() uses, down to taking the
-  // Graphics class off mope's own plate — a userscript cannot import one — and
-  // reading the plate's drawn rectangle rather than assuming 30 x 7 with a 2.5
-  // radius. Whether the corners are rounded at all is a player setting, and a
-  // rounded mark around a square bar is a worse artefact than no mark.
-  function biteMarkAttach(mark) {
-    const entry = mark && mark.entry;
-    const bar = entry && entry.bar;
-    if (!bar || !bar.parent) return null;
-
-    let parts = entry.parts;
-    if (!parts || !parts.plate || parts.plate.parent !== bar) {
-      parts = hpBarParts(bar);
-      entry.parts = parts;
-    }
-    const plate = parts && parts.plate;
-    if (!plate) return null;
-    const shape = hpPlateShape(plate);
-    if (!shape) return null;
-
-    const Graphics = plate.constructor;
-    let node = null;
-    try { if (typeof Graphics === 'function') node = new Graphics(); }
-    catch (e) { return null; }
-    if (!node || typeof node.rect !== 'function') {
-      try { if (node && typeof node.destroy === 'function') node.destroy(); } catch (e) {}
-      return null;
-    }
-    try {
-      // Discounted by hpVisibleKids() through the SAME flag the missing-health
-      // outline uses, so the bar matcher can never count this or mistake it
-      // for a part. The second flag is only so a human reading the tree can
-      // tell the two apart.
-      node.__lumiHpEdge = true;
-      node.__lumiBiteMark = true;
-      if (plate.pivot) node.pivot.set(plate.pivot.x, plate.pivot.y);
-      if (plate.position) node.position.set(plate.position.x, plate.position.y);
-      const at = parts.label ? bar.children.indexOf(parts.label) : -1;
-      if (at >= 0 && typeof bar.addChildAt === 'function') bar.addChildAt(node, at);
-      else bar.addChild(node);
-    } catch (e) {
-      try { if (node.parent) node.parent.removeChild(node); } catch (e2) {}
-      try { node.destroy(); } catch (e2) {}
-      return null;
-    }
-    mark.node = node;
-    mark.shape = shape;
-    mark.drawn = -1;
-    biteMarkLive++;
-    return node;
-  }
-
-  // Redraw for a given fraction of the window remaining, 1 down to 0.
-  //
-  // Quantised to 60 steps. A Graphics redraw rebuilds its geometry, and doing
-  // that for a change too small to see — the mark moves half a pixel — is the
-  // kind of per-frame cost this file has had to go back and remove before.
-  // Sixty steps over three seconds is a step every 50ms, which is smoother
-  // than the tick that drives it.
-  const BITE_MARK_STEPS = 60;
-
-  function biteDrawMark(mark, left01) {
-    const node = mark.node;
-    const shape = mark.shape;
-    if (!node || !shape) return;
-    const step = Math.max(0, Math.min(BITE_MARK_STEPS, Math.round(left01 * BITE_MARK_STEPS)));
-    // The STYLE is part of the key, not just the step. Without it, flipping
-    // the sub-option mid-window lands on the same step, the early return
-    // fires, and the mark keeps its old shape until the next 50ms boundary —
-    // which is exactly when somebody comparing the two styles is looking at it.
-    const style = bite.fullBar ? 1 : 0;
-    if (mark.drawn === step && mark.drawnStyle === style) return;
-    mark.drawn = step;
-    mark.drawnStyle = style;
-    const frac = step / BITE_MARK_STEPS;
-    try {
-      node.clear();
-      if (frac <= 0) return;
-      const a = shape.args;
-      // Width is the clock. Everything else is mope's own geometry, so the
-      // mark sits exactly on the bar whatever size the animal is.
-      const w = Math.max(0.01, a[2] * frac);
-      if (bite.fullBar) {
-        // One rectangle: solid purple, as wide as the time left. Nothing else.
-        //
-        // Two wrong versions preceded this and both were wrong in the same
-        // way — they let something show THROUGH the mark.
-        //
-        //   1.29.0 drew the purple at alpha .8, so wherever it lay over the
-        //   green fill the two blended, and the moving boundary was a smear of
-        //   purple-green rather than an edge. That was the reported problem.
-        //
-        //   1.30.0 made the purple opaque, which fixed it, and then also laid
-        //   a black sheet at alpha .55 across the FULL width underneath — the
-        //   idea being that the drained end should read as an empty track. It
-        //   does not: black over the green fill is just a shadow on the health
-        //   bar, spreading as the purple retreats. A second bug in the name of
-        //   fixing the first.
-        //
-        // Opacity was the whole fix. With the purple solid there is nothing to
-        // blend with, and the part it has vacated is mope's own bar, drawn by
-        // mope, untouched — which is what it should look like, because the
-        // moment the mark is gone that is exactly what is there.
-        if (shape.rounded) node.roundRect(a[0], a[1], w, a[3], a[4]);
-        else node.rect(a[0], a[1], w, a[3]);
-        node.fill({color: BITE_MARK_COLOR, alpha: BITE_FILL_ALPHA});
-      } else {
-        // A frame around it, unwinding. Drawn at the plate's own rectangle so
-        // the stroke lands on the edge rather than inside it.
-        if (shape.rounded) node.roundRect(a[0], a[1], w, a[3], a[4]);
-        else node.rect(a[0], a[1], w, a[3]);
-        node.stroke({color: BITE_MARK_COLOR, alpha: BITE_MARK_ALPHA, width: BITE_MARK_WIDTH});
-      }
-    } catch (e) {
-      // A bar destroyed underneath the redraw. Dropped rather than retried.
-      biteMarkDetach(mark);
-    }
-  }
-
-  // Called from biteTick() on the arena cadence. Nothing here runs per frame:
-  // mope never touches a child we added, so a mark drawn once stays drawn.
-  function bitePaint(now) {
-    if (!bite.marked.size) return;
-    for (const mark of bite.marked.values()) {
-      // A bar rebuilt underneath us leaves the mark on a container nothing
-      // points at any more, exactly as hpEdgeApply() describes.
-      const bar = mark.entry && mark.entry.bar;
-      if (mark.node && mark.node.parent !== bar) biteMarkDetach(mark);
-      if (!mark.node && !biteMarkAttach(mark)) continue;
-      const left = (mark.until - now) / BITE_IMMUNE_MS;
-      biteDrawMark(mark, left);
-    }
-  }
-
-  function biteClearAll() {
-    if (!bite.marked.size) return;
-    for (const mark of bite.marked.values()) biteMarkDetach(mark);
-    bite.marked.clear();
-    bite.pending.length = 0;
-  }
-
-  // The measurement, and the reason this build exists in this form.
-  function biteDebug() {
-    const report = {
-      version: VERSION,
-      enabled: biteOn(),
-      inDuel: arenaDuel.active,
-      windowUsed: BITE_IMMUNE_MS + 'ms — measured 2026-08-28 over 21 bites',
-      bitesSeen: bite.bites,
-      shortestGapSeen: Number.isFinite(bite.minGap) ? Math.round(bite.minGap) + 'ms' : '(none yet)',
-      bumpsWithNoVictim: bite.unmatched,
-      painting: bite.marked.size,
-    };
-    console.log(TAG, 'bite indicator', report);
-    if (bite.log.length) {
-      console.table(bite.log.map((e) => ({
-        bite: e.n, who: e.who, at: e.at + 'ms',
-        gapSinceTheirLast: e.gap == null ? '(first)' : e.gap + 'ms',
-      })));
-      // Kept as a RE-measurement rather than a measurement. The window is
-      // known; what this now watches for is mope retuning it, which would show
-      // up as a cluster somewhere other than 3000.
-      console.log(TAG, 'The window is 3000ms, measured over 21 bites on ' +
-        '2026-08-28. To re-check it, have someone bite you as fast as they ' +
-        'can: those gaps cluster on the window itself, because each one is a ' +
-        'player being refused. Expect roughly 2940-3090 — this script sees a ' +
-        'bite up to 60ms after the server sent it, so a gap carries about ' +
-        '+/-60ms of noise. A cluster somewhere else means the game changed.');
-    } else {
-      console.log(TAG, 'No bites recorded yet. Switch the bite indicator on, ' +
-        'fight a 1v1, then run this again.');
-    }
-    if (bite.unmatched) {
-      console.log(TAG, bite.unmatched + ' bite(s) scored with no health drop ' +
-        'to match. A few is normal at the end of a round; a lot means the ' +
-        'matching window is too tight.');
-    }
-    return report;
-  }
-  try { PAGE.__lumiBiteDebug = biteDebug; }
-  catch (e) { window.__lumiBiteDebug = biteDebug; }
-
-  // ------------------------------------------------------ the water meter
-  //
-  // 1.32.0, AND IT IS DELIBERATELY HALF A FEATURE. This is the instrument for
-  // the 1v1 boost counter and not the counter itself. Nothing is drawn.
-  //
-  // WHY IT IS BUILT THIS WAY ROUND. The counter is one division —
-  // `boosts left = water / cost per boost` — and every term in it is known
-  // except the cost, which is not in the client at all. `startBoost` and
-  // `stopBoost` are bare network messages; the server owns the entire resource
-  // economy and has retuned it per-animal repeatedly (mope's own changelog:
-  // "Fixed ptero resource drain in arena", "Reworked rare Eagle water drain
-  // while carrying prey"). Writing the counter first would mean writing the
-  // arithmetic against a guess, which is exactly how item 5 was planned as a
-  // tint for two whole sessions against a bar mope draws in black.
-  //
-  // So this measures, the way BITE_IMMUNE_MS was measured in 1.28.1: make the
-  // thing being hit the thing you record, then read the cluster.
-  //
-  // WHAT IS ALREADY KNOWN, all read out of the bundle rather than assumed:
-  //
-  //   - the meter's value is a uint8 the server pushes; see waterRead().
-  //   - in a duel the displayed percent IS that integer, because every tier
-  //     15+ animal has a resource max of 100 — except King Dragon, whose
-  //     percent is ceil(raw / 125 * 100): still 0–100 on screen, 125 raw units
-  //     behind it. Black Dragon is 100.
-  //   - `#dashButton` carries mope's OWN class `active`, bound to
-  //     `ha.pressingDash`, which is set on the same line that sends
-  //     `startBoost`. So "the player asked to boost" is a DOM class, correct
-  //     for any bind, mouse or key, with no bind list to read and no keyboard
-  //     listener to take a key away from anyone.
-  //   - boost is HELD, not tapped: startBoost on press, stopBoost on release,
-  //     with a per-animal `boostCooldown` (1500ms by default, 750 on cheetah,
-  //     600 on some subspecies). Whether a long hold costs more than a short
-  //     tap is the first thing this has to answer, and the user's reading is
-  //     that the cost is fixed — so the log records the HOLD, not the press.
-  //
-  // WHAT THE USER HAS ALREADY OBSERVED, and why it is one number and not two:
-  // they saw "either 1.5% per boost, or alternating 2% then 1%". Those are the
-  // same observation. A constant cost of 1.5 against an integer wire value
-  // produces exactly that alternation —
-  //
-  //     true    100   98.5   97   95.5   94   92.5   91
-  //     sent    100     98   97     95   94     92   91
-  //     step            -2   -1     -2   -1     -2   -1
-  //
-  // — so the drop size also reveals the hidden half: a step of 2 means the
-  // true value now ends in .5, a step of 1 means it is whole. That is what
-  // would let the counter be exact rather than approximate, and it is the
-  // reason this bothers to log every step rather than only an average. It
-  // rests on the server rounding DOWN, which is not known and is one of the
-  // things `__lumiWaterDebug()` is meant to settle.
-  //
-  // WHY THERE IS NO SWITCH AND NO COST. Both signals are MutationObservers on
-  // nodes mope already owns — the meter's inline `style`, the dash button's
-  // `class` — so this does no work at all until one of them actually changes,
-  // and it costs nothing on a frame. Polling on the render hook would have
-  // been the obvious shape and would have been worse twice over: it would have
-  // cost a read every frame forever, and it would have put ±60ms of
-  // observation error on both edges of every measurement. On a 3000ms window
-  // that was tolerable and 1.28.1 says so; on a gap between a keypress and a
-  // packet it is most of the quantity being measured.
-  const WATER_LOG_MAX = 600;   // 1.34.0: 240 lost the steps the holds sat in
-  // A meter step this soon after a boost began is attributed to that boost.
-  // Generous on purpose: the server's reply has to cross the network, and a
-  // sample wrongly INCLUDED shows up in the log as an outlier that can be
-  // thrown out by eye, while one wrongly excluded is invisible.
-  const WATER_ATTRIB_MS = 700;
-  // The user's threshold, and it is one point wider than mope's own: mope
-  // adds `low-warn` below 25 (strictly), they asked for 25 or less. Both are
-  // recorded so the counter can later use either without this having to be
-  // measured again.
-  const WATER_LOW_PCT = 25;
-  // Two boosts on an integer meter are always exactly 3 points, whichever way
-  // the server rounds — the fact the phase tracking in waterNote() rests on.
-  const BOOST_PAIR_PTS = 3;
-
-  // Boost's cooldown, per animal, and it IS in the client — mope's own animal
-  // configs carry it. 1.34.0 needs it because the first real measurement
-  // showed presses arriving inside it and costing nothing: a press the server
-  // refuses is not a boost that was free, and averaging it in as a zero drags
-  // the estimate down. Read out of the bundle:
-  //
-  //   default        1500      cheetah  750      ostrich  600
-  //   lion/cub       1200      lion/white_cub 900     lion/black_cub 600
-  const BOOST_COOLDOWN_DEFAULT = 1500;
-  const BOOST_COOLDOWN = new Map([
-    ['cheetah', 750],
-    ['ostrich', 600],
-    ['lion/cub', 1200],
-    ['lion/white_cub', 900],
-    ['lion/black_cub', 600],
-  ]);
-
-  function boostCooldownFor(species, subspecies) {
-    if (!species) return BOOST_COOLDOWN_DEFAULT;
-    return BOOST_COOLDOWN.get(species + '/' + subspecies) ||
-      BOOST_COOLDOWN.get(species) || BOOST_COOLDOWN_DEFAULT;
-  }
-
-  const water = {
-    node: null,        // mope's fill div, re-found when Svelte rebuilds it
-    obs: null,         // its style observer
-    dash: null,        // #dashButton, when mope is drawing one
-    dashObs: null,     // its class observer
-    pct: null,         // last reading
-    phase: null,       // 1 or 2: what the next boost takes off the meter on screen (1.0.16)
-    kind: '',
-    at: 0,
-    hp: null,          // your health at the last step, for the bite exclusion
-    animal: '',
-    max: 100,          // what the percentage was divided by, per animal
-    cooldown: BOOST_COOLDOWN_DEFAULT,
-    holding: false,    // is boost held right now
-    source: '',        // which signal said so: 'button' or 'bind'
-    downAt: 0,         // when the current (or last) hold began
-    upAt: 0,
-    acceptedAt: -Infinity,  // the last press the server would NOT have refused
-    hold: null,        // the hold a meter step right now would be charged to
-    // Running totals the segment accounting differences, so neither depends on
-    // how much of the log has survived.
-    heldMs: 0,         // boost held, in total, across the life
-    heldFrom: 0,       // when the current hold began, 0 when not holding
-    charges: 0,        // presses the cooldown says the server accepted
-    seenHeldMs: 0,     // both, as they stood at the previous meter step
-    seenCharges: 0,
-    log: [],           // every step of the meter
-    holds: [],         // every completed hold
-    steps: 0,
-    started: 0,
-    // The least-squares accumulator. See waterFit().
-    fit: null,
-    fitFor: '',
-  };
-
-  // Your health as the HP feature currently reads it, or null when it is not
-  // reading one. Recorded beside every step so a drop caused by a BITE can be
-  // told from one caused by a boost — the single largest source of
-  // contamination in this measurement, and the one the user named first.
-  //
-  // `raw` rather than `settled` deliberately: 1.21.1 established that settled
-  // freezes under continuous damage, and a frozen health figure beside a
-  // moving water figure would quietly mark every contaminated sample clean.
-  function waterHealth() {
-    const entry = hpSelfEntry();
-    if (!entry) return null;
-    const value = entry.raw != null ? entry.raw : entry.settled;
-    return typeof value === 'number' ? Math.round(value) : null;
-  }
-
-  // ---------------- separating three effects that arrive together ----------
-  //
-  // 1.33.0's instrument averaged the cost of a hold, and the first real run
-  // proved that cannot work. Two holds on the same animal, 4009ms and 4027ms
-  // apart in length, cost 8 points and 5. The reason is that three different
-  // things drain the meter at once and the sum is all that is ever observed:
-  //
-  //   - NATURAL DRAIN, which ran at roughly 0.5-0.8 points a second in that
-  //     session — comparable to the whole cost of a boost, so it cannot be
-  //     treated as noise and cannot be subtracted with a figure guessed once;
-  //   - the boost itself, which may be charged per PRESS or per SECOND HELD,
-  //     and which of those it is, is the question;
-  //   - damage, which is excluded rather than modelled.
-  //
-  // So the estimate is a least-squares fit over every clean interval between
-  // two meter steps:
-  //
-  //     pointsLost = drain x seconds + costPerPress x presses
-  //
-  // TWO predictors, and 1.35.0 cut it down from three. The third was boost
-  // SECONDS HELD, there to let the fit decide whether boost is a charge or a
-  // rate — and it cannot do that job, for two reasons the second measurement
-  // made obvious:
-  //
-  //   - a player who only ever taps holds boost for a near-constant time per
-  //     press, so held-seconds is about 0.2 x presses and the two columns are
-  //     collinear. The system is then ill-conditioned at best, and exactly
-  //     singular for anyone whose taps are short enough to round to nothing.
-  //     An unstable coefficient is worse than no coefficient.
-  //   - the shape question already has a cleaner answer that needs no
-  //     regression at all: sort the clean holds by what they COST and compare
-  //     how long each group was held. In the real run the holds costing 1
-  //     point averaged 210ms and those costing 2 averaged 180ms, across a
-  //     range from 41ms to 492ms — longer holds cost less, which is a fixed
-  //     charge and cannot be a rate. That comparison is reported as
-  //     `costAgainstHoldLength` and is the tripwire if a balance patch ever
-  //     changes the mechanic; it is not something the fit has to guess at.
-  //
-  // So the fit does the one job it is good at — separating a per-press cost
-  // from a per-second drain, which are NOT collinear — and the shape is
-  // settled by arithmetic beside it.
-  //
-  // It accumulates as SUMS rather than samples, so it costs no memory, keeps
-  // no log, and — the practical point — survives the log being trimmed. The
-  // first run lost every meter step from the period the holds were in, which
-  // made cross-referencing the two tables impossible.
-  //
-  // Reset when the animal changes, because the cost is per-animal for all
-  // anyone knows and a fit across two species is a fit across two populations.
-  function waterFitReset(animal) {
-    water.fitFor = animal;
-    water.fit = {
-      n: 0,
-      // Sums for [seconds, presses], plus the held time carried alongside as a
-      // reported average rather than as a third column to solve for.
-      tt: 0, tp: 0, pp: 0, ty: 0, py: 0,
-      heldMs: 0, presses: 0,
-      // Counted separately because a fit needs BOTH kinds of interval to
-      // separate its two terms. All-boosted or all-idle is not a small sample,
-      // it is a singular one, and the two failures look identical from
-      // outside — "the fit has not settled" — until these are on screen.
-      withBoost: 0, idle: 0,
-    };
-  }
-
-  function waterFitAdd(x, y) {
-    const fit = water.fit;
-    if (!fit) return;
-    const t = x[0], p = x[1];
-    fit.n++;
-    fit.tt += t * t;
-    fit.tp += t * p;
-    fit.pp += p * p;
-    fit.ty += t * y;
-    fit.py += p * y;
-    if (p > 0) fit.withBoost++; else fit.idle++;
-  }
-
-  // How far the system is from singular, as the ratio the refusal threshold
-  // actually tests. 1 is perfectly conditioned; near 0 means time and presses
-  // moved together across every interval and there is no way to tell which of
-  // them was spending the water.
-  function waterFitConditioning() {
-    const fit = water.fit;
-    if (!fit) return null;
-    const scale = fit.tt * fit.pp;
-    if (!(scale > 0)) return 0;
-    return (fit.tt * fit.pp - fit.tp * fit.tp) / scale;
-  }
-
-  // The 2x2 normal equations, in closed form. Returns [drainPerSecond,
-  // costPerPress], or null when there is nothing to solve — which is the
-  // honest answer before anyone has boosted, and is why the determinant is
-  // checked against the SCALE of the system rather than against zero: a
-  // near-singular fit gives a number, and the number is noise.
-  function waterSolve() {
-    const fit = water.fit;
-    if (!fit || fit.n < 4) return null;
-    const det = fit.tt * fit.pp - fit.tp * fit.tp;
-    const scale = fit.tt * fit.pp;
-    if (!(scale > 0) || Math.abs(det) < scale * 1e-6) return null;
-    return [
-      (fit.ty * fit.pp - fit.py * fit.tp) / det,
-      (fit.py * fit.tt - fit.ty * fit.tp) / det,
-    ];
-  }
-
-  // Boost held and presses accepted, as running totals, so a segment is the
-  // difference between two readings of them rather than its own bookkeeping.
-  function waterHeldMsAt(now) {
-    return water.heldMs + (water.holding ? now - water.heldFrom : 0);
-  }
-
-  // The hold that a meter step happening RIGHT NOW should be charged to, or
-  // null. A hold stays open for one attribution window past the release,
-  // because the server answers a tap some milliseconds later and closing the
-  // books on the release itself would credit a tap's whole cost to nothing.
-  function waterOpenHold(now) {
-    const hold = water.hold;
-    if (!hold) return null;
-    if (water.holding) return hold;
-    return now <= hold.closesAt ? hold : null;
-  }
-
-  function waterNote(pct, now) {
-    const previous = water.pct;
-    const delta = previous == null ? null : pct - previous;
-    const hp = waterHealth();
-    const drop = water.hp != null && hp != null && hp < water.hp ? water.hp - hp : 0;
-    const hold = waterOpenHold(now);
-    const entry = {
-      t: Math.round(now),
-      pct,
-      delta,
-      // Elapsed since the meter last moved, which is what a drain rate is
-      // worked out from once the boosted samples have been taken out.
-      since: water.at ? Math.round(now - water.at) : null,
-      kind: water.kind,
-      // The three questions that decide whether this sample is clean.
-      holding: water.holding,
-      sinceDown: water.downAt ? Math.round(now - water.downAt) : null,
-      sinceUp: water.upAt ? Math.round(now - water.upAt) : null,
-      hp,
-      hpDrop: drop,
-      arena: !!(arenaDuel.active && arenaDuel.mine),
-      animal: water.animal || '',
-      // 1.34.0. Whether mope was drawing its ability wheel at all. The first
-      // real run recorded not one boost inside a duel, and this is why: with
-      // Arena Culling on, `Ar.showUI` goes false and the WHOLE WHEEL is
-      // removed from the DOM, `#dashButton` with it. A blank column here on
-      // every arena row is the symptom, and it reads exactly like "the player
-      // never boosted".
-      hud: !!water.dash,
-      by: water.source || '',
-    };
-    // ---- the fit. One clean interval between two meter steps.
-    const heldNow = waterHeldMsAt(now);
-    const boostSec = Math.max(0, heldNow - water.seenHeldMs) / 1000;
-    const presses = Math.max(0, water.charges - water.seenCharges);
-    const dt = water.at ? (now - water.at) / 1000 : 0;
-    water.seenHeldMs = heldNow;
-    water.seenCharges = water.charges;
-    // Only intervals that LOST water and lost it to nothing but time and
-    // boost. A gain is drinking, a health drop is a bite, and a very long
-    // interval is a tab that was in the background or a respawn — all three
-    // would put the fit somewhere it should not go.
-    // 1.0.15: and only when the damage state could be CHECKED. With no health
-    // reading — a culled duel, routinely — `drop` is 0 for every interval and
-    // a bite went in as if a boost had cost it; the fit then swung by a factor
-    // of three. The fit only reports now, but a report should not lie either.
-    if (delta != null && delta < 0 && water.hp != null && hp != null && !drop && dt > 0.05 && dt < 30) {
-      waterFitAdd([dt, presses], -delta);
-      // Held time is carried but not solved for — see waterFitReset. It is
-      // reported as an average so a mechanic that becomes a rate is visible.
-      if (water.fit) { water.fit.heldMs += boostSec * 1000; water.fit.presses += presses; }
-    }
-    // THE PHASE (1.0.16): which of 1 and 2 the next boost will take off the
-    // meter on screen. Read off every drop rather than attributed to anything:
-    // a boost and a bite are the same 1.5 and obey the same alternation. Mod
-    // BOOST_PAIR_PTS because two steps are exactly 3 and change nothing; a
-    // gain forgets it. See boostCountFrom() for what this buys.
-    if (delta != null) {
-      if (delta > 0) water.phase = null;
-      else if (delta < 0) {
-        const r = Math.round(-delta) % BOOST_PAIR_PTS;
-        if (r) water.phase = BOOST_PAIR_PTS - r;
-      }
-    }
-    water.hp = hp;
-    water.pct = pct;
-    water.at = now;
-    water.steps++;
-    if (hold && delta != null && delta < 0) {
-      // `spent` is what went while the button was down, `after` is what the
-      // server took in the window past the release. They are kept apart rather
-      // than summed here because their RATIO is what says whether holding is
-      // one charge or several — the cost is only "fixed" if a long hold and a
-      // tap come out the same, and that comparison needs both halves.
-      if (water.holding) hold.spent += -delta; else hold.after += -delta;
-      // A bite drains water as well as health, so the contaminating event
-      // usually announces itself on the very step being measured.
-      if (drop) hold.hurt = true;
-    }
-    water.log.push(entry);
-    if (water.log.length > WATER_LOG_MAX) water.log.shift();
-  }
-
-  // Reads the node the observer is actually attached to rather than searching
-  // for it again. Cheaper — this runs on every resource packet — and strictly
-  // more correct: a second search could answer with a different element than
-  // the one that just changed, and the log would then be a log of two meters.
-  function waterOnMeter() {
-    const node = water.node;
-    if (!node) return;
-    const kind = WATER_TINTS.get(node.style.backgroundColor);
-    const pct = parseFloat(node.style.width);
-    if (!kind || !Number.isFinite(pct)) return;
-    water.kind = kind;
-    if (pct !== water.pct) waterNote(pct, performance.now());
-  }
-
-  // BOOST HAS TWO SIGNALS SINCE 1.34.0, and the second one is the whole point
-  // of this release.
-  //
-  // `#dashButton.active` is the better of the two — it is mope's own state,
-  // set on the same line that sends startBoost, and it is right for a mouse
-  // bind as well as a key. But it lives inside `#abilityButtonsWheel`, which
-  // mope renders only while `Ar.showUI` is true, and Arena Culling sets that
-  // false. So inside a duel with culling on — which is to say inside exactly
-  // the fight this feature exists for, and which the arena starfield switches
-  // on for you — the button is not in the document at all.
-  //
-  // The first real measurement is what found this: thirteen holds, every one
-  // of them outside an arena, and a hundred and twenty seconds of duel with
-  // the meter moving and not one boost recorded against it.
-  //
-  // So the fallback is mope's own BIND, read from the same settings capture
-  // mopeBindFor() uses. It needs no HUD. It is second rather than first
-  // because it reports intent: a key can be pressed while the server refuses
-  // the boost, and only the button knows the difference. Whichever edge
-  // arrives first wins, and `source` records which it was.
-  function waterSetHolding(active, source) {
-    if (active === water.holding) return;
-    const now = performance.now();
-    water.holding = active;
-    water.source = active ? source : water.source;
-
-    if (active) {
-      water.downAt = now;
-      water.heldFrom = now;
-      // EVERY PRESS COUNTS. 1.34.0 assumed a press inside the animal's
-      // `boostCooldown` was one the server refused, and threw it out. The
-      // second measurement showed that is wrong: of six presses flagged that
-      // way, FIVE cost water anyway — 1332ms, 1418ms, 1467ms and 1488ms gaps
-      // all drained the meter on a dragon whose config says 1500. So
-      // boostCooldown gates something else, or the server measures the gap
-      // from somewhere this cannot see, and either way it is not evidence
-      // about cost.
-      //
-      // Worse than the wasted samples: `charges` fed the fit's press count, so
-      // the exclusion was under-counting presses by about fifteen per cent and
-      // inflating the cost per press by the same. The flag is kept as a COLUMN
-      // — it is still worth being able to see the pattern — and is no longer
-      // allowed to decide anything.
-      const insideCooldown = now - water.acceptedAt < water.cooldown;
-      water.acceptedAt = now;
-      water.charges++;
-      // A new press while the PREVIOUS hold is still inside its attribution
-      // window would steal that hold's cost. Close the old one and mark it,
-      // rather than letting two holds share one packet — which is what put a
-      // 0 beside a 1 on two presses 321ms apart in the first run.
-      const previous = water.hold;
-      if (previous && !previous.closed && now <= previous.closesAt) {
-        previous.closed = true;
-        previous.truncated = true;
-        previous.closesAt = now;
-      }
-      const hpAt = waterHealth();
-      const hold = {
-        down: Math.round(now),
-        heldMs: 0,
-        spent: 0,       // meter points lost while the button was down
-        after: 0,       // and in the window past the release
-        pctAt: water.pct,
-        arena: !!(arenaDuel.active && arenaDuel.mine),
-        animal: water.animal || '',
-        by: source,
-        hud: !!water.dash,
-        // Reported, never acted on — see the note above waterSetHolding's
-        // press counter.
-        insideCooldown,
-        cooldown: water.cooldown,
-        // How many charges a hold this long COULD have spent, if boost
-        // re-triggers on its cooldown while held. Recorded rather than
-        // assumed — the fit is what decides whether cost tracks presses or
-        // seconds, and this column is only here to be compared against it.
-        charges: 1,
-        truncated: false,
-        closed: false,
-        hpAt,
-        // Whether anything that costs health happened across the hold — a bite
-        // being the one the user named first. THREE states, not two: false is
-        // "checked, and nothing did", true is "something did", and null is
-        // "the HP feature is not reading a health right now, so this cannot be
-        // checked at all". Only `false` counts as evidence. With the damage
-        // indicator switched off the answer is null for every hold, the clean
-        // count falls to zero, and the report says why — which is the failure
-        // this should have, rather than confidently averaging bites in.
-        hurt: hpAt == null ? null : false,
-        closesAt: Infinity,
-      };
-      water.hold = hold;
-      water.holds.push(hold);
-      if (water.holds.length > WATER_LOG_MAX) water.holds.shift();
-      return;
-    }
-
-    water.upAt = now;
-    water.heldMs += now - water.heldFrom;
-    water.heldFrom = 0;
-    const hold = water.hold;
-    if (!hold || hold.closed) return;
-    hold.heldMs = Math.round(now - hold.down);
-    hold.charges = Math.floor(hold.heldMs / Math.max(1, hold.cooldown)) + 1;
-    hold.closesAt = now + WATER_ATTRIB_MS;
-    // Health is re-checked once at the close as well as on every step, because
-    // a bite that happens to cost no water would otherwise leave no trace on
-    // this hold at all.
-    setTimeout(() => {
-      if (hold.hurt === null) return;      // never checkable, leave it unknown
-      const seen = waterHealth();
-      if (hold.hpAt != null && seen != null && seen < hold.hpAt) hold.hurt = true;
-    }, WATER_ATTRIB_MS + 30);
-  }
-
-  function waterOnDash() {
-    if (!water.dash) return;
-    waterSetHolding(water.dash.classList.contains('active'), 'button');
-  }
-
-  // mope's own boost bind, as codes and as printable values — it matches on
-  // either, and so does this. A Pointer bind is carried separately because it
-  // arrives as a mouse button rather than a key.
-  function waterBoostBinds() {
-    const out = {codes: [], values: [], pointers: []};
-    const proxy = mopeSettingsProxy();
-    try {
-      const list = proxy && proxy.binds && proxy.binds.boost;
-      if (Array.isArray(list)) {
-        for (const bind of list) {
-          if (!bind) continue;
-          const code = typeof bind.code === 'string' ? bind.code : '';
-          if (code.indexOf('Pointer') === 0) {
-            const button = parseInt(code.slice(7), 10);
-            if (Number.isFinite(button)) out.pointers.push(button);
-          } else if (code) {
-            out.codes.push(code);
-          }
-          if (typeof bind.value === 'string' && bind.value.length === 1) {
-            out.values.push(bind.value.toLowerCase());
-          }
-        }
-      }
-    } catch (e) { /* never captured */ }
-    // Space is mope's shipped default. Assumed only when nothing was read, and
-    // waterDebug() says which of the two happened.
-    if (!out.codes.length && !out.pointers.length) out.codes.push('Space');
-    return out;
-  }
-
-  function waterIsBoostKey(event) {
-    const binds = waterBoostBinds();
-    if (event.code && binds.codes.indexOf(event.code) !== -1) return true;
-    const key = (event.key || '').toLowerCase();
-    return !!key && key.length === 1 && binds.values.indexOf(key) !== -1;
-  }
-
-  // Not capture, and not consuming anything. This listens; it must never take
-  // a key away from the game, and boost is a key the player is holding down in
-  // the middle of a fight.
-  PAGE.addEventListener('keydown', (event) => {
-    if (!event.isTrusted || event.repeat) return;
-    // The button is the better signal wherever mope is drawing one, so the
-    // bind only speaks when it is not.
-    if (water.dash) return;
-    if (!arenaPlaying()) return;
-    // mope refuses a printable bind while its chat box is up, and Space is
-    // printable. Same gate, so the two agree about what counted as a boost.
-    if (document.getElementById('chatInput')) return;
-    if (waterIsBoostKey(event)) waterSetHolding(true, 'bind');
-  });
-  PAGE.addEventListener('keyup', (event) => {
-    if (!event.isTrusted || water.dash) return;
-    if (waterIsBoostKey(event)) waterSetHolding(false, 'bind');
-  });
-  PAGE.addEventListener('mousedown', (event) => {
-    if (!event.isTrusted || water.dash || !arenaPlaying()) return;
-    if (waterBoostBinds().pointers.indexOf(event.button) !== -1) {
-      waterSetHolding(true, 'bind');
-    }
-  });
-  PAGE.addEventListener('mouseup', (event) => {
-    if (!event.isTrusted || water.dash) return;
-    if (waterBoostBinds().pointers.indexOf(event.button) !== -1) {
-      waterSetHolding(false, 'bind');
-    }
-  });
-
-  // Svelte rebuilds the HUD, so both nodes are re-checked by identity rather
-  // than found once. Cheap: two property reads when nothing has changed.
-  function waterTick() {
-    const reading = waterRead();
-    const node = reading ? reading.node : null;
-    if (node !== water.node) {
-      if (water.obs) { water.obs.disconnect(); water.obs = null; }
-      water.node = node;
-      if (node) {
-        // The meter's value lives in the inline style, so that is the only
-        // attribute worth waking for.
-        water.obs = new MutationObserver(waterOnMeter);
-        water.obs.observe(node, {attributes: true, attributeFilter: ['style']});
-        if (!water.started) water.started = performance.now();
-        waterOnMeter();
-      } else {
-        // Out of a game: the baseline is dropped rather than carried across a
-        // respawn, where a full meter would read as an enormous gain.
-        water.pct = null;
-        water.phase = null;
-        water.hp = null;
-        water.hold = null;
-      }
-    }
-    const dash = document.getElementById('dashButton');
-    if (dash !== water.dash) {
-      if (water.dashObs) { water.dashObs.disconnect(); water.dashObs = null; }
-      water.dash = dash;
-      // A hold that spans a HUD rebuild is abandoned rather than closed: its
-      // release will never be seen, so anything charged to it after this point
-      // would be charged to a boost that may already have ended. Routed
-      // through waterSetHolding so the running held-time total is closed off
-      // rather than left counting from a hold nobody will ever end — which is
-      // what happens every time Arena Culling takes the wheel away mid-fight.
-      waterSetHolding(false, water.source || 'button');
-      water.hold = null;
-      if (dash) {
-        water.dashObs = new MutationObserver(waterOnDash);
-        water.dashObs.observe(dash, {attributes: true, attributeFilter: ['class']});
-        waterOnDash();
-      }
-    }
-    // Which animal every sample belongs to. The cost is per-animal for all
-    // anyone knows, so a log that does not say which one it was taken on is a
-    // log of two mixed populations — and the fit is reset outright rather than
-    // carried across, for the same reason.
-    //
-    // In a duel with Arena Culling on there is no ability button to read, so
-    // this comes back empty and the LAST known animal is kept instead. Losing
-    // the species for the length of a fight would otherwise reset the fit at
-    // the start of every duel and again at the end of it.
-    const ident = hpIdentifySelfFromHud();
-    if (ident) {
-      const named = ident.species + (ident.sub ? '/' + ident.sub : '');
-      water.animal = named;
-      water.max = waterMaxFor(ident.species, ident.sub);
-      water.cooldown = boostCooldownFor(ident.species, ident.sub);
-      if (water.fitFor !== named) waterFitReset(named);
-    } else if (!water.fit) {
-      waterFitReset('');
-    }
-  }
-
-  // What the log says, worked out rather than eyeballed — but printing the raw
-  // rows as well, because the whole point of this release is that a human
-  // looks at them.
-  //
-  // Every figure here is reported with the sample count that produced it. A
-  // mean over two holds is not a measurement and must not look like one.
-  function waterDebug() {
-    // 1.34.0 tightened what "clean" means twice over: a press the server
-    // refused is not evidence about cost, and neither is a hold whose
-    // attribution window was cut short by the next press.
-    const clean = water.holds.filter((h) =>
-      h.hurt === false && !h.truncated && h.spent + h.after > 0);
-    const taps = clean.filter((h) => h.heldMs <= 400);
-    // THE SHAPE TEST, as a number rather than an argument. If boost costs a
-    // rate, holds that cost more must be the longer ones. The second
-    // measurement said the opposite outright — holds costing 1 point averaged
-    // 210ms and holds costing 2 averaged 180ms, across a range from 41ms to
-    // 492ms — which is a fixed charge per press and nothing else. Kept because
-    // it is the assumption the counter is built on, and a balance patch could
-    // take it away.
-    const byCost = {};
-    for (const h of clean) {
-      const cost = h.spent + h.after;
-      const bucket = byCost[cost] || (byCost[cost] = {holds: 0, heldMs: 0});
-      bucket.holds++;
-      bucket.heldMs += h.heldMs;
-    }
-    const shape = {};
-    for (const cost of Object.keys(byCost)) {
-      shape[cost + ' point' + (cost === '1' ? '' : 's')] =
-        byCost[cost].holds + ' holds, average ' +
-        Math.round(byCost[cost].heldMs / byCost[cost].holds) + 'ms held';
-    }
-    const total = clean.reduce((sum, h) => sum + h.spent + h.after, 0);
-    const spread = {};
-    for (const h of clean) {
-      const cost = h.spent + h.after;
-      spread[cost] = (spread[cost] || 0) + 1;
-    }
-    // Drain with no boost anywhere near it: the baseline every boosted sample
-    // has to have subtracted from it before it means anything.
-    const idle = water.log.filter((e) =>
-      e.delta != null && e.delta < 0 && !e.holding &&
-      (e.sinceUp == null || e.sinceUp > WATER_ATTRIB_MS) && !e.hpDrop && e.since);
-    const idleRate = idle.length
-      ? idle.reduce((sum, e) => sum + -e.delta / (e.since / 1000), 0) / idle.length
-      : null;
-    // THE ESTIMATE THAT MATTERS. See waterFitReset() for why a mean over
-    // holds cannot do this job.
-    const solved = waterSolve();
-    const fitted = solved ? {
-      // Both figures in points of the meter.
-      drainPerSecond: Number(solved[0].toFixed(3)),
-      costPerPress: Number(solved[1].toFixed(3)),
-      intervals: water.fit.n,
-      forAnimal: water.fitFor || '(unknown)',
-      // Carried rather than fitted, because it is collinear with the press
-      // count and would make the solve unstable. It is here so that a mechanic
-      // which becomes a rate shows up as this number moving while the cost
-      // per press moves with it — read it beside costAgainstHoldLength.
-      averageHeldMsPerPress: water.fit.presses
-        ? Math.round(water.fit.heldMs / water.fit.presses) : null,
-    } : null;
-
-    const report = {
-      animal: water.animal || '(not identified)',
-      resource: water.kind || '(no meter found)',
-      rawUnitsBehindPercent: water.max || 100,   // NOT a percent ceiling; the meter tops out at 100
-      percentIsTheServersInteger: (water.max || 100) === 100,
-      boostCooldownMs: water.cooldown,
-      now: water.pct,
-      low: water.pct != null && water.pct <= WATER_LOW_PCT,
-      meterStepsSeen: water.steps,
-      holdsSeen: water.holds.length,
-      cleanHolds: clean.length,
-      // Read this first. It is the fit, and it is the only figure here that
-      // has natural drain taken out of it rather than eyeballed around.
-      fit: fitted || 'not enough clean intervals yet — keep playing',
-      // Is boost a fixed charge or a rate? If the cost tracks how long the
-      // button was down, the higher bucket here is the longer one.
-      costAgainstHoldLength: shape,
-      // Reported, not excluded — see 1.35.0's note. Five of the six presses
-      // 1.34.0 called refused had cost water.
-      pressesInsideTheClientCooldown: water.holds.filter((h) => h.insideCooldown).length,
-      holdsCutShortByTheNextPress: water.holds.filter((h) => h.truncated).length,
-      // What the counter is dividing by right now, and where it came from.
-      boostCostInUse: boostCost(),
-      boostCostSource: boostCostSource(),
-      // WAS THE ABILITY WHEEL EVEN ON SCREEN. With Arena Culling on it is not,
-      // and before 1.34.0 that made every duel invisible to this. Now the bind
-      // takes over; `boostSeenBy` says which signal is actually reporting.
-      abilityWheelDrawn: !!water.dash,
-      boostSeenBy: water.source || '(nothing yet)',
-      boostBinds: waterBoostBinds(),
-      boostBindsRead: !!mopeSettingsProxy(),
-      holdsInsideADuel: water.holds.filter((h) => h.arena).length,
-      // THE NUMBER THIS RELEASE EXISTS TO FIND. Read the spread, not the mean:
-      // a fixed cost of 1.5 shows up as a roughly even mix of 1s and 2s, and
-      // the mean of THOSE is the cost. A cost of exactly 1 or 2 shows up as
-      // one column and nothing else.
-      costSpread: spread,
-      meanCostPerHold: clean.length ? Number((total / clean.length).toFixed(3)) : null,
-      meanCostPerTap: taps.length
-        ? Number((taps.reduce((s, h) => s + h.spent + h.after, 0) / taps.length).toFixed(3))
-        : null,
-      tapsSeen: taps.length,
-      // If holding costs more than tapping, the cost is not fixed and the
-      // counter has to be built round a rate instead. This is the comparison
-      // that answers it.
-      longestHoldMs: clean.reduce((m, h) => Math.max(m, h.heldMs), 0),
-      idlePointsPerSecond: idleRate == null ? null : Number(idleRate.toFixed(3)),
-      idleSamples: idle.length,
-      contaminatedByDamage: water.holds.filter((h) => h.hurt === true).length,
-      // Read this BEFORE believing cleanHolds. False means the HP feature is
-      // not reading a health, so no hold could be checked for damage and none
-      // of them count — switch the damage indicator back on and play again.
-      healthReadable: waterHealth() != null,
-      holdsNotCheckable: water.holds.filter((h) => h.hurt === null).length,
-    };
-    console.log(TAG, 'water', report);
-    console.log(TAG, 'holds — the cost measurement:');
-    console.table ? console.table(water.holds.slice(-40)) : console.log(water.holds.slice(-40));
-    console.log(TAG, 'meter steps — every change, with what else was happening:');
-    console.table ? console.table(water.log.slice(-80)) : console.log(water.log.slice(-80));
-    return report;
-  }
-  try { PAGE.__lumiWaterDebug = waterDebug; }
-  catch (e) { window.__lumiWaterDebug = waterDebug; }
-
-  // ----------------------------------------------------- the boost counter
-  //
-  // 1.35.0, and the whole of it is one division: how many more boosts the
-  // meter will pay for. Two releases of measuring went into the divisor, and
-  // 1.0.15 takes the measurement back OUT of it. Both were right at the time.
-  //
-  // WHAT THE MEASUREMENT SETTLED. Boost is a FIXED CHARGE PER PRESS, not a
-  // rate while held: across 21 clean presses on one dragon, the holds that
-  // cost 1 point averaged 210ms and the holds that cost 2 averaged 180ms —
-  // the longer holds cost LESS — over a range from 41ms to 492ms. A rate
-  // cannot look like that. So the counter divides, and does not integrate.
-  //
-  // WHY THE FIT NO LONGER DIVIDES (1.0.15). The instrument was built because
-  // the cost was not in the client and had to be measured; the least-squares
-  // fit then stood in for a constant nobody could confirm. Lumi has since
-  // confirmed it from the game itself: a boost in an arena costs a fixed 1.5%
-  // of the meter, and the only other thing that drains it in a duel is an
-  // enemy bite, at about the same 1.5%. The fit's own 21-press average was
-  // 1.619 including drain. So the constant is known, and a divisor that keeps
-  // re-deriving a known constant is not caution, it is noise:
-  //
-  //   - A fit re-solves every time an interval lands, and a count of
-  //     floor(usable / cost) re-scales with it. Filmed in a duel: the counter
-  //     read 6, then 9, then 10, then 4, then 2, while the meter only drifted
-  //     DOWN from 32% to 25%. A count that RISES while the meter falls is not
-  //     a reading of the meter at all; it is the divisor moving under it.
-  //   - Inside a culled duel there is routinely no health reading (the lock
-  //     is held without one — see hpPlayerAlive), so `drop` is 0 for every
-  //     interval and a bite's 1.5% is admitted to the fit as if a boost had
-  //     cost it. The estimate inflates, the count collapses, a clean stretch
-  //     pulls it back, and the count leaps. That is the "insane increments",
-  //     and it happens in exactly the fight the feature exists for.
-  //
-  // So the divisor is BOOST_COST_PCT, full stop. The fit still runs and is
-  // still REPORTED — __lumiBoostDebug().fitWouldSay beside costPerBoost — so a
-  // balance patch that changes the charge is visible the day it lands, which
-  // is the tripwire role __lumiBiteDebug() plays for the bite window. It just
-  // never touches what is drawn.
-  //
-  // Bites need no modelling of their own: the counter reads the LIVE meter, a
-  // bite takes 1.5% off it, and the count drops by one — which is true.
-  const BOOST_COST_PCT = 1.5;      // per boost, in meter percent. The game constant.
-  // The fit is believed as a REPORT only inside this range; outside it the
-  // instrument has been handed something it should not have been — a stretch
-  // of drinking, a respawn — and the number is not worth printing.
-  const BOOST_COST_MIN = 0.4;
-  const BOOST_COST_MAX = 6;
-  const BOOST_FIT_MIN_INTERVALS = 40;
-
-  // BOOST STOPS WORKING AT 15%, and 1.35.0 did not know it — so the counter
-  // divided the whole meter and read about two and a half times too high.
-  // The water below this line cannot be spent on boosting, so it is not water
-  // the counter is allowed to count.
-  //
-  // Held as a percentage because that is the form it was observed in and the
-  // form a player can check it in. For every animal that can be in a duel
-  // except King Dragon the percentage and the server's own integer are the
-  // same number, so the distinction only bites there — if the real rule turns
-  // out to be a raw 15 rather than 15%, King Dragon is the one animal where
-  // this is wrong, and __lumiBoostDebug().usableWater is where it would show.
-  const BOOST_MIN_PCT = 15;
 
   function boostOn() {
     return settings.masterEnabled && settings.boostCounter;
   }
 
-  // What the fit would say, or null when it has nothing believable to say.
-  // Diagnostic only since 1.0.15: it is printed beside the constant, never
-  // divided by. See the note at the top of this section.
-  function boostFittedCost() {
-    const solved = waterSolve();
-    if (!solved || !water.fit || water.fit.n < BOOST_FIT_MIN_INTERVALS) return null;
-    const perPress = solved[1];
-    if (!Number.isFinite(perPress)) return null;
-    if (perPress < BOOST_COST_MIN || perPress > BOOST_COST_MAX) return null;
-    // A negative drain means the meter refilled faster than it emptied across
-    // the sample — drinking, a respawn — and a cost derived beside it is not
-    // worth reporting either.
-    if (!(solved[0] >= 0) || solved[0] > 5) return null;
-    return perPress;
+  /* The bite indicator. A bitten fighter cannot be bitten again for three
+   * seconds (measured: 21 bites, 2026-08-28). mope shows bites only as a
+   * running count on the arena labels, so a count going up is matched to the
+   * fighter whose health dropped at the same moment, and that fighter's bar
+   * gets a purple mark that shrinks away over the three seconds. */
+  const BITE_IMMUNE_MS = 3000;
+  const BITE_MATCH_MS = 320;
+  const BITE_MARK_COLOR = 0x9b30ff;
+  const BITE_MARK_STEPS = 60;
+
+  const bite = {
+    arena: null,
+    score1: -1,
+    score2: -1,
+    health: new Map(),     // fighter -> last health
+    pending: [],           // {at} — counts that went up, awaiting a victim
+    marked: new Map(),     // fighter -> {until, node, drawn}
+    bites: 0,
+    unmatched: 0,
+  };
+
+  function biteScoreOf(label) {
+    const text = label && typeof label.text === 'string' ? label.text : '';
+    const m = /Bites:\s*(\d+)/.exec(text);
+    return m ? Number(m[1]) : -1;
   }
 
-  // The divisor. A constant, and deliberately not a function of anything the
-  // instrument has measured — see the note at the top of this section for the
-  // two ways a live divisor put a rising count on a falling meter.
-  function boostCost() {
-    return BOOST_COST_PCT;
+  function biteMarkDetach(mark) {
+    const node = mark && mark.node;
+    if (!node) return;
+    mark.node = null;
+    try { if (node.parent) node.parent.removeChild(node); } catch (e) {}
+    try { node.destroy(); } catch (e) {}
   }
 
-  function boostCostSource() {
-    const fitted = boostFittedCost();
-    return 'a fixed ' + BOOST_COST_PCT + '% per boost — the game constant' +
-      (fitted == null
-        ? ' (the fit has nothing believable to compare it with yet)'
-        : ' (the fit on this animal says ' + fitted.toFixed(2) + ', reported, not used)');
+  function biteClearAll() {
+    for (const mark of bite.marked.values()) biteMarkDetach(mark);
+    bite.marked.clear();
+    bite.pending.length = 0;
   }
 
-  // How many boosts the meter will still pay for — a WALK down the meter, in
-  // phase with it, and not a division (1.0.16).
-  //
-  // The meter shows an integer. A boost costs 1.5. So on screen a boost takes
-  // 1 point or 2, and they ALTERNATE: two boosts are exactly 3, so whichever
-  // way the server rounds, a drop of 1 is followed by a drop of 2 and a drop
-  // of 2 by a drop of 1. floor((pct - 15) / 1.5) cannot see which of the two it
-  // is standing before, and it showed: at 25% it said 6, a boost took the
-  // meter to 24%, and it STILL said 6 — the boost was paid for and the counter
-  // never moved. Lumi reported exactly that, and it recurred at every third
-  // value of the meter. The division also never counted the last, partial
-  // boost: the game lets you boost at 16% (1.35.2), so 25% is SEVEN boosts,
-  // not six, and the "never zero above the floor" clamp was papering over the
-  // one place that showed.
-  //
-  // So the count is: from the meter, subtract the next cost, then the other,
-  // then the next, until the meter would read below 16 — and "the next cost"
-  // is a fact the meter has been telling us all along. waterNote() reads it
-  // off every drop: 1 means the next is 2, 2 means the next is 1, 3 is two
-  // steps and changes nothing (any drop, mod 3). A bite is the same 1.5 and
-  // obeys the same alternation, so it needs no attribution; it is simply the
-  // next step. A GAIN — drinking — forgets the phase, and the count is the
-  // conservative one of the two until the next drop settles it.
-  //
-  // Every 1.5 the meter loses is therefore exactly one off the count, from the
-  // first drop observed onward, under any rounding the server uses.
+  function biteMark(fighter, now) {
+    bite.bites++;
+    const mark = bite.marked.get(fighter);
+    if (mark) { mark.until = now + BITE_IMMUNE_MS; mark.drawn = -1; return; }
+    bite.marked.set(fighter, {until: now + BITE_IMMUNE_MS, node: null, drawn: -1});
+  }
 
-  // The count from a meter reading and the cost of the next boost on screen.
-  // `phase` is 1 or 2, or null for unknown; unknown walks with 2 first, which
-  // is the smaller answer and the one that cannot get somebody killed.
+  function bitePaint(now) {
+    for (const [fighter, mark] of bite.marked) {
+      if (now >= mark.until) { biteMarkDetach(mark); bite.marked.delete(fighter); continue; }
+      const box = healthBarBox(fighter);
+      if (!box || typeof box.Graphics !== 'function') { biteMarkDetach(mark); continue; }
+      if (mark.node && mark.node.parent !== box.container) biteMarkDetach(mark);
+      if (!mark.node) {
+        try {
+          const node = new box.Graphics();
+          node.__lumiBiteMark = true;
+          node.pivot.set(box.w / 2, box.h / 2);
+          box.container.addChild(node);
+          mark.node = node;
+          mark.drawn = -1;
+        } catch (e) { continue; }
+      }
+      const step = Math.max(0, Math.min(BITE_MARK_STEPS,
+        Math.round((mark.until - now) / BITE_IMMUNE_MS * BITE_MARK_STEPS)));
+      if (mark.drawn === step) continue;
+      mark.drawn = step;
+      try {
+        mark.node.clear();
+        if (step > 0) {
+          drawBox(mark.node, box, Math.max(0.01, box.w * step / BITE_MARK_STEPS));
+          mark.node.fill({color: BITE_MARK_COLOR, alpha: 1});
+        }
+      } catch (e) { biteMarkDetach(mark); }
+    }
+  }
+
+  function biteTick(mine, now) {
+    if (bite.arena !== mine.arena) {
+      biteClearAll();
+      bite.arena = mine.arena;
+      bite.score1 = bite.score2 = -1;
+      bite.health.clear();
+    }
+    const s1 = biteScoreOf(mine.arena.textPlayer1);
+    const s2 = biteScoreOf(mine.arena.textPlayer2);
+    const dropped = [];
+    for (const fighter of mine.fighters) {
+      const health = healthOf(fighter);
+      if (health == null) continue;
+      const was = bite.health.get(fighter);
+      bite.health.set(fighter, health);
+      if (was != null && health < was) dropped.push(fighter);
+    }
+    if (s1 >= 0 && s2 >= 0) {
+      if (bite.score1 >= 0 && bite.score2 >= 0) {
+        const bumped = Math.max(0, s1 - bite.score1) + Math.max(0, s2 - bite.score2);
+        for (let i = 0; i < bumped; i++) bite.pending.push({at: now});
+      }
+      bite.score1 = s1;
+      bite.score2 = s2;
+    }
+    for (const fighter of dropped) {
+      const idx = bite.pending.findIndex((p) => Math.abs(now - p.at) <= BITE_MATCH_MS);
+      if (idx < 0) continue;
+      bite.pending.splice(idx, 1);
+      biteMark(fighter, now);
+    }
+    for (let i = bite.pending.length - 1; i >= 0; i--) {
+      if (now - bite.pending[i].at > BITE_MATCH_MS) { bite.pending.splice(i, 1); bite.unmatched++; }
+    }
+    bitePaint(now);
+  }
+
+  /* The boost counter: how many boosts your water still pays for, shown over
+   * your health bar once you are at 25% or less in your own duel. A boost
+   * costs 1.5% of the meter — the server takes 1 and 2 points alternately —
+   * and boosting stops working at 15%. Which of the two comes next is read
+   * off the last drop (mod 3); until a drop has been seen the count is the
+   * conservative one. */
+  const WATER_LOW_PCT = 25;
+  const BOOST_MIN_PCT = 15;
+  const BOOST_PAIR_PTS = 3;
+
+  const water = {pct: null, phase: null};
+
+  function waterTick() {
+    const pct = resourcePercent();
+    if (pct == null || !inGame()) { water.pct = null; water.phase = null; return; }
+    const rounded = Math.round(pct);
+    if (water.pct != null && rounded !== water.pct) {
+      const delta = rounded - water.pct;
+      if (delta > 0) water.phase = null;
+      else {
+        const r = Math.round(-delta) % BOOST_PAIR_PTS;
+        if (r) water.phase = BOOST_PAIR_PTS - r;
+      }
+    }
+    water.pct = rounded;
+  }
+
   function boostCountFrom(pct, phase) {
     if (pct == null || !(pct > BOOST_MIN_PCT)) return 0;
     let count = 0;
@@ -16341,195 +8143,120 @@
     return count;
   }
 
-  function boostsLeft() {
-    if (water.pct == null) return null;
-    return boostCountFrom(water.pct, water.phase);
-  }
-
-  // The only other answer possible — the count under the phase we are NOT
-  // assuming. Reported beside the real one: the two differing by one is the
-  // whole of the uncertainty, and they only differ while the phase is unknown
-  // or at every third value of the meter.
-  function boostsLeftOtherPhase() {
-    if (water.pct == null) return null;
-    return boostCountFrom(water.pct, water.phase === 1 ? 2 : 1);
-  }
-
-  const boostUI = {
-    node: null, shown: false, text: '', mood: null, sized: 0,
-    // The node the placement follows, handed over by the tick so the
-    // per-frame half never has to decide anything.
-    bar: null,
-    gap: 0,
-  };
+  const boostUI = {node: null, shown: false, text: '', mood: null, sized: 0};
 
   function boostHide() {
-    boostUI.bar = null;
     if (boostUI.node && boostUI.shown) {
       boostUI.node.style.display = 'none';
       boostUI.shown = false;
     }
   }
 
-  function boostEnsure() {
-    if (boostUI.node && boostUI.node.isConnected) return boostUI.node;
-    const host = document.body || document.documentElement;
-    if (!host) return null;
-    const node = document.createElement('div');
-    node.id = 'qolc-boost';
-    host.appendChild(node);
-    boostUI.node = node;
-    return node;
-  }
-
-  // Anchored to YOUR OWN health bar, and that choice is forced rather than
-  // preferred. The script's own HP bar overlay follows the ability cards, and
-  // Arena Culling removes the whole ability wheel — so inside the duel this
-  // feature exists for, that anchor does not exist. mope's little bar over
-  // your animal's head does, and the HP feature is already tracking it.
-  //
-  // The mapping is the one the damage numbers use: a node's worldTransform is
-  // its global position, scaled by the ratio of the window to the renderer's
-  // own screen.
-  function boostTick(renderer, now) {
-    if (!boostOn() || !arenaPlaying()) { boostHide(); return; }
-    // Your own duel only. Same reading the starfield, focus mode and the bite
-    // indicator all take, asked once by arenaDuelTick().
-    if (!arenaDuel.active || !arenaDuel.mine) { boostHide(); return; }
-    // The low-water state. mope's own meter goes amber below 25 and the user
-    // asked for 25 or less, so this is one point wider than mope's class by
-    // design — see WATER_LOW_PCT.
-    if (water.pct == null || water.pct > WATER_LOW_PCT) { boostHide(); return; }
-    const entry = hpSelfEntry();
-    const bar = entry && entry.bar;
-    const at = bar && bar.parent ? hpScreenPos(bar) : null;
+  function boostTick(now) {
+    const me = myAnimal();
+    if (!boostOn() || !arenaDuel.active || !me || water.pct == null ||
+        water.pct > WATER_LOW_PCT) { boostHide(); return; }
+    const box = healthBarBox(me);
+    const at = screenPosOf(box ? box.container : me.container, now);
     if (!at) { boostHide(); return; }
-    const left = boostsLeft();
-    if (left == null) { boostHide(); return; }
-
-    const node = boostEnsure();
+    if (!boostUI.node || !boostUI.node.isConnected) boostUI.node = qolcOwnLayer('qolc-boost');
+    const node = boostUI.node;
     if (!node) return;
+    const left = boostCountFrom(water.pct, water.phase);
     const vmin = Math.min(innerWidth, innerHeight);
-    // Clear of mope's bar rather than on top of it. The bar grows with the
-    // animal, so the gap is in screen units and generous.
-    boostUI.gap = Math.max(16, Math.round(vmin * 0.032));
-    // "No boost" rather than "0 boosts". At the bottom of the meter the useful
-    // thing to say is that the option is gone, not to print a zero and leave
-    // it to be read as a number you could still spend.
+    const gap = Math.max(16, Math.round(vmin * 0.032));
     const text = left <= 0 ? 'No boost' : left + (left === 1 ? ' boost' : ' boosts');
     if (boostUI.text !== text) { node.textContent = text; boostUI.text = text; }
-    // One class per band rather than a colour written from JS, so the
-    // stylesheet owns how it looks and this owns only when.
     const mood = left <= 1 ? 'qolc-boost-none' : left <= 3 ? 'qolc-boost-low' : '';
     if (boostUI.mood !== mood) { node.className = mood; boostUI.mood = mood; }
-    // Sizing is a LAYOUT write, so it is done here on the 60ms budget and only
-    // when the window has actually changed — never on the per-frame path.
     if (boostUI.sized !== vmin) {
       boostUI.sized = vmin;
       node.style.fontSize = Math.max(13, Math.round(vmin * 0.024)) + 'px';
     }
     if (!boostUI.shown) { node.style.display = 'block'; boostUI.shown = true; }
-    // Hand the anchor to the per-frame half and let it do the following.
-    boostUI.bar = bar;
-    boostPlace(renderer);
-  }
-
-  // THE POSITION, EVERY FRAME. This is the whole of 1.35.1's other fix.
-  //
-  // 1.35.0 wrote the position from boostTick(), which runs on the arena
-  // budget — 60ms, about 16 updates a second. The animal it follows moves
-  // continuously and the game draws it at up to 240. So the number was
-  // stepping along in 60ms jumps behind a smoothly moving target, which is
-  // exactly what "vibrating in place" looks like. Rounding both coordinates to
-  // whole CSS pixels made it worse: a sub-pixel drift flips between two
-  // integers and the node twitches by a pixel without going anywhere.
-  //
-  // So the tick decides — whether to draw, what number, what colour, what size
-  // — and this does nothing but move it, on every frame, with no rounding and
-  // no layout. `transform` rather than left/top for the same reason: it is
-  // composited rather than laid out, and it takes fractional pixels.
-  function boostPlace(renderer) {
-    const node = boostUI.node;
-    const bar = boostUI.bar;
-    if (!node || !boostUI.shown || !bar || !bar.parent) return;
-    const at = hpScreenPos(bar);
-    if (!at) return;
-    const scr = viewportOf(renderer);
-    const x = at.x * (innerWidth / (scr.w || innerWidth));
-    const y = at.y * (innerHeight / (scr.h || innerHeight)) - boostUI.gap;
-    // The -50%/-100% that used to live in the stylesheet is folded in here:
-    // a transform cannot be set twice, and centring on the node's own width is
-    // what keeps "9 boosts" and "10 boosts" over the same point.
-    const t = 'translate3d(' + x.toFixed(1) + 'px,' + y.toFixed(1) + 'px,0) translate(-50%,-100%)';
+    const t = 'translate3d(' + at.x.toFixed(1) + 'px,' + (at.y - gap).toFixed(1) +
+      'px,0) translate(-50%,-100%)';
     if (node.style.transform !== t) node.style.transform = t;
   }
 
-  function boostDebug() {
-    const solved = waterSolve();
+  /* ----- one tick for everything that happens in a duel ----- */
+
+  let cullingCheckAt = -Infinity;
+
+  function arenaFrame(now) {
+    // Off by the master switch (or any path that skipped arenaSkySet): give
+    // mope's Arena Culling back. Checked once a second; it is a storage read.
+    if (!arenaSkyOn() && now - cullingCheckAt > 1000) {
+      cullingCheckAt = now;
+      if (store.get('cullingBeforeTheme', null) !== null) mopeSetCulling(false);
+    }
+    const mine = arenaPlaying() && !document.hidden ? arenaMine() : null;
+    if (mine && !arenaDuel.active) {
+      arenaDuel.active = true;
+      arenaDuel.since = now;
+      arenaFocusEnter();
+      dbg('arena: duel started');
+    } else if (!mine && arenaDuel.active) {
+      arenaDuel.active = false;
+      biteClearAll();
+      bite.arena = null;
+      dbg('arena: duel ended');
+    }
+    arenaDuel.mine = mine;
+    arenaSkyTick(mine, now);
+    if (mine && biteOn()) biteTick(mine, now);
+    else if (bite.marked.size) biteClearAll();
+    waterTick();
+    boostTick(now);
+    zorderApply();
+  }
+
+  /* ----- hotkeys: Z for the sky, ] and [ for draw order ----- */
+
+  PAGE.addEventListener('keydown', (event) => {
+    if (!event.isTrusted || event.shiftKey) return;
+    if (!arenaPlaying()) return;
+    const above = kbHit('zAbove', event);
+    const below = !above && kbHit('zBelow', event);
+    if (!above && !below) return;
+    event.preventDefault();
+    event.stopPropagation();
+    zorderSet(above ? 1 : -1, 'hotkey');
+  }, true);
+
+  PAGE.addEventListener('keydown', (event) => {
+    if (!kbHit('arenaTheme', event)) return;
+    if (!arenaPlaying()) return;
+    if (extras && extras.panel && extras.panel.style.display === 'block') return;
+    const target = event.target;
+    if (target && target.closest && target.closest(QOLC_OWN_UI)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    arenaSkySet(!settings.arenaSky, 'hotkey');
+  }, true);
+
+  function arenaDebug() {
+    const mine = arenaMine();
     const report = {
       version: VERSION,
-      enabled: settings.boostCounter,
-      inYourOwnDuel: !!(arenaDuel.active && arenaDuel.mine),
-      water: water.pct,
-      lowAt: WATER_LOW_PCT,
-      low: water.pct != null && water.pct <= WATER_LOW_PCT,
-      // Below BOOST_MIN_PCT boosting stops working, so only the water above
-      // that line is spendable — and it is what the count divides. If the
-      // counter ever reads high again, this is the figure to check first.
-      boostStopsAt: BOOST_MIN_PCT + '%',
-      usableWater: water.pct == null ? null
-        : Math.max(0, water.pct - BOOST_MIN_PCT) + '% of ' + water.pct + '%',
-      animal: water.animal || '(not identified)',
-      // The raw units behind mope's 0–100 percent. NOT a percentage ceiling —
-      // a King Dragon's meter still tops out at 100% — and not used by the
-      // count, which is percent over percent. Reported for the record.
-      rawUnitsBehindPercent: water.max,
-      costPerBoost: boostCost(),
-      costFrom: boostCostSource(),
-      // 1.0.15. The fit is a TRIPWIRE now, not the divisor: this is what it
-      // would have divided by. It drifting far from costPerBoost on a sample
-      // that is well conditioned is the signal that a balance patch changed
-      // the charge — and the day that happens, BOOST_COST_PCT is the one line
-      // to change.
-      fitWouldSay: boostFittedCost(),
-      fitIntervals: water.fit ? water.fit.n : 0,
-      fitPerPress: solved ? Number(solved[1].toFixed(3)) : null,
-      fitDrainPerSecond: solved ? Number(solved[0].toFixed(3)) : null,
-      boostsLeft: boostsLeft(),
-      // 1.0.16. The phase: what the NEXT boost will take off the meter on
-      // screen, read off the last drop. Unknown after a gain or before the
-      // first drop, and the count is then the conservative one until the next
-      // drop settles it. `ifOtherPhase` is the only other answer possible, so
-      // the two differing by one is the whole of the uncertainty.
-      nextBoostOnScreen: water.phase == null
-        ? 'unknown — no drop seen since the last gain; counting conservatively'
-        : water.phase + (water.phase === 1 ? ' point' : ' points'),
-      ifOtherPhase: boostsLeftOtherPhase(),
-      // WHY THE FIT HAS NOT SETTLED, which "not settled" alone cannot say.
-      // Read these three together: too few intervals is a matter of playing
-      // more, but intervals that are ALL boosted or ALL idle can never
-      // separate drain from cost however many of them there are.
-      fitNeedsIntervals: BOOST_FIT_MIN_INTERVALS,
-      fitIntervalsWithABoost: water.fit ? water.fit.withBoost : 0,
-      fitIntervalsIdle: water.fit ? water.fit.idle : 0,
-      fitConditioning: (() => {
-        const c = waterFitConditioning();
-        return c == null ? null : Number(c.toFixed(4));
-      })(),
-      // Why it is not on screen, if it is not.
-      anchor: (() => {
-        const entry = hpSelfEntry();
-        return entry && entry.bar
-          ? 'your health bar' : 'NONE — the HP feature has not locked onto you';
-      })(),
-      drawn: boostUI.shown,
+      screen: mopeScreen(),
+      inYourOwnDuel: !!mine,
+      sky: arenaSky.why,
+      skyStars: arenaSky.builtStars || 0,
+      arenaCulling: mopeCullingValue() === MOPE_CULL_HIDE ? 'HIDE — world culled'
+        : mopeCullingValue() === MOPE_CULL_SHOW ? 'SHOW — world drawn' : 'could not be read',
+      fighters: mine ? mine.fighters.map((f) => (f === myAnimal() ? 'you' : 'opponent') +
+        ' ' + healthOf(f) + '%') : [],
+      bites: {seen: bite.bites, unmatched: bite.unmatched, marked: bite.marked.size,
+        labels: mine ? [biteScoreOf(mine.arena.textPlayer1), biteScoreOf(mine.arena.textPlayer2)] : null},
+      water: water.pct, nextBoostCosts: water.phase,
+      boostsLeft: water.pct == null ? null : boostCountFrom(water.pct, water.phase),
+      drawOrder: (zorder.mode > 0 ? 'above' : zorder.mode < 0 ? 'below' : 'off') +
+        (zorder.api ? ' — ' + zorder.api : ''),
     };
-    console.log(TAG, 'boost counter', report);
+    console.log(TAG, 'arena', report);
     return report;
   }
-  try { PAGE.__lumiBoostDebug = boostDebug; }
-  catch (e) { window.__lumiBoostDebug = boostDebug; }
-
   // ------------------------------------------------------------ quick chat
   //
   // 1.33.0. Five messages you write once, on the number row, sent into mope's
@@ -16778,162 +8505,120 @@
   try { PAGE.__lumiChatDebug = chatDebug; }
   catch (e) { window.__lumiChatDebug = chatDebug; }
 
-  // ------------------------------------------------- tier-upgrade tracking
 
-  // Whether the main menu is currently on screen (drives in-game controls).
-  let prevMenuVisible = null;
-  let firstGameHintShown = false;
-  let gameHintTimer = null;
+  /* ========================== keeping current ==========================
+   *
+   * A Load-unpacked extension never updates itself, so the extension checks
+   * GitHub's copy of manifest.json once an hour and says on the menu when a
+   * newer release is out. Nothing about you goes with the request. A
+   * Tampermonkey copy never checks: Tampermonkey updates it on its own.
+   */
 
-  function showFirstGameHint() {
-    const current = ensureExtrasUI();
-    if (!current || !current.hint) return;
-    const hint = current.hint;
-    hint.classList.remove('qolc-show');
-    // Restart the entrance animation if this helper is manually called.
-    void hint.offsetWidth;
-    hint.classList.add('qolc-show');
-    clearTimeout(gameHintTimer);
-    gameHintTimer = setTimeout(() => hint.classList.remove('qolc-show'), 6500);
+  const UPDATE_URL = 'https://raw.githubusercontent.com/Luminosity67/lumis-extras/main/manifest.json';
+  const UPDATE_PAGE = 'https://github.com/Luminosity67/lumis-extras/releases/latest';
+  const UPDATE_EVERY_MS = 60 * 60 * 1000;
+  const menuNotice = {text: '', bad: false};
+
+  // True when version a is newer than version b.
+  function qolcVersionNewer(a, b) {
+    const pa = String(a).split('.').map((n) => parseInt(n, 10) || 0);
+    const pb = String(b).split('.').map((n) => parseInt(n, 10) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const x = pa[i] || 0, y = pb[i] || 0;
+      if (x !== y) return x > y;
+    }
+    return false;
   }
 
-  // The XP bar's denominator — the requirement for the NEXT tier. It is read
-  // here and nowhere else, and the HP feature uses it as the last resort for
-  // working out what YOUR animal is (see hpTierFromXp). Until 1.8.3 it also
-  // drove the auto-upgrade timer's stacked-menu handling; that feature is
-  // gone, this reading is not.
-  let xpDenom = null;
-
-  // The XP bar's NUMERATOR — how much you have right now. 1.21.0, for the
-  // party list. mope draws the whole thing as
-  //
-  //     2.03M XP / 5M XP ( 2.97M XP until next upgrade )
-  //
-  // so the numerator is the figure BEFORE the slash and the tail has to be
-  // kept out of it, which is what anchoring on the slash does.
-  let xpAmount = null;
-
-  function noteXpText(text) {
-    // The denominator reading is UNCHANGED from 1.8.3 and deliberately still
-    // its own match. It is not merely a display value: hpTierFromXp() uses it
-    // as the last-resort way to work out what your animal is, and it has
-    // already survived the bar text arriving split across two elements. Fold
-    // the two into one regex requiring both halves and that robustness goes
-    // quietly — a fragment carrying only "/ 5M XP" would stop matching.
-    const m = /\/\s*([\d.,]+\s*[KMB]?)\s*XP/i.exec(text);
-    if (m) {
-      const norm = m[1].replace(/\s+/g, '').toUpperCase();
-      if (norm !== xpDenom) {
-        const prev = xpDenom;
-        xpDenom = norm;
-        if (prev !== null) dbg('XP requirement changed:', prev, '→', norm);
-      }
-    }
-    // The numerator, on its own terms. Anchored on the slash that FOLLOWS it,
-    // so the "( 2.97M XP until next upgrade )" tail — which is also a number
-    // followed by XP — cannot be read as your total. No dbg() line: unlike the
-    // requirement, this changes every time you eat anything.
-    //
-    // Read ONLY while in a game, and that gate is load-bearing rather than
-    // tidy. The clear on returning to the menu runs at the END of the same
-    // walk that reads this, so any XP text mope leaves on the menu — a profile
-    // panel, a shop, a season total — would re-set it on the very next tick
-    // and quietly undo the clear. Same shape as the registry bug that ate 15
-    // subscription slots on panel labels: a guard placed after a reader is not
-    // a guard. On the tick the menu appears this still reads, because
-    // prevMenuVisible is only updated after the walk — and that is fine,
-    // because the clear below runs after it and wins.
-    //
-    // The requirement above is deliberately NOT gated. It is read on the menu
-    // today and hpTierFromXp() depends on that behaviour.
-    if (prevMenuVisible === false) {
-      const n = /([\d.,]+\s*[KMB]?)\s*XP\s*\//i.exec(text);
-      if (n) {
-        const norm = n[1].replace(/\s+/g, '').toUpperCase();
-        if (norm !== xpAmount) xpAmount = norm;
-      }
-    }
+  function updateAvailable() {
+    const v = store.get('updateLatest', '');
+    return v && qolcVersionNewer(v, VERSION) ? v : '';
   }
 
-  // One walk over the DOM per tick: menu visibility and the XP requirement,
-  // together. The Account & Shop tab used to be measured here as well, for the
-  // extras button to dock against; the button sits in a corner now.
-  function trackTexts() {
-    if (!document.body) return;
-    let playVisible = false;
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
-    let el;
-    while ((el = walker.nextNode())) {
-      if (isOurs(el)) continue;
-      for (const n of el.childNodes) {
-        if (n.nodeType !== 3) continue;
-        const t = n.textContent;
-        if (!playVisible && /^\s*Play\s*$/i.test(t)) {
-          const r = el.getBoundingClientRect();
-          if (r.width > 0 && r.height > 0) playVisible = true;
-        } else if (t.indexOf('XP') !== -1) {
-          // The bar text may be split across elements; fall back to the
-          // parent's combined text so "/ N XP" stays in one piece.
-          noteXpText(t.indexOf('/') !== -1 ? t
-            : (el.parentElement ? el.parentElement.textContent : t));
-        }
-      }
-    }
-    const wasMenuVisible = prevMenuVisible;
-    prevMenuVisible = playVisible;
-    if (wasMenuVisible === true && !playVisible && !firstGameHintShown) {
-      firstGameHintShown = true;
-      showFirstGameHint();
-    } else if (wasMenuVisible === false && playVisible) {
-      // Returning to the menu should not leave the centered in-game panel open.
-      kbCancelCapture();
-      if (extras) extras.panel.style.display = 'none';
-      // 1.21.0. The XP bar goes with the game, but the last figure read off it
-      // does not — and mope starts the next run back at zero. Without this, the
-      // first heartbeat of a new game publishes the PREVIOUS game's total to
-      // everyone's party list.
-      //
-      // Deliberately NOT behind the `extras` check that used to guard this
-      // whole branch. That check is about the panel existing, which is a
-      // question about our own UI; whether somebody's stale XP goes out over
-      // the network is not the same question and must not depend on it.
-      //
-      // The requirement is deliberately left alone: it is a property of the
-      // tier you are, hpTierFromXp() leans on it, and it is re-read the moment
-      // a bar exists again.
-      xpAmount = null;
-    }
+  // Each release is announced once per page load.
+  let updateAnnounced = '';
+  function updateAnnounce() {
+    const known = updateAvailable();
+    if (!known || known === updateAnnounced) return;
+    updateAnnounced = known;
+    queueMenuNotice('Lumi’s Extras ' + known + ' is out. Get it from the GitHub releases page (Settings → Troubleshooting).');
   }
 
-  // --------------------------------------------------- extras button docking
-
-  // Bottom-left corner of the menu, and nothing to measure. It used to dock
-  // against the Account & Shop tab on the right, which meant re-reading that
-  // tab's rect four times a second and moving whenever the page reflowed. A
-  // corner is the same place on every display and every zoom level.
-  //
-  // Lumi's Moderator Extras puts its own launcher immediately to the RIGHT of
-  // this one, at the same height, by measuring this button — so this is the
-  // anchor for the pair and the two move together if the inset ever changes.
-  const EXTRAS_BTN_EDGE = 24;
-
-  function positionExtrasBtn() {
-    if (!extras) return;
-    const btn = extras.btn;
-    if (prevMenuVisible !== false) {
-      const edge = EXTRAS_BTN_EDGE + 'px';
-      if (btn.style.display !== 'block') btn.style.display = 'block';
-      if (btn.style.left !== edge) btn.style.left = edge;
-      if (btn.style.bottom !== edge) btn.style.bottom = edge;
-      if (btn.style.right !== 'auto') btn.style.right = 'auto';
-      if (btn.style.top !== 'auto') btn.style.top = 'auto';
-    } else {
-      // In game, N replaces the translucent on-screen button.
-      if (btn.style.display !== 'none') btn.style.display = 'none';
-    }
-    if (extras.panel.style.display === 'block') positionExtrasPanel();
+  function updateCheck() {
+    if (QOLC_VIA !== 'extension' || !settings.updateCheck) return;
+    const last = Number(store.get('updateCheckedAt', 0)) || 0;
+    if (Date.now() - last < UPDATE_EVERY_MS) { updateAnnounce(); return; }
+    store.set('updateCheckedAt', Date.now());
+    fetch(UPDATE_URL, {cache: 'no-store', credentials: 'omit'})
+      .then((r) => (r.ok ? r.json() : null))
+      .then((m) => {
+        if (!m || typeof m.version !== 'string') return;
+        store.set('updateLatest', m.version);
+        updateAnnounce();
+        syncTroubleshootingUI();
+      })
+      .catch((e) => dbg('update check failed', e));
   }
 
+  // Once per version, a userscript install is told the extension exists.
+  function userscriptNotice() {
+    if (QOLC_VIA !== 'userscript') return;
+    if (store.get('extensionNoticeFor', '') === VERSION) return;
+    store.set('extensionNoticeFor', VERSION);
+    queueMenuNotice('Lumi’s Extras works best as a browser extension. ' +
+      'Install it from github.com/Luminosity67/lumis-extras.');
+  }
+
+  // Held until the menu is on screen, so it is never lost behind a game.
+  function queueMenuNotice(text, bad) {
+    menuNotice.text = text;
+    menuNotice.bad = !!bad;
+  }
+
+  function menuNoticeTick() {
+    if (!menuNotice.text || !onMenu() || !document.body) return;
+    qolcToast(menuNotice.text, menuNotice.bad ? 'is-bad' : '', 9000);
+    menuNotice.text = '';
+  }
+
+  /* ----- the game connection, in words ----- */
+
+  // One line for the Settings row.
+  function bridgeSummary() {
+    const s = bridge.status();
+    if (!s.game) return 'Not connected yet — ' + s.phase + '.';
+    const missing = [];
+    if (!s.entityRegistry) missing.push('the animal list');
+    if (!s.animalClass) missing.push('the animal class');
+    if (!s.animalConfigs) missing.push('the animal table');
+    const stores = s.stores.split(', ').filter((x) => /MISSING$/.test(x))
+      .map((x) => x.replace(/ MISSING$/, ''));
+    if (stores.length) missing.push('HUD data (' + stores.join(', ') + ')');
+    const after = s.foundAfterMs != null ? ' in ' + s.foundAfterMs + ' ms' : '';
+    return missing.length
+      ? 'Connected' + after + ', but could not find ' + missing.join(', ') + '.'
+      : 'Connected to mope' + after + '. Everything found.';
+  }
+
+  // The whole picture, for pasting to Lumi.
+  function lumiReport() {
+    const game = bridge.game;
+    let mope = '';
+    try { mope = game && game.config ? String(game.config.gameVersion) : ''; } catch (e) { mope = ''; }
+    return JSON.stringify({
+      extras: VERSION,
+      via: QOLC_VIA,
+      mopeVersion: mope || '(unknown)',
+      browser: navigator.userAgent,
+      bridge: bridge.status(),
+      screen: mopeScreen(),
+      frames: frame.frames,
+      frameHook: frame.renderer ? 'renderer wrapped' : 'no renderer yet',
+      zoom: zoomHub.status(),
+      errors: [...featureErrors].map(([name, row]) => ({name, count: row.count, last: row.last})),
+      instances: qolcInstances.map((i) => i.version + ' ' + i.via),
+    }, null, 2);
+  }
   // -------------------------------------- Lumi's Extras button + options menu
 
   // `extras` itself is declared up with the camera zoom, which calls back into
@@ -18170,22 +9855,22 @@
     abilityCooldown: 'Ability cooldown timers — seconds left on each ability box, dive air included.',
     hpNumbers: 'Damage indicator — how much health a hit took, coloured by what caused it: plain, fire, poison, bleed.',
     hpBar: 'HP bar — your health, live, healing included, above the ability cards.',
-    boostCounter: 'Boost counter — how many boosts your water will still pay for, over your health bar, once you are at 25% or less in a 1v1. Boosting stops working at 15%, so only the water above that is counted. The cost per boost is measured on the animal you are playing rather than assumed; until it has enough to go on it uses 1.5.',
+    boostCounter: "Boost counter — how many boosts your water will still pay for, over your health bar, once you are at 25% or less in a 1v1. Boosting stops working at 15%, so only the water above that is counted, at mope's cost of 1.5% per boost.",
     quickChat: 'Quick chat — keys 1 to 5 send a message you have written into mope\'s public chat. While the upgrade menu is open those keys go back to picking an animal, so upgrading is never affected.',
     quickChatSlot: 'The message this key sends. Up to 35 characters, mope\'s own limit. An empty slot leaves the key alone entirely.',
-    hpUnits: 'Show as — the unit for both rows above. Percentage is exactly what the game sends and works on every animal. Hit points multiplies it by a maximum this script works out itself: the figures are approximate, and rares, skins and King Dragon get no number at all.',
+    hpUnits: 'Show as — the unit for both rows above. Percentage is exactly what the game sends and works on every animal. Hit points multiplies it by a maximum this script works out itself: the figures are approximate, and most rares and King Dragon get no number at all.',
     arenaSky: 'Arena theme — a backdrop behind your own 1v1 duels. Z toggles it in game.',
     arenaTheme: 'Which backdrop. Starfield is deep space and the original; Antimatter is the same sky as a negative, pale with dark stars; Deep Water is pale motes on blue-green with no star band.',
     panelTheme: 'Panel theme — recolours the Extras panel itself. It changes nothing about the game.',
     debugLogging: 'Debug logging — writes what the script is doing to the browser console (F12). Only useful when reporting a problem; leave it off otherwise.',
-    hookRecord: 'Hook record — for each game, whether the script caught mope\'s game object, renderer and camera directly, and whether it ever had to guess which animal is yours. Stays in your browser; Copy report puts it on the clipboard to send to Lumi.',
+    gameLink: "Game connection — whether the script has reached mope's game, its animals and its HUD. It reads them straight from mope's own code, so this should say Connected within a second of the page loading. Copy report puts the details on the clipboard to send to Lumi.",
     updateCheck: 'Check for updates — once an hour, reads the version number from this mod\'s GitHub page and tells you on the menu when a newer one is out. Nothing about you is sent.',
     zorderAbove: 'Draw above other players — forces your animal to be painted over every other one. mope decides this inconsistently on its own. Toggled in game with the ] key.',
     zorderBelow: 'Draw below other players — the opposite: everyone else is painted over you. Toggled in game with the [ key.',
     biteIndicator: 'Bite indicator — a bitten fighter cannot be bitten again for three seconds. A purple mark on their health bar counts that down, so you can see when they are worth biting again.',
     arenaFocus: "Focus mode — hides party dots, tags, the list and chat while you are in a 1v1 of your own. You keep sending, so the party still sees you; P and Enter go back to the game until the duel ends.",
     cameraZoom: "Camera zoom — scroll, or the − and = keys, in place of mope's own wheel zoom.",
-    hook: 'Camera hook — only needed if the zoom stops responding. Re-hook re-arms it without reloading the tab.',
+    hook: "Camera hook — whether the zoom is attached to mope's camera. It attaches on its own as soon as the game has loaded; the button is only a backstop.",
     turnSpeed: 'Turn speed — how quickly animals rotate toward the angle the server sent.',
     rate: "Rate — a multiple of mope's own turning rate, so 100% is off. It dims while Curve is Instant, which skips the turn entirely.",
     curve: 'Curve — where in the turn the extra speed is spent. Instant skips the turn entirely.',
@@ -18374,7 +10059,7 @@
   function positionExtrasPanel() {
     if (!extras) return;
     const panel = extras.panel;
-    if (prevMenuVisible === false) {
+    if (inGame()) {
       panel.style.top = '50%';
       panel.style.left = '50%';
       panel.style.right = 'auto';
@@ -18512,10 +10197,6 @@
       const who = n
         ? n + ' member' + (n === 1 ? '' : 's') + ' on the map'
         : 'waiting for members';
-      if (prevMenuVisible === false && !partyLastStage) {
-        return 'Connected via ' + party.statusInfo +
-          ' — waiting for the game renderer; party list and chat remain available';
-      }
       if (!party.minimapSeen) return "Connected via " + party.statusInfo + " — join a game to see the map" + lead;
       return "Connected via " + party.statusInfo + " — " + who + lead;
     }
@@ -18921,23 +10602,15 @@
         settings.cameraZoom = on;
         store.set('cameraZoom', on);
         syncZoomUI();
-        if (on) showToast();
+        if (on) showZoomToast();
         dbg('camera zoom', on ? 'enabled' : 'disabled');
       }
     );
 
-    // The camera hook, and a way to put it back without losing the session.
-    //
-    // The hub keeps itself hooked on its own — it re-arms every two seconds and
-    // the live probe picks the camera up on the next frame the game draws — so
-    // this row is mostly a window onto that. The button is here because "it
-    // stopped working just now" deserves an answer better than "reload and lose
-    // your run", and because being able to SEE the state is what turns a silent
-    // failure into a reportable one.
-    //
-    // It is never greyed out. Not while the camera is unhooked, which is when
-    // it matters most, and not when Lumi's Moderator Extras is on the page —
-    // the two scripts share one hook now, so there is nothing to defer to.
+    // The camera hook. The hub attaches to $.camera itself as soon as the game
+    // bridge is up and re-checks every two seconds, so this row is a window onto
+    // that rather than a control anyone should need. The button stays for the
+    // case nobody has thought of. Never greyed out.
     const hookRow = document.createElement('div');
     hookRow.className = 'qolc-subrow';
     hinted(hookRow, 'hook');
@@ -18950,24 +10623,20 @@
     hookBtn.className = 'qolc-hook-btn';
     hookBtn.type = 'button';
     hookBtn.textContent = 'Re-hook';
-    hookBtn.title = 'Re-arm the camera hook now, without reloading';
+    hookBtn.title = "Attach to the game camera again now, without reloading";
     hookBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       hookBtn.disabled = true;
-      hookNote.textContent = 'Re-arming…';
+      hookNote.textContent = "Re-attaching…";
       zoomHub.rehook();
-      // The probe cannot report until the game draws a frame, so the answer is
-      // MEASURED rather than assumed: wait a beat, then say what actually
-      // happened. Claiming success the instant the button is pressed is how the
-      // old build managed to look fine while doing nothing.
       setTimeout(() => {
         hookBtn.disabled = false;
         syncZoomUI();
         if (!zoomHub.hooked()) {
-          hookNote.textContent = 'Still waiting — the game may not be drawing. ' +
-            'If this stays, reload the tab.';
+          hookNote.textContent = "Still waiting — " + bridge.status().phase +
+            ". If this stays, reload the tab.";
         }
-      }, 700);
+      }, 400);
     });
     hookRow.appendChild(hookName);
     hookRow.appendChild(hookNote);
@@ -19049,7 +10718,6 @@
       (on) => {
         settings.turnSpeed = on;
         store.set('turnSpeed', on);
-        if (on) turnInstallEntityTrap();
         syncTurnUI();
         dbg('turn speed', on ? 'enabled' : 'disabled');
       }
@@ -20293,27 +11961,28 @@
     });
     settingsPane.appendChild(debugRow.row);
 
-    // 1.0.25. How the hooks have been caught, game by game. See hookRecordTick.
+    // 1.1.0. What the game bridge found — the one line to read when something
+    // in game is not appearing, and a report to paste to Lumi.
     const hookRecRow = document.createElement('div');
     hookRecRow.className = 'qolc-subrow';
-    hinted(hookRecRow, 'hookRecord');
+    hinted(hookRecRow, 'gameLink');
     const hookRecName = document.createElement('div');
     hookRecName.className = 'qolc-row-name';
-    hookRecName.textContent = 'Hook record';
+    hookRecName.textContent = 'Game connection';
     const hookRecNote = document.createElement('div');
     hookRecNote.className = 'qolc-row-note';
     const hookRecBtn = document.createElement('button');
     hookRecBtn.className = 'qolc-hook-btn';
     hookRecBtn.type = 'button';
     hookRecBtn.textContent = 'Copy report';
-    hookRecBtn.title = 'Copy the record to the clipboard, to paste to Lumi';
+    hookRecBtn.title = 'Copy a report to the clipboard, to paste to Lumi';
     hookRecBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       const done = (ok) => {
         hookRecBtn.textContent = ok ? 'Copied' : 'Copy failed';
         setTimeout(() => { hookRecBtn.textContent = 'Copy report'; }, 1500);
       };
-      try { navigator.clipboard.writeText(hookReport()).then(() => done(true), () => done(false)); }
+      try { navigator.clipboard.writeText(lumiReport()).then(() => done(true), () => done(false)); }
       catch (err) { done(false); }
     });
     hookRecRow.appendChild(hookRecName);
@@ -20354,7 +12023,7 @@
       settingsPane.appendChild(updateNote);
     }
     syncTroubleshootingUI = () => {
-      hookRecNote.textContent = hookSummary(hookRecord.log, QOLC_VIA);
+      hookRecNote.textContent = bridgeSummary();
       if (updateNote) {
         const latest = updateAvailable();
         updateNote.textEl.textContent = latest
@@ -20382,7 +12051,7 @@
     // kbHit calls kbTyping(), which is the same test plus the #chatInput check
     // this copy was missing.
     PAGE.addEventListener('keydown', (e) => {
-      if (!kbHit('panel', e) || prevMenuVisible !== false) return;
+      if (!kbHit('panel', e) || !inGame()) return;
       e.preventDefault();
       e.stopImmediatePropagation();
       togglePanel(e);
@@ -20391,7 +12060,6 @@
     panelThemeApply();
     return extras;
   }
-
   // ------------------------------------------- canvas negative-radius guard
   //
   // Some devices end up passing a negative radius into the 2D context, and
@@ -20519,92 +12187,155 @@
     }
   }
 
-  // --------------------------------------------------- canvas XP bar reading
 
-  // All that is left of the canvas text hook the auto-upgrade timer used: the
-  // XP bar can be canvas-drawn rather than DOM text, and the HP feature needs
-  // its denominator to name your own animal when nothing else can. The keyword
-  // matching, and the per-draw regex it ran on the client's hottest call, went
-  // with the timer — this is one indexOf on strings only.
-  function hookCanvasXp() {
-    try {
-      const proto = PAGE.CanvasRenderingContext2D && PAGE.CanvasRenderingContext2D.prototype;
-      if (!proto) return;
-      for (const method of ['fillText', 'strokeText']) {
-        const original = proto[method];
-        if (typeof original !== 'function') continue;
-        // 1.0.10: marked, the way radiusPatch above has always been marked.
-        // Without it a second installed copy of this script wraps the wrapper,
-        // and every text draw — the client's hottest call — pays two hook
-        // frames and calls noteXpText twice, for ever. The script explicitly
-        // tolerates duplicate installs as a degraded state, so the guard has to
-        // exist rather than be assumed away.
-        if (original.__lumiXpHooked) continue;
-        const wrapped = function (text) {
-          try {
-            if (typeof text === 'string' && text.indexOf('XP') !== -1) noteXpText(text);
-          } catch (e) { /* never break the game's rendering */ }
-          // hot path: `arguments` avoids allocating an array per draw call
-          return original.apply(this, arguments);
-        };
-        wrapped.__lumiXpHooked = true;
-        // Keep it looking native-ish, for the same reason radiusPatch does.
-        try {
-          Object.defineProperty(wrapped, 'name', {value: method});
-          Object.defineProperty(wrapped, 'length', {value: original.length});
-        } catch (e) { /* non-fatal */ }
-        proto[method] = wrapped;
-      }
-      dbg('canvas XP hook installed');
-    } catch (e) {
-      dbg('canvas XP hook failed', e);
+  /* ================================ go ================================ */
+
+  /* ----- menu <-> game ----- */
+
+  let lastScreen = '';
+  let firstGameHintShown = false;
+  let gameHintTimer = 0;
+
+  function showFirstGameHint() {
+    const current = ensureExtrasUI();
+    if (!current || !current.hint) return;
+    const hint = current.hint;
+    hint.classList.remove('qolc-show');
+    void hint.offsetWidth;   // restart the entrance animation
+    hint.classList.add('qolc-show');
+    clearTimeout(gameHintTimer);
+    gameHintTimer = setTimeout(() => hint.classList.remove('qolc-show'), 6500);
+  }
+
+  // mope's own screen state, watched for the two edges that matter: the
+  // first game of the session (show the N hint) and the return to the menu
+  // (close the in-game panel and any half-done rebind).
+  function screenTick() {
+    const screen = mopeScreen();
+    if (screen === lastScreen) return;
+    const was = lastScreen;
+    lastScreen = screen;
+    if (screen === 'HUD' && was === 'menu' && !firstGameHintShown) {
+      firstGameHintShown = true;
+      showFirstGameHint();
+    } else if (screen === 'menu' && was && was !== 'menu') {
+      kbCancelCapture();
+      if (extras) extras.panel.style.display = 'none';
     }
   }
 
-  // ------------------------------------------------- DOM clutter scanning
+  // Bottom-left corner of the menu. Lumi's Moderator Extras puts its own
+  // launcher immediately to the right of this one by measuring it, so the
+  // inset is shared and must not move on its own.
+  const EXTRAS_BTN_EDGE = 24;
+
+  function positionExtrasBtn() {
+    if (!extras) return;
+    const btn = extras.btn;
+    if (!inGame()) {
+      const edge = EXTRAS_BTN_EDGE + 'px';
+      if (btn.style.display !== 'block') btn.style.display = 'block';
+      if (btn.style.left !== edge) btn.style.left = edge;
+      if (btn.style.bottom !== edge) btn.style.bottom = edge;
+      if (btn.style.right !== 'auto') btn.style.right = 'auto';
+      if (btn.style.top !== 'auto') btn.style.top = 'auto';
+    } else if (btn.style.display !== 'none') {
+      // In game, N replaces the on-screen button.
+      btn.style.display = 'none';
+    }
+    if (extras.panel.style.display === 'block') positionExtrasPanel();
+  }
+
+  /* ----- DOM clutter scanning ----- */
 
   let domScanQueued = false;
 
   function scanDom() {
     domScanQueued = false;
-    applyCluttersIfEnabled(); // mutations = new UI; hide clutter promptly
+    applyCluttersIfEnabled();
   }
 
   function startDomObserver() {
     const target = document.body || document.documentElement;
     if (!target) return;
     const observer = new MutationObserver(() => {
-      if (!settings.masterEnabled ||
-          (!settings.menuClutter && !settings.gameClutter)) return;
+      if (!settings.masterEnabled || (!settings.menuClutter && !settings.gameClutter)) return;
       if (domScanQueued) return;
       domScanQueued = true;
       setTimeout(scanDom, 250);
     });
-    // Structural changes are the useful signal. Observing every style/class
-    // attribute made animated HUD elements wake this whole-page scanner
-    // continuously even when no menu was created or removed. The periodic
-    // backstop below still catches a game build that reuses one hidden node.
-    observer.observe(target, {
-      childList: true, subtree: true,
-    });
+    observer.observe(target, {childList: true, subtree: true});
     setInterval(() => {
       if (settings.menuClutter || settings.gameClutter) scanDom();
     }, 600);
-    dbg('DOM observer installed');
   }
 
-  // -------------------------------------------------------------------- go
+  /* ----- everything that draws, once per frame the game draws ----- */
 
-  // This must run at document-start, before the game script loads. The radius
-  // guard is deliberately NOT behind the master switch or a toggle: it only
-  // ever turns a frame that would have thrown into one that draws, and it has
-  // to be in place before the first frame — by the time a panel could be
-  // opened to enable it, the render loop is already dead.
+  onFrame('name colours', nameFrame);
+  onFrame('damage numbers and HP bar', hpFrame);
+  onFrame('arena', arenaFrame);
+  onFrame('party', partyTick);
+
+  /* ----- the console ----- */
+
+  // One object for every diagnostic. The 1.0.x names that people already
+  // know are kept as aliases.
+  const lumiConsole = {
+    version: VERSION,
+    status() {
+      const report = {
+        version: VERSION,
+        via: QOLC_VIA,
+        connection: bridgeSummary(),
+        screen: mopeScreen(),
+        yourAnimal: myAnimal() ? artKeyOf(myAnimal()) || '(unknown species)' : '(none)',
+        framesDrawn: frame.frames,
+        zoomHooked: zoomHub.hooked(),
+        featureErrors: featureErrors.size
+          ? [...featureErrors].map(([name, row]) => name + ' x' + row.count).join(', ') : 'none',
+      };
+      console.table ? console.table(report) : console.log(report);
+      return Object.assign(report, {bridge: bridge.status()});
+    },
+    report() { const text = lumiReport(); console.log(text); return text; },
+    health: hpDebug,
+    arena: arenaDebug,
+    party: partyDebug,
+    zoom: zoomDebug,
+    keybinds: kbDebug,
+    registry: nrDebug,
+    errors() { return [...featureErrors].map(([name, row]) => Object.assign({name}, row)); },
+    // mope's own game object, for anyone poking around in the console.
+    get game() { return bridge.game; },
+    // Everything the bridge found: the game, the Entity and Animal classes,
+    // the animal configs and the HUD stores.
+    get mope() {
+      const stores = {};
+      for (const name of ['hud', 'stats', 'arena', 'leaderboard', 'ui', 'death']) stores[name] = bridge.store(name);
+      return {game: bridge.game, Entity: bridge.Entity, Animal: bridge.Animal, configs: bridge.configs, stores};
+    },
+  };
+  expose('__lumi', lumiConsole);
+  expose('__lumiInstances', () => qolcInstances.map((i, n) => ({
+    copy: n + 1, version: i.version, via: i.via, startedAtMs: Math.round(i.at),
+  })));
+  expose('__lumiZoomDebug', zoomDebug);
+  expose('__lumiArenaDebug', arenaDebug);
+  expose('__lumiHpDebug', hpDebug);
+  expose('__lumiCaptureDebug', () => lumiConsole.status());
+  expose('__lumiPerfDebug', () => ({frames: frame.frames, featureErrors: lumiConsole.errors()}));
+
+  /* ----- start ----- */
+
   hookCanvasRadius();
-  hookCanvasXp();
   installGradientCodes();
-  installHpDebug();
-  installBarHunt();
+  bridge.start();
+  bridge.ready().then(() => {
+    startFrameHook();
+    turnInstall();
+    dbg('ready —', bridgeSummary());
+  });
 
   function onReady() {
     ensureExtrasUI();
@@ -20612,67 +12343,36 @@
     startClutterLoop();
     applyAbilityCooldown();
     applyHpNumbers();
-    applyArenaSky();
-    // This hooks something the page can see, so it is not installed unless it
-    // is actually switched on. Turning it on from the panel installs it there
-    // instead.
-    if (settings.turnSpeed) turnInstallEntityTrap();
-    // Menus may render slightly after DOMContentLoaded.
     setTimeout(applyCluttersIfEnabled, 500);
-    // Two copies on the page, said where the player will see it. Only the
-    // FIRST copy says it — both see the same shared list, and two toasts built
-    // by two copies would be the very duplication being complained about.
-    // Late enough for the menu to have drawn, and held long enough to read.
     if (qolcInstances.length > 1 && qolcInstances[0] === QOLC_INSTANCE) {
       setTimeout(() => qolcToast('Lumi’s Extras is installed twice. Keep the ' +
         'browser extension and uninstall the Tampermonkey copy.', 'is-bad', 12000), 2500);
     } else {
-      // Both of these only queue a message; the pacer shows it on the menu.
       userscriptNotice();
       setTimeout(updateCheck, 4000);
-      // And again while the tab stays open, which a mope tab often does for
-      // hours. Asked every five minutes; updateCheck() only goes to GitHub
-      // once an hour has passed, and says nothing new about a known release.
       setInterval(updateCheck, 5 * 60 * 1000);
     }
-    let lastTextTrack = 0;
+    // The DOM side, on a timer rather than the frame hook: it has to work on
+    // the menu (where the launcher lives) and keep the party list's peers
+    // expiring while the tab is in the background.
     setInterval(() => {
-      // This walk exists to keep the panel and the menus current, and there is
-      // no reason to do it for a tab nobody is looking at.
-      if (document.hidden) return;
       const now = performance.now();
-      // In game the DOM is stable and only the menu/death transition matters;
-      // the previous 4 Hz whole-document walk was needless steady work.
-      const delay = prevMenuVisible === false ? 750 : 250;
-      if (now - lastTextTrack >= delay) {
-        lastTextTrack = now;
-        trackTexts();
-      }
+      try { screenTick(); } catch (e) { frameFailed('screen', e); }
+      if (document.hidden) return;
       positionExtrasBtn();
-      try { hookRecordTick(now); } catch (e) { frameFailed('hook record', e); }
       menuNoticeTick();
-      // The roster is DOM, and incoming peer messages already arrive without
-      // a renderer. Keep it usable even while renderer recovery is pending.
-      // partyListTick has its own throttle, shared with the render path.
-      try { if (partyWorkNeeded()) partyListTick(now); }
-      catch (e) { frameFailed('party list', e); }
-      // The water instrument rides it too, and for a narrower reason than the
-      // one above: this call does not READ the meter, it only re-attaches the
-      // two MutationObservers when Svelte has replaced the nodes under them.
-      // Every actual measurement happens in an observer callback, at the
-      // instant mope writes the value, which is the whole reason the timings
-      // out of it are worth anything.
-      waterTick();
+      try { if (partyActive()) partyListTick(now); } catch (e) { frameFailed('party list', e); }
     }, 250);
-    dbg('ready — menuClutter:', settings.menuClutter,
-      'abilityCooldown:', settings.abilityCooldown, 'hpNumbers:', settings.hpNumbers,
-      'cameraZoom:', settings.cameraZoom,
-      'turnSpeed:', settings.turnSpeed ? settings.turnSpeedValue + '/' + settings.turnStyle : false,
-      'nameColor:', nameColorState.enabled, 'mode:', nameColorState.mode);
+    // The Settings pane's connection line, live while it is open.
+    setInterval(() => {
+      if (!extras || extras.panel.style.display !== 'block' || extras.current !== 'settings') return;
+      syncTroubleshootingUI();
+    }, 1000);
+    dbg('panel ready');
   }
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', onReady, { once: true });
+    document.addEventListener('DOMContentLoaded', onReady, {once: true});
   } else {
     onReady();
   }

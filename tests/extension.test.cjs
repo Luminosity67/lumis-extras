@@ -1,26 +1,22 @@
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
 const {test} = require('node:test');
+const {assert, fs, path, vm, root, source, fn} = require('./helpers.cjs');
 
-const root = path.join(__dirname, '..');
-const source = fs.readFileSync(process.env.LUMI_TEST_SOURCE || path.join(root, 'lumis-extras.user.js'), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
 
-// The extension exists to run BEFORE mope's code, so these are not style
-// preferences: each one, if it drifted, would bring the mis-hooks back.
+// Since 1.1.0 the script no longer has to beat mope's code to anything — the
+// game bridge reads mope's modules whenever it likes — but document_start is
+// still where the wheel and key listeners belong, and MAIN is the only world
+// whose `import()` shares the page's module map.
 test('manifest runs the userscript file itself, in the page, at document_start', () => {
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.content_scripts.length, 1);
   const cs = manifest.content_scripts[0];
   assert.deepEqual(cs.js, ['lumis-extras.user.js'], 'one file for both installs, no copy');
-  assert.equal(cs.world, 'MAIN', 'the hooks must be on the page\'s own objects');
-  assert.equal(cs.run_at, 'document_start', 'the hooks must be armed before mope builds its game');
+  assert.equal(cs.world, 'MAIN', 'import() only reaches mope\'s modules from the page\'s own world');
+  assert.equal(cs.run_at, 'document_start');
   assert.equal(cs.all_frames, false, 'matches the userscript\'s @noframes');
   assert.deepEqual(cs.matches, ['*://mope.io/*', '*://*.mope.io/*']);
-  // world: MAIN arrived in Chrome 111.
-  assert.ok(Number(manifest.minimum_chrome_version) >= 111);
+  assert.ok(Number(manifest.minimum_chrome_version) >= 111, 'world: MAIN arrived in Chrome 111');
 });
 
 test('manifest version, userscript metadata and fallback literal all agree', () => {
@@ -29,10 +25,14 @@ test('manifest version, userscript metadata and fallback literal all agree', () 
   assert.match(source, new RegExp("return '" + meta.replaceAll('.', '\\.') + "';"));
 });
 
+test('the userscript runs in the page, where import() can reach mope', () => {
+  // A sandboxed userscript has its own module map, so the bridge would
+  // import a SECOND copy of mope's game rather than the running one.
+  assert.match(source, /^\/\/ @grant\s+none$/m);
+  assert.doesNotMatch(source, /^\/\/ @grant[ \t]+(?!none\b)\S/m, 'no other grant may sandbox it');
+});
+
 test('the extension asks for no permissions at all', () => {
-  // Everything it stores is page localStorage, and it talks to nothing the
-  // page could not. Adding a permission is a store-review event and should be
-  // a deliberate change to this test, not a side effect.
   assert.equal(manifest.permissions, undefined);
   assert.equal(manifest.host_permissions, undefined);
   assert.equal(manifest.optional_permissions, undefined);
@@ -52,11 +52,21 @@ test('every declared icon exists and is the size it claims', () => {
   }
 });
 
-// The stand-down block, run on its own. Everything from the first line of the
-// IIFE to the line that announces the script on the page, wrapped so that
-// falling through returns 'continued' and standing down returns undefined.
+test('none of the 1.0.x traps survive the rebuild', () => {
+  // The whole point of 1.1.0. If any of these come back, the timing races
+  // come back with them.
+  assert.doesNotMatch(source, /defineProperty\(\s*(?:prototype|Object\.prototype|PAGE\.Object\.prototype)\s*,\s*(?:key|PROBE_KEY|'syncZoom'|'syncPosition'|'entity'|'closestObjects')/);
+  assert.doesNotMatch(source, /Map\.prototype\.set\s*=|prototype\.set\s*=\s*wrapper/);
+  assert.doesNotMatch(source, /PAGE\.Proxy\s*=/);
+  assert.doesNotMatch(source, /__PIXI_(?:RENDERER|APP)_INIT__/);
+  assert.doesNotMatch(source, /fillText.*noteXpText|function hookCanvasXp/);
+});
+
+// The stand-down block, run on its own: from the IIFE's first line to the
+// line that announces the script on the page. Falling through returns
+// 'continued'; standing down returns undefined.
 function runPreamble(globals) {
-  const start = source.indexOf("  const PAGE = (typeof unsafeWindow");
+  const start = source.indexOf('  const PAGE = window;');
   const end = source.indexOf('  try { PAGE.__LUMI_EXTRAS_V1_RUNNING__ = true; }');
   assert.ok(start > 0 && end > start, 'preamble found before the page announcement');
   const warnings = [];
@@ -75,17 +85,10 @@ test('a userscript copy stands down when the extension is already on the page', 
 test('positive controls: the userscript alone, and the extension, both carry on', () => {
   assert.equal(runPreamble({GM_info: {}}).result, 'continued');
   assert.equal(runPreamble({GM_info: {}, __lumiExtrasInstances: [{via: 'userscript'}]}).result, 'continued');
-  // No GM_info is how the extension recognises itself; it never stands down.
   const ext = runPreamble({__lumiExtrasInstances: [{via: 'userscript'}]});
   assert.equal(ext.result, 'continued');
   assert.equal(ext.warnings.length, 0);
 });
-
-function fn(name) {
-  const start = source.search(new RegExp('^  function ' + name + '\\(', 'm'));
-  assert.notEqual(start, -1, name + ' exists');
-  return source.slice(start, source.indexOf('\n  }', start) + 4);
-}
 
 test('update check compares 1.x.y versions numerically', () => {
   const newer = vm.runInNewContext(fn('qolcVersionNewer') + '; qolcVersionNewer');
@@ -97,13 +100,9 @@ test('update check compares 1.x.y versions numerically', () => {
   assert.equal(newer('1.0', '1.0.0'), false);
 });
 
-test('hook record summary counts only this install\'s games and flags any guess', () => {
-  const summary = vm.runInNewContext(fn('hookSummary') + '; hookSummary');
-  const good = {via: 'extension', game: true, renderer: 'game loop', camera: 'syncZoom', lock: 'game'};
-  assert.match(summary([], 'extension'), /Nothing recorded/);
-  assert.match(summary([good, good], 'extension'), /^All clean\. Last 2 games: game 2\/2, renderer 2\/2, camera 2\/2, player guessed in 0\./);
-  const missed = {...good, game: false, lock: 'guessed'};
-  const s = summary([good, missed, {...missed, via: 'userscript'}], 'extension');
-  assert.doesNotMatch(s, /All clean/);
-  assert.match(s, /Last 2 games: game 1\/2, .*player guessed in 1\./, 'the userscript line is not counted');
+test('the embedded stylesheet is one template literal', () => {
+  // A stray backtick inside the CSS would end the literal early and take the
+  // whole script down with a syntax error far from the cause.
+  const body = fn('injectExtrasStyles');
+  assert.equal((body.match(/`/g) || []).length, 2);
 });
