@@ -34,7 +34,7 @@ function makeHub(opts) {
 
 test('the hub keeps revision 3\'s public API, so Moderator Extras joins unchanged', () => {
   const {hub} = makeHub();
-  assert.equal(hub.rev, 4);
+  assert.equal(hub.rev, 5);
   for (const name of ['normalize', 'getLevel', 'setLevel', 'hooked', 'hookedVia', 'preemptedBy',
     'ownerId', 'rehook', 'status', 'note', 'retire', 'join']) {
     assert.equal(typeof hub[name], 'function', name);
@@ -63,8 +63,8 @@ test('the camera only moves while a member is active, and reads the shared level
   camera.target.zoom = 3;   // the server's camera packet
   assert.ok(Math.abs(camera.target.zoom - 2.1) < 1e-9, 'a new native value is scaled too');
   hub.setLevel(5, 'test');
-  assert.equal(hub.getLevel(), 1.5, 'clamped to the range');
-  assert.equal(stored.get('lumi:zoom:v1:level'), '1.5', 'and written back to the shared key');
+  assert.equal(hub.getLevel(), 4, 'clamped to the range');
+  assert.equal(stored.get('lumi:zoom:v1:level'), '4', 'and written back to the shared key');
   extras.setActive(false);
   assert.equal(camera.target.zoom, 3, 'off is native again, with nothing to undo');
 });
@@ -98,4 +98,21 @@ test('one wheel listener, at capture, on the window', () => {
   const {listeners} = makeHub();
   const wheels = listeners.filter((l) => l.type === 'wheel');
   assert.equal(wheels.length, 1);
+});
+
+test('zoom-in goes past vanilla: 10% steps to 200%, 25% past it, capped at 400%', () => {
+  const {hub} = makeHub();
+  assert.equal(hub.MAX, 4);
+  assert.equal(hub.MIN, 0.5, 'zoom-out keeps its floor');
+  let level = 1;
+  for (let i = 0; i < 10; i++) level = hub.normalize(hub.stepped(level, 1));
+  assert.equal(level, 2, 'ten notches in from 100%');
+  level = hub.normalize(hub.stepped(level, 1));
+  assert.equal(level, 2.25, 'coarse past 200%');
+  level = hub.normalize(hub.stepped(level, -1));
+  assert.equal(level, 2);
+  level = hub.normalize(hub.stepped(level, -1));
+  assert.equal(level, 1.9, 'fine again below 200%');
+  for (let i = 0; i < 40; i++) level = hub.normalize(hub.stepped(level, 1));
+  assert.equal(level, 4);
 });

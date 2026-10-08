@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Lumi's Extras",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Quality-of-life and cosmetic extras for mope.io: cooldown timers, HP numbers, camera zoom, party map and chat, name colours.",
   "homepage_url": "https://github.com/Luminosity67/lumis-extras",
   "minimum_chrome_version": "111",
