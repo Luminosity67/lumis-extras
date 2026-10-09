@@ -72,7 +72,8 @@
  * their role any more. In its place, Arena → Duel colors: pick the outline
  * colour for yourself and for your opponent in your own 1v1s (mope's are cyan
  * and yellow), with the names on the arena floor matching. Default puts
- * mope's back.
+ * mope's back. And Arena → Boost timer: a red ring round your cursor that
+ * closes in while your boost recharges and turns green when it is ready.
  */
 
 (function () {
@@ -261,6 +262,8 @@
     hpUnits: store.get('hpUnits', 'percent') === 'hp' ? 'hp' : 'percent',
     quickChat: !!store.get('quickChat', false),
     boostCounter: !!store.get('boostCounter', false),
+    boostTimer: !!store.get('boostTimer', false),
+    boostTimerScope: store.get('boostTimerScope', 'duel') === 'always' ? 'always' : 'duel',
     chatSlots: chatCleanSlots(store.get('chatSlots', null)),
     cameraZoom: !!store.get('cameraZoom', false),
     turnSpeed: !!store.get('turnSpeed', false),
@@ -321,6 +324,7 @@
   let syncArenaSkyRow = () => {};
   let syncArenaThemeRow = () => {};
   let syncDuelColorRows = () => {};
+  let syncBoostTimerRows = () => {};
   let syncZorderRows = () => {};
   let syncKeybinds = () => {};
   let syncChatRows = () => {};
@@ -8413,6 +8417,185 @@
     if (node.style.transform !== t) node.style.transform = t;
   }
 
+  /* The boost timer (1.1.2): a red ring round your cursor that closes in
+   * while your boost recharges and turns green when you can boost again.
+   *
+   * mope never tells the client when a boost happens — the cooldown packet
+   * covers abilities, diving and the arena, not boosting — so it is worked
+   * out from what was measured in game on 2026-10-09:
+   *
+   *   - a press while ready boosts at once, and the server takes 2 or 1
+   *     points of water for it within a tick (the costs alternate);
+   *   - a press during the cooldown is IGNORED, not queued;
+   *   - holding the key boosts again the instant the cooldown ends, so a
+   *     held boost repeats exactly every cooldown;
+   *   - the cooldown is the animal's own `boostCooldown` (1500ms unless the
+   *     animal or its rare says otherwise), on `$.player.animalConfig`,
+   *     which mope has already merged with the rare's overrides;
+   *   - water also drains by 1 point about once a second on its own, and
+   *     speed is no use as a signal: against a wall a boost moves you nowhere.
+   *
+   * So the timer predicts each boost from mope's own "boost is held" flag
+   * (`pressingDash` in the HUD store, set by every boost input) and keeps the
+   * prediction only if the water drops within BOOST_CONFIRM_MS. No drop means
+   * the server did not boost — frozen, stunned, out of water — and the ring
+   * goes back to how it was. Timing is all local, which is right: a press
+   * made the moment the ring turns green reaches the server as late after
+   * the last boost as the last boost's press did. */
+  const BOOST_CONFIRM_MS = 450;
+  const BOOST_COOLDOWN_DEFAULT = 1500;
+  const BOOST_RING_MAX = 27;    // px at a 900px-tall window: radius when a wait begins
+  const BOOST_RING_MIN = 10;    // and when it ends
+  const BOOST_RING_STROKE = 3;
+  const BOOST_RING_RED = '#ff3b30';
+  const BOOST_RING_GREEN = '#34e06a';
+  const BOOST_RING_GREY = '#9aa3ab';
+
+  const boostTimer = {
+    readyAt: 0,          // performance.now() when the next boost can fire
+    cooldown: 0,         // length of the wait now running, in ms
+    held: false,         // pressingDash on the last frame
+    pending: null,       // a predicted boost waiting for its water drop
+    stalled: false,      // a held boost the server refused; wait for a release
+    water: null,         // the resource meter's raw value on the last frame
+    boosts: 0,           // confirmed this session, for __lumi.arena()
+    refused: 0,
+    pointer: {x: NaN, y: NaN},
+    node: null, circle: null, shown: false, state: '',
+  };
+
+  PAGE.addEventListener('pointermove', (event) => {
+    boostTimer.pointer.x = event.clientX;
+    boostTimer.pointer.y = event.clientY;
+  }, {capture: true, passive: true});
+
+  function boostTimerOn() {
+    if (!settings.masterEnabled || !settings.boostTimer) return false;
+    return settings.boostTimerScope === 'always' ? inGame() : arenaDuel.active;
+  }
+
+  function boostCooldownOf(animal) {
+    const cd = Number(animal && animal.animalConfig && animal.animalConfig.boostCooldown);
+    return cd > 0 ? cd : BOOST_COOLDOWN_DEFAULT;
+  }
+
+  function boostTimerReset() {
+    Object.assign(boostTimer, {readyAt: 0, cooldown: 0, held: false, pending: null,
+      stalled: false, water: null});
+  }
+
+  // One frame of the model. `held` is mope's pressingDash, `water` the raw
+  // meter value, `canPay` whether there is water above the 15% floor.
+  function boostTimerStep(now, held, water, canPay, cooldown) {
+    const bt = boostTimer;
+    const dropped = bt.water != null && water != null && water < bt.water;
+    bt.water = water;
+    if (bt.pending) {
+      if (dropped) {
+        bt.pending = null;
+        bt.boosts++;
+      } else if (now - bt.pending.at > BOOST_CONFIRM_MS) {
+        bt.readyAt = bt.pending.readyAt;
+        bt.cooldown = bt.pending.cooldown;
+        bt.pending = null;
+        bt.refused++;
+        if (held) bt.stalled = true;
+      }
+    }
+    if (!held) bt.stalled = false;
+    const pressed = held && !bt.held;
+    bt.held = held;
+    if (!held || bt.stalled || bt.pending || now < bt.readyAt || !canPay) return;
+    // Held straight through the end of a wait: the server fired the moment it
+    // ended, not on whichever frame noticed.
+    const at = !pressed && bt.readyAt > 0 && now - bt.readyAt < 250 ? bt.readyAt : now;
+    bt.pending = {at: now, readyAt: bt.readyAt, cooldown: bt.cooldown};
+    bt.cooldown = cooldown;
+    bt.readyAt = at + cooldown;
+  }
+
+  function boostTimerHide() {
+    if (boostTimer.node && boostTimer.shown) {
+      boostTimer.node.style.display = 'none';
+      boostTimer.shown = false;
+    }
+  }
+
+  function boostTimerNode() {
+    const bt = boostTimer;
+    if (bt.node && bt.node.isConnected) return bt.node;
+    const node = qolcOwnLayer('qolc-boost-timer');
+    if (!node) return null;
+    if (!node.firstChild) {
+      const NS = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(NS, 'svg');
+      const circle = document.createElementNS(NS, 'circle');
+      svg.appendChild(circle);
+      node.appendChild(svg);
+    }
+    bt.node = node;
+    bt.circle = node.querySelector('circle');
+    bt.state = '';
+    return node;
+  }
+
+  function boostTimerTick(now) {
+    const me = myAnimal();
+    if (!boostTimerOn() || !me) {
+      if (!me) boostTimerReset();
+      boostTimerHide();
+      return;
+    }
+    const hud = bridge.store('hud');
+    const resource = bridge.game && bridge.game.animalStats && bridge.game.animalStats.resource;
+    const raw = resource ? Number(resource.value) : NaN;
+    const pct = resourcePercent();
+    boostTimerStep(now, !!(hud && hud.pressingDash), Number.isFinite(raw) ? raw : null,
+      pct != null && pct > BOOST_MIN_PCT, boostCooldownOf(me));
+
+    const bt = boostTimer;
+    let x = bt.pointer.x, y = bt.pointer.y;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      // No mouse yet (or a touch screen): round your animal instead.
+      const at = screenPosOf(me.container, now);
+      if (!at) { boostTimerHide(); return; }
+      x = at.x; y = at.y;
+    }
+    const node = boostTimerNode();
+    if (!node || !bt.circle) return;
+    const scale = Math.min(1.4, Math.max(0.8, Math.min(innerWidth, innerHeight) / 900));
+    const max = BOOST_RING_MAX * scale, min = BOOST_RING_MIN * scale;
+    const left = bt.readyAt - now;
+    let state, r;
+    if (left > 0 && bt.cooldown > 0) {
+      state = 'wait';
+      r = min + (max - min) * Math.min(1, left / bt.cooldown);
+    } else {
+      state = pct != null && pct <= BOOST_MIN_PCT ? 'dry' : 'ready';
+      r = min;
+    }
+    if (bt.state !== state) {
+      bt.state = state;
+      const color = state === 'wait' ? BOOST_RING_RED : state === 'ready' ? BOOST_RING_GREEN : BOOST_RING_GREY;
+      bt.circle.setAttribute('stroke', color);
+      bt.circle.setAttribute('stroke-dasharray', state === 'dry' ? '3 3' : 'none');
+      bt.circle.setAttribute('fill', state === 'ready' ? 'rgba(52,224,106,0.4)' : 'none');
+      node.className = 'qolc-bt-' + state;
+    }
+    const box = Math.ceil(max + BOOST_RING_STROKE * scale + 2) * 2;
+    const svg = bt.circle.ownerSVGElement;
+    if (svg.getAttribute('width') !== String(box)) {
+      svg.setAttribute('width', box);
+      svg.setAttribute('height', box);
+      svg.setAttribute('viewBox', (-box / 2) + ' ' + (-box / 2) + ' ' + box + ' ' + box);
+      bt.circle.setAttribute('stroke-width', (BOOST_RING_STROKE * scale).toFixed(2));
+    }
+    bt.circle.setAttribute('r', r.toFixed(2));
+    if (!bt.shown) { node.style.display = 'block'; bt.shown = true; }
+    const t = 'translate3d(' + x.toFixed(1) + 'px,' + y.toFixed(1) + 'px,0) translate(-50%,-50%)';
+    if (node.style.transform !== t) node.style.transform = t;
+  }
+
   /* ----- one tick for everything that happens in a duel ----- */
 
   let cullingCheckAt = -Infinity;
@@ -8442,6 +8625,7 @@
     else if (bite.marked.size) biteClearAll();
     waterTick();
     boostTick(now);
+    boostTimerTick(now);
     zorderApply();
   }
 
@@ -8487,6 +8671,10 @@
       boostsLeft: water.pct == null ? null : boostCountFrom(water.pct, water.phase),
       drawOrder: (zorder.mode > 0 ? 'above' : zorder.mode < 0 ? 'below' : 'off') +
         (zorder.api ? ' — ' + zorder.api : ''),
+      boostTimer: {on: boostTimerOn(), state: boostTimer.state || 'hidden',
+        readyInMs: Math.max(0, Math.round(boostTimer.readyAt - performance.now())),
+        cooldownMs: myAnimal() ? boostCooldownOf(myAnimal()) : null,
+        boostsSeen: boostTimer.boosts, predictionsRefused: boostTimer.refused},
       duelColors: {you: settings.duelColorSelf || 'default', opponent: settings.duelColorEnemy || 'default',
         hooked: !!duelColor.wrapped, outlinesPainted: duelColor.painted.size, labelsTinted: duelColor.labels.size},
     };
@@ -9006,6 +9194,19 @@
       /* Water's own colour is mope's #4E66E4, which is too dark to read over a
          night sky; these are the same hue opened up. The two warning bands are
          the point of the feature, so they are loud. */
+      /* 1.1.2's boost timer: an SVG ring centred on the cursor, moved by a
+         transform like the counter above. */
+      #qolc-boost-timer {
+        position: fixed; left: 0; top: 0; display: none; z-index: 2147483645;
+        pointer-events: none; will-change: transform; line-height: 0;
+        filter: drop-shadow(0 0 2px rgba(0,0,0,0.85));
+      }
+      #qolc-boost-timer svg { display: block; overflow: visible; }
+      #qolc-boost-timer.qolc-bt-ready svg { animation: qolc-bt-pop 0.22s ease-out; }
+      @keyframes qolc-bt-pop {
+        0% { transform: scale(1.6); opacity: 0.4; }
+        100% { transform: scale(1); opacity: 1; }
+      }
       #qolc-boost.qolc-boost-low  { color: #ffd60a; }
       #qolc-boost.qolc-boost-none { color: #ff4a3d; }
       .qolc-hp-num {
@@ -10108,6 +10309,8 @@
     arenaSky: 'Arena theme — a backdrop behind your own 1v1 duels. Z toggles it in game.',
     arenaTheme: 'Which backdrop. Starfield is deep space and the original; Antimatter is the same sky as a negative, pale with dark stars; Deep Water is pale motes on blue-green with no star band.',
     panelTheme: 'Panel theme — recolours the Extras panel itself. It changes nothing about the game.',
+    boostTimer: 'Boost timer — a red ring round your cursor that closes in while your boost recharges, and turns green when you can boost again. Grey means your water is too low to boost. mope does not say when a boost happens, so it is worked out from your boost key and the water each boost costs.',
+    boostTimerScope: 'Where the ring shows: only in your own 1v1s, or whenever you are playing.',
     duelColors: "Duel colors — your outline and your opponent's in your own 1v1s, in colours you pick instead of mope's cyan and yellow. The names on the arena floor change to match. Healing, poison, bleeding and frozen still show in mope's colours. Only your screen changes.",
     duelColorSelf: "You — your own outline and name in your 1v1s. Default is mope's: cyan or yellow, whichever side the server puts you on.",
     duelColorEnemy: "Opponent — the outline and name of whoever you are fighting. Default is mope's: cyan or yellow, whichever side the server puts them on.",
@@ -11263,6 +11466,54 @@
       }
     );
     arenaPane.insertBefore(boostRow.row, focusRow.row.nextSibling);
+
+    // 1.1.2. The boost timer, under the boost counter: the two boost features
+    // side by side. A switch, and where it shows.
+    const boostTimerRow = makeRow(
+      'Boost timer',
+      'boostTimer',
+      settings.boostTimer,
+      (on) => {
+        settings.boostTimer = on;
+        store.set('boostTimer', on);
+        if (!on) boostTimerHide();
+        syncBoostTimerRows();
+        dbg('boost timer', on ? 'enabled' : 'disabled');
+      }
+    );
+    const boostScopeRow = document.createElement('div');
+    boostScopeRow.className = 'qolc-subrow';
+    hinted(boostScopeRow, 'boostTimerScope');
+    const boostScopeName = document.createElement('div');
+    boostScopeName.className = 'qolc-row-name';
+    boostScopeName.textContent = 'Show';
+    const boostScopePicks = document.createElement('div');
+    boostScopePicks.className = 'qolc-theme-picks';
+    const boostScopeButtons = [['duel', 'In 1v1s'], ['always', 'Always']].map(([id, label]) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'qolc-theme-pick';
+      btn.textContent = label;
+      btn.dataset.scope = id;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        settings.boostTimerScope = id;
+        store.set('boostTimerScope', id);
+        syncBoostTimerRows();
+        dbg('boost timer shows', id);
+      });
+      boostScopePicks.appendChild(btn);
+      return btn;
+    });
+    boostScopeRow.appendChild(boostScopeName);
+    boostScopeRow.appendChild(boostScopePicks);
+    syncBoostTimerRows = () => {
+      boostScopeRow.classList.toggle('qolc-row-off', !settings.boostTimer);
+      for (const b of boostScopeButtons) b.classList.toggle('is-on', b.dataset.scope === settings.boostTimerScope);
+    };
+    syncBoostTimerRows();
+    const boostTimerCard = makeCard(boostTimerRow.row, [boostScopeRow]);
+    arenaPane.insertBefore(boostTimerCard, boostRow.row.nextSibling);
 
     // 1.1.2. Duel colors. No switch: each colour is either a pick or Default,
     // and Default on both is off. It stands alone — nothing else in the pane

@@ -256,3 +256,52 @@ test('duel colours step aside for afflictions, a biteable tail, and the master s
   assert.deepEqual(out[1], ['mope', false], 'poisoned: mope\'s colour wins');
   assert.deepEqual(out[2], ['mope'], 'Extras switched off: nothing painted');
 });
+
+/* ----- boost timer ----- */
+
+// Drives boostTimerStep() frame by frame. Each frame is [ms, held, water].
+function boostRun(frames, canPay) {
+  return run([constant('BOOST_CONFIRM_MS'), fn('boostTimerStep')], {}, `(() => {
+    globalThis.boostTimer = {readyAt: 0, cooldown: 0, held: false, pending: null, stalled: false,
+      water: null, boosts: 0, refused: 0};
+    const log = [];
+    for (const [t, held, water] of ${JSON.stringify(frames)}) {
+      boostTimerStep(t, held, water, ${canPay !== false}, 1500);
+      log.push(boostTimer.readyAt);
+    }
+    return {log, boosts: boostTimer.boosts, refused: boostTimer.refused};
+  })()`);
+}
+
+test('boost timer: a press while ready starts the wait, and the water drop confirms it', () => {
+  const out = boostRun([[0, false, 90], [100, true, 90], [160, false, 90], [220, false, 88], [1000, false, 87]]);
+  assert.equal(out.log[1], 1600, 'ready again one cooldown after the press');
+  assert.equal(out.boosts, 1);
+  assert.equal(out.log[4], 1600, 'a later drain does not move it');
+});
+
+test('boost timer: a press during the cooldown is ignored, as mope ignores it', () => {
+  const out = boostRun([[0, true, 90], [50, false, 88], [700, true, 88], [760, false, 87], [1000, false, 87]]);
+  assert.equal(out.log[4], 1500, 'still the first boost\'s wait');
+  assert.equal(out.boosts, 1);
+});
+
+test('boost timer: holding the key boosts again the moment each wait ends', () => {
+  const out = boostRun([[0, true, 90], [60, true, 88], [1510, true, 88], [1580, true, 87], [3020, true, 87], [3080, true, 85]]);
+  assert.equal(out.log[2], 3000, 'second boost dated from when the first wait ended, not the frame');
+  assert.equal(out.log[4], 4500);
+  assert.equal(out.boosts, 3);
+});
+
+test('boost timer: no water drop means no boost happened, and the ring is ready again', () => {
+  const out = boostRun([[0, true, 90], [100, true, 90], [500, true, 90], [600, true, 90], [700, false, 90], [800, true, 90]]);
+  assert.equal(out.refused, 1);
+  assert.equal(out.log[3], 0, 'undone, and a held key does not keep re-predicting');
+  assert.equal(out.log[5], 2300, 'a fresh press predicts again');
+});
+
+test('boost timer: nothing is predicted with no water to pay for a boost', () => {
+  const out = boostRun([[0, true, 15], [100, true, 14]], false);
+  assert.equal(out.log[1], 0);
+  assert.equal(out.boosts, 0);
+});
