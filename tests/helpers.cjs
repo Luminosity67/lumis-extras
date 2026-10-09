@@ -40,7 +40,8 @@ function constant(name) {
 // here; functions are wrapped so whatever they return is rebuilt too.
 function plain(value) {
   if (typeof value === 'function') return (...args) => plain(value(...args));
-  if (Array.isArray(value)) return value.map(plain);
+  // Array.from, not value.map: map builds its result in the array's own realm.
+  if (Array.isArray(value)) return Array.from(value, (item) => plain(item));
   if (value && typeof value === 'object') {
     const out = {};
     for (const key of Object.keys(value)) out[key] = plain(value[key]);
