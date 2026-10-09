@@ -4,8 +4,8 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.1.1
-// @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
+// @version      1.1.2
+// @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, your own duel outline colours, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
 // @match        *://*.mope.io/*
@@ -67,6 +67,12 @@
  * the zoom hub (rev 5) zooms in to 400% instead of 150%, and its readout no
  * longer says "zoom off" while Moderator Extras is the one zooming; and a
  * staff-outline test (Settings → Troubleshooting) that paints staff pink.
+ *
+ * 1.1.2 — the staff-outline test is gone: nobody's outline is recoloured for
+ * their role any more. In its place, Arena → Duel colors: pick the outline
+ * colour for yourself and for your opponent in your own 1v1s (mope's are cyan
+ * and yellow), with the names on the arena floor matching. Default puts
+ * mope's back.
  */
 
 (function () {
@@ -105,7 +111,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.1.1';
+    return '1.1.2';
   })();
 
   /* ---------------------------------------------- one instance, one layer */
@@ -186,9 +192,10 @@
 
   // Settings that no longer exist. Cleared on every load so a leftover can
   // never be mistaken for a live one. `hookLog` was 1.0.25's record of how
-  // the old traps fared; there are no traps left to record.
+  // the old traps fared; there are no traps left to record. `staffOutline`
+  // was 1.1.1's staff-pink test, removed in 1.1.2.
   for (const key of ['layoutPos', 'layoutSeen', 'layoutHidden', 'layoutMapFixed',
-    'gameStats', 'statsHidden', 'statsColor', 'hookLog']) {
+    'gameStats', 'statsHidden', 'statsColor', 'hookLog', 'staffOutline']) {
     store.remove(key);
   }
 
@@ -216,6 +223,14 @@
     const name = String(value);
     for (const [id] of TURN_STYLES) if (id === name) return id;
     return 'linear';
+  }
+
+  // A duel colour as stored: '#rrggbb' in lower case, or null for mope's own.
+  // Anything else — an old value, a hand-edited one — reads as the default.
+  function normalizeDuelColor(value) {
+    if (typeof value !== 'string') return null;
+    const hex = value.trim().toLowerCase();
+    return /^#[0-9a-f]{6}$/.test(hex) ? hex : null;
   }
 
   const HP_UNIT_MODES = [
@@ -255,7 +270,8 @@
     zorderMode: (() => { const v = Number(store.get('zorderMode', 0)); return v === 1 || v === -1 ? v : 0; })(),
     arenaFocus: !!store.get('arenaFocus', false),
     biteIndicator: !!store.get('biteIndicator', false),
-    staffOutline: store.get('staffOutline', true) !== false,
+    duelColorSelf: normalizeDuelColor(store.get('duelColorSelf', null)),
+    duelColorEnemy: normalizeDuelColor(store.get('duelColorEnemy', null)),
     turnSpeedValue: normalizeTurnSpeed(store.get('turnSpeedValue', TURN_NEUTRAL)),
     turnStyle: normalizeTurnStyle(store.get('turnStyle', 'linear')),
     debug: !!store.get('debug', false),
@@ -304,6 +320,7 @@
   let syncPartyListSubRows = () => {};
   let syncArenaSkyRow = () => {};
   let syncArenaThemeRow = () => {};
+  let syncDuelColorRows = () => {};
   let syncZorderRows = () => {};
   let syncKeybinds = () => {};
   let syncChatRows = () => {};
@@ -7219,144 +7236,179 @@
     }
   }
 
-  /* =========================== staff outline (test) ===========================
+  /* ============================== duel colours ==============================
    *
-   * 1.1.1. A test of what the client can see about staff. Every account has a
-   * role — 0 player, 1 moderator, 2 trusted moderator, 3 event team, 4 admin,
-   * 5 developer — but the role NUMBER is not in the spawn packet. What every
-   * client gets per animal is one flags byte (bit 1 staff badge, bit 2 name
-   * tint, bit 4 has an account); mope keeps bit 1 as `animal.staffBadge` and
-   * draws the mope_staff badge beside the name from it. So:
+   * 1.1.2. Your outline and your opponent's in your own 1v1, in colours you
+   * pick, with the two names on the arena floor to match. It replaces 1.1.1's
+   * staff-outline test, which used the same mechanism to paint staff pink.
    *
-   *   - `staffBadge` is the only staff signal an ordinary client gets — for
-   *     everyone in view, with nothing sent to ask;
-   *   - the number itself only reaches a client through mope's moderator
-   *     tools: `targetInfo` while a moderator watches one player, and
-   *     `adminUserList` for admins. Both land in the moderation store.
+   * mope decides an animal's outline in one getter, `outlineColor`, and puts
+   * it on with `setOutlineColor()` — called again whenever anything it depends
+   * on changes: an affliction, a biome, what you can eat, joining or leaving
+   * an arena. The getter's ORDER is the thing to keep. Healing, poison,
+   * bleeding and frozen all outrank the arena's cyan and yellow, and those
+   * colours tell you what is happening to a fighter. So a pick goes on only
+   * where mope itself would have used an arena colour, at the end of every
+   * recolour, and an affliction still shows as mope draws it.
    *
-   * Either one turns that animal's outline pink. It only READS: no lookup is
-   * ever fired at a player to learn their role.
+   * The floor labels (name, wins, bites) are tinted cyan and yellow when the
+   * arena is built and never touched again, so they are kept in step once a
+   * frame.
+   *
+   * "You" and "opponent" rather than player 1 and player 2: which side you
+   * get is the server's choice, so a per-side colour would swap from one duel
+   * to the next. Only your own duel is recoloured — someone else's keeps
+   * mope's, as do the outlines everyone else sees, since this is all drawn on
+   * your screen.
    */
-  const STAFF_PINK = 0xff4fc8;
-  const STAFF_ROLE_NAMES = ['player', 'moderator', 'trusted moderator', 'event team',
-    'admin', 'developer'];
+  const DUEL_DEFAULT_SELF = '#00ffff';    // what the pickers show while on Default
+  const DUEL_DEFAULT_ENEMY = '#ffff00';
 
-  const staff = {
+  const duelColor = {
     wrapped: null,
-    roles: new WeakMap(),     // animal -> role number from the moderator tools
-    painted: new WeakSet(),   // animals whose outline this has turned pink
-    seen: new Map(),          // entity id -> what was learned, for __lumi.staff()
+    painted: new Set(),   // animals whose outline carries a pick
+    labels: new Map(),    // arena label -> mope's own tint, to hand back
   };
 
-  function staffOn() {
-    return !!settings.masterEnabled && !!settings.staffOutline;
+  function duelColorNumber(hex) {
+    return hex ? parseInt(hex.slice(1), 16) : null;
   }
 
-  // The role if the moderator tools have told us, -1 for "staff badge, number
-  // unknown", 0 for nothing to go on.
-  function staffRoleOf(animal) {
-    const learned = staff.roles.get(animal);
-    if (learned > 0) return learned;
-    return animal && animal.staffBadge === true ? -1 : 0;
+  // The pick for this animal as a tint number, or null for "mope's own": not
+  // in your duel, nothing picked for it, or the script switched off.
+  function duelColorFor(animal) {
+    if (!settings.masterEnabled || !animal) return null;
+    const arena = animal.arena;
+    const me = bridge.game && bridge.game.player;
+    if (!arena || !me || me.arena !== arena) return null;
+    if (animal === me) return duelColorNumber(settings.duelColorSelf);
+    if (arena.player1 === animal || arena.player2 === animal) {
+      return duelColorNumber(settings.duelColorEnemy);
+    }
+    return null;
   }
 
-  function staffPaint(animal) {
-    if (!staffOn() || !animal || !animal.outline || staffRoleOf(animal) === 0) return;
-    animal.outline.tint = STAFF_PINK;
-    staff.painted.add(animal);
+  // Whether mope's own choice for this animal right now is an arena colour,
+  // rather than an affliction that outranks it.
+  function duelShowsArenaColor(animal) {
+    const colors = bridge.game && bridge.game.colors && bridge.game.colors.arena;
+    if (!colors || !animal) return false;
+    let chosen;
+    try { chosen = animal.outlineColor; } catch (e) { return false; }
+    return chosen === colors.player1 || chosen === colors.player2;
   }
 
-  // mope recolours the outline whenever an affliction, a biome or what you
-  // can eat changes, so the pink goes on at the end of every recolour rather
-  // than being set once and painted over.
-  function staffInstall() {
+  function duelPaint(animal) {
+    const want = duelColorFor(animal);
+    if (want == null || !animal.outline || !duelShowsArenaColor(animal)) {
+      duelColor.painted.delete(animal);
+      return;
+    }
+    animal.outline.tint = want;
+    // mope paints a tail you can bite green instead of the outline colour.
+    // That is worth knowing in a duel, so it stays — the same test mope uses.
+    const me = bridge.game && bridge.game.player;
+    let biteable = false;
+    try { biteable = !!(me && typeof me.canTailBite === 'function' && me.canTailBite(animal)); }
+    catch (e) { /* mope's method */ }
+    if (animal.tail && !biteable) animal.tail.tint = want;
+    duelColor.painted.add(animal);
+  }
+
+  function duelInstall() {
     const Animal = bridge.Animal;
     const prototype = Animal && Animal.prototype;
-    if (!prototype || staff.wrapped === prototype) return;
+    if (!prototype || duelColor.wrapped === prototype) return;
     const original = prototype.setOutlineColor;
     if (typeof original !== 'function') return;
-    if (original.__lumiStaffWrapper) { staff.wrapped = prototype; return; }
-    const wrapper = function () {
+    // Another copy of this script got here first; its wrapper does the work.
+    if (original.__lumiDuelWrapper) { duelColor.wrapped = prototype; return; }
+    const wrapper = function (color) {
       const result = original.apply(this, arguments);
-      try { staffPaint(this); } catch (e) { /* never break a recolour */ }
+      // Only mope's own recolour. A colour passed in is mope asking for that
+      // one specifically, and it gets it.
+      if (color === undefined) {
+        try { duelPaint(this); } catch (e) { /* never break a recolour */ }
+      }
       return result;
     };
-    try { Object.defineProperty(wrapper, '__lumiStaffWrapper', {value: true}); } catch (e) { /* cosmetic */ }
+    try { Object.defineProperty(wrapper, '__lumiDuelWrapper', {value: true}); } catch (e) { /* cosmetic */ }
     prototype.setOutlineColor = wrapper;
-    staff.wrapped = prototype;
-    dbg('staff outline: Animal.prototype.setOutlineColor wrapped');
+    duelColor.wrapped = prototype;
+    dbg('duel colours: Animal.prototype.setOutlineColor wrapped');
   }
 
-  function staffLearn(id, role, name, via) {
-    const Entity = bridge.Entity;
-    if (!Entity || !id || typeof role !== 'number') return;
-    let entity = null;
-    try { entity = Entity.list.get(id) || null; } catch (e) { return; }
-    if (!entity || entity.type !== 'animal') return;
-    staff.roles.set(entity, role);
-    if (role > 0) {
-      staff.seen.set(id, {name: name || entity.originalName || '', role,
-        roleName: STAFF_ROLE_NAMES[role] || 'role ' + role, via});
-    }
-  }
-
-  function staffTick() {
-    staffInstall();
-    const mod = bridge.store('moderation');
-    if (mod) {
-      try {
-        const target = mod.target;
-        // Before the reply arrives mope fills the target in with role 0.
-        if (target && target.online && target.accountId) {
-          staffLearn(target.entityId, target.role, target.name, 'moderator target');
-        }
-        const list = mod.adminUsers;
-        if (list && typeof list.length === 'number') {
-          for (let i = 0; i < list.length; i++) {
-            const user = list[i];
-            if (user) staffLearn(user.id, user.role, user.name, 'admin list');
+  // The two floor labels of your duel. Each belongs to a side; the side tells
+  // whose it is, and so which pick it wears.
+  function duelLabels(arena, me) {
+    const mine = new Set();
+    if (arena) {
+      for (const side of [1, 2]) {
+        const label = arena['textPlayer' + side];
+        if (!label || label.destroyed) continue;
+        mine.add(label);
+        const owner = arena['player' + side];
+        const want = !settings.masterEnabled || !owner ? null
+          : duelColorNumber(owner === me ? settings.duelColorSelf : settings.duelColorEnemy);
+        if (want != null) {
+          if (!duelColor.labels.has(label)) {
+            const colors = bridge.game && bridge.game.colors && bridge.game.colors.arena;
+            duelColor.labels.set(label, colors ? colors['player' + side] : label.tint);
           }
+          if (label.tint !== want) label.tint = want;
+        } else if (duelColor.labels.has(label)) {
+          label.tint = duelColor.labels.get(label);
+          duelColor.labels.delete(label);
         }
-      } catch (e) { /* the store is mope's; a bad read just waits for the next */ }
+      }
     }
-    const on = staffOn();
-    for (const animal of liveAnimals()) {
-      const role = staffRoleOf(animal);
-      const want = on && role !== 0;
-      if (want) {
-        if (role < 0 && !staff.seen.has(animal.id)) {
-          staff.seen.set(animal.id, {name: animal.originalName || '', role: null,
-            roleName: 'staff (badge; number not sent)', via: 'staff badge'});
-        }
-        if (!animal.outline || animal.outline.tint === STAFF_PINK) continue;
-      } else if (!staff.painted.has(animal)) continue;
-      // mope's own recolour puts its colour back, then the wrapper adds ours.
-      try { animal.setOutlineColor(); } catch (e) { /* mope's method */ }
-      if (want) staffPaint(animal);
-      else staff.painted.delete(animal);
+    // Labels from a duel that is over: mope destroys them with the arena, so
+    // this is only ever a forget — unless one outlived it, which gets its
+    // colour back.
+    for (const [label, own] of duelColor.labels) {
+      if (mine.has(label)) continue;
+      duelColor.labels.delete(label);
+      if (!label.destroyed) {
+        try { label.tint = own; } catch (e) { /* mope's node */ }
+      }
     }
   }
 
-  function staffDebug() {
-    const rows = [];
-    for (const animal of liveAnimals()) {
-      if (animal.staffBadge !== true && !(staff.roles.get(animal) > 0)) continue;
-      const role = staffRoleOf(animal);
-      rows.push({id: animal.id, name: animal.originalName || '', staffBadge: animal.staffBadge === true,
-        role: role > 0 ? role + ' (' + (STAFF_ROLE_NAMES[role] || '?') + ')' : 'not sent',
-        pink: !!animal.outline && animal.outline.tint === STAFF_PINK});
+  function duelFrame() {
+    duelInstall();
+    const me = myAnimal();
+    const arena = me && me.arena;
+    const fighters = arena ? [arena.player1, arena.player2] : [];
+    // Anything that should no longer wear a pick — Default chosen, the duel
+    // over, the script switched off — gets mope's own recolour, which the
+    // wrapper then leaves alone.
+    for (const animal of duelColor.painted) {
+      if (fighters.indexOf(animal) !== -1 && duelColorFor(animal) != null) continue;
+      duelColor.painted.delete(animal);
+      if (animal.destroyed || !animal.outline || animal.outline.destroyed) continue;
+      try { animal.setOutlineColor(); } catch (e) { /* mope's method */ }
     }
-    const report = {
-      version: VERSION,
-      enabled: staffOn(),
-      wrapped: !!staff.wrapped,
-      moderationStore: bridge.store('moderation') ? 'found' : 'missing',
-      inView: rows,
-      seenThisSession: [...staff.seen.entries()].map(([id, row]) => Object.assign({id}, row)),
-    };
-    console.log(TAG, 'staff', report);
-    if (console.table && rows.length) console.table(rows);
-    return report;
+    // A fighter can be put in the arena before you are (so its recolour ran
+    // while you had no duel), and a pick can change mid-duel. Either way the
+    // outline is out of date until mope's next recolour, so ask for one.
+    for (const animal of fighters) {
+      if (!animal || animal.destroyed || !animal.outline || animal.outline.destroyed) continue;
+      const want = duelColorFor(animal);
+      if (want == null || animal.outline.tint === want || !duelShowsArenaColor(animal)) continue;
+      try { animal.setOutlineColor(); } catch (e) { /* mope's method */ }
+    }
+    duelLabels(arena, me);
+  }
+
+  function setDuelColor(which, value) {
+    const key = which === 'self' ? 'duelColorSelf' : 'duelColorEnemy';
+    const next = normalizeDuelColor(value);
+    if (next === settings[key]) return;
+    settings[key] = next;
+    store.set(key, next);
+    try { if (bridge.game) duelFrame(); } catch (e) { frameFailed('duel colours', e); }
+    syncDuelColorRows();
+    dbg('duel colour', which, next || 'default');
   }
 
   const ARENA_SKY_FADE_MS = 260;
@@ -8435,6 +8487,8 @@
       boostsLeft: water.pct == null ? null : boostCountFrom(water.pct, water.phase),
       drawOrder: (zorder.mode > 0 ? 'above' : zorder.mode < 0 ? 'below' : 'off') +
         (zorder.api ? ' — ' + zorder.api : ''),
+      duelColors: {you: settings.duelColorSelf || 'default', opponent: settings.duelColorEnemy || 'default',
+        hooked: !!duelColor.wrapped, outlinesPainted: duelColor.painted.size, labelsTinted: duelColor.labels.size},
     };
     console.log(TAG, 'arena', report);
     return report;
@@ -9925,6 +9979,16 @@
         width: 40px; height: 28px; padding: 0; border: 0;
         border-radius: 7px; background: transparent; cursor: pointer;
       }
+      /* Duel colors: Default and a colour swatch, side by side. The swatch
+         shows mope's own colour faded while Default is chosen. */
+      .qolc-subrow > .qolc-duel-picks { align-items: center; flex-wrap: nowrap; }
+      .qolc-duel-input {
+        width: 40px; height: 26px; padding: 0; border: 0;
+        border-radius: 7px; background: transparent; cursor: pointer;
+        transition: opacity 0.15s ease;
+      }
+      .qolc-duel-input.is-default { opacity: 0.45; }
+      .qolc-duel-input.is-default:hover { opacity: 0.8; }
       #qolc-name-input {
         width: 100%; box-sizing: border-box; color: #fff;
         background: rgba(0,55,45,0.52); border: 1px solid rgba(255,255,255,0.3);
@@ -10044,7 +10108,9 @@
     arenaSky: 'Arena theme — a backdrop behind your own 1v1 duels. Z toggles it in game.',
     arenaTheme: 'Which backdrop. Starfield is deep space and the original; Antimatter is the same sky as a negative, pale with dark stars; Deep Water is pale motes on blue-green with no star band.',
     panelTheme: 'Panel theme — recolours the Extras panel itself. It changes nothing about the game.',
-    staffOutline: "Staff outline (test) — turns a player's outline pink when the game marks them as staff. mope never sends other players' role numbers; it sends one staff-badge flag, and moderator tools reveal the number only for a player being looked up. __lumi.staff() in the console lists what was seen.",
+    duelColors: "Duel colors — your outline and your opponent's in your own 1v1s, in colours you pick instead of mope's cyan and yellow. The names on the arena floor change to match. Healing, poison, bleeding and frozen still show in mope's colours. Only your screen changes.",
+    duelColorSelf: "You — your own outline and name in your 1v1s. Default is mope's: cyan or yellow, whichever side the server puts you on.",
+    duelColorEnemy: "Opponent — the outline and name of whoever you are fighting. Default is mope's: cyan or yellow, whichever side the server puts them on.",
     debugLogging: 'Debug logging — writes what the script is doing to the browser console (F12). Only useful when reporting a problem; leave it off otherwise.',
     gameLink: "Game connection — whether the script has reached mope's game, its animals and its HUD. It reads them straight from mope's own code, so this should say Connected within a second of the page loading. Copy report puts the details on the clipboard to send to Lumi.",
     updateCheck: 'Check for updates — once an hour, reads the version number from this mod\'s GitHub page and tells you on the menu when a newer one is out. Nothing about you is sent.',
@@ -11198,6 +11264,60 @@
     );
     arenaPane.insertBefore(boostRow.row, focusRow.row.nextSibling);
 
+    // 1.1.2. Duel colors. No switch: each colour is either a pick or Default,
+    // and Default on both is off. It stands alone — nothing else in the pane
+    // has to be on for it to work. Inserted straight under the arena theme.
+    const duelHead = document.createElement('div');
+    duelHead.className = 'qolc-row';
+    hinted(duelHead, 'duelColors');
+    const duelHeadName = document.createElement('div');
+    duelHeadName.className = 'qolc-row-name';
+    duelHeadName.textContent = 'Duel colors';
+    duelHead.appendChild(duelHeadName);
+    const duelRows = [
+      ['self', 'You', 'duelColorSelf', DUEL_DEFAULT_SELF],
+      ['enemy', 'Opponent', 'duelColorEnemy', DUEL_DEFAULT_ENEMY],
+    ].map(([which, label, key, shown]) => {
+      const row = document.createElement('div');
+      row.className = 'qolc-subrow';
+      hinted(row, key);
+      const name = document.createElement('div');
+      name.className = 'qolc-row-name';
+      name.textContent = label;
+      const picks = document.createElement('div');
+      picks.className = 'qolc-theme-picks qolc-duel-picks';
+      const reset = document.createElement('button');
+      reset.type = 'button';
+      reset.className = 'qolc-theme-pick';
+      reset.textContent = 'Default';
+      reset.title = 'mope\'s own cyan or yellow';
+      reset.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setDuelColor(which, null);
+      });
+      const input = document.createElement('input');
+      input.type = 'color';
+      input.className = 'qolc-duel-input';
+      input.addEventListener('input', (e) => { setDuelColor(which, e.target.value); });
+      picks.appendChild(reset);
+      picks.appendChild(input);
+      row.appendChild(name);
+      row.appendChild(picks);
+      return {key, shown, reset, input, row};
+    });
+    syncDuelColorRows = () => {
+      for (const r of duelRows) {
+        const value = settings[r.key];
+        r.reset.classList.toggle('is-on', !value);
+        r.input.classList.toggle('is-default', !value);
+        // Not while the picker is open on it: that would fight the drag.
+        if (document.activeElement !== r.input) r.input.value = value || r.shown;
+      }
+    };
+    syncDuelColorRows();
+    const duelCard = makeCard(duelHead, duelRows.map((r) => r.row));
+    arenaPane.insertBefore(duelCard, arenaSkyCard.nextSibling);
+
     const nameEnabledRow = makeRow(
       'Player name color',
       'nameColor',
@@ -12144,15 +12264,6 @@
     });
     settingsPane.appendChild(debugRow.row);
 
-    // 1.1.1. A test: can the client tell who is staff? See staffTick().
-    const staffRow = makeRow('Staff outline (test)', 'staffOutline', settings.staffOutline, (on) => {
-      settings.staffOutline = on;
-      store.set('staffOutline', on);
-      try { staffTick(); } catch (e) { frameFailed('staff outline', e); }
-      dbg('staff outline', on ? 'enabled' : 'disabled');
-    });
-    settingsPane.appendChild(staffRow.row);
-
     // 1.1.0. What the game bridge found — the one line to read when something
     // in game is not appearing, and a report to paste to Lumi.
     const hookRecRow = document.createElement('div');
@@ -12467,6 +12578,7 @@
   onFrame('name colours', nameFrame);
   onFrame('damage numbers and HP bar', hpFrame);
   onFrame('arena', arenaFrame);
+  onFrame('duel colours', duelFrame);
   onFrame('party', partyTick);
 
   /* ----- the console ----- */
@@ -12495,7 +12607,6 @@
     arena: arenaDebug,
     party: partyDebug,
     zoom: zoomDebug,
-    staff: staffDebug,
     keybinds: kbDebug,
     registry: nrDebug,
     errors() { return [...featureErrors].map(([name, row]) => Object.assign({name}, row)); },
@@ -12527,9 +12638,7 @@
   bridge.ready().then(() => {
     startFrameHook();
     turnInstall();
-    setInterval(() => {
-      try { staffTick(); } catch (e) { frameFailed('staff outline', e); }
-    }, 500);
+    duelInstall();
     dbg('ready —', bridgeSummary());
   });
 

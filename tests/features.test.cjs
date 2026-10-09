@@ -178,3 +178,81 @@ test('the arena theme gives mope\'s Arena Culling back as it found it', () => {
   env.set(false);
   assert.equal(arena.outsideWorld, 1, 'off: a player who culls keeps culling');
 });
+
+/* ----- duel colours ----- */
+
+test('a duel colour is stored as lower-case #rrggbb, anything else is Default', () => {
+  const norm = run([fn('normalizeDuelColor')], {}, 'normalizeDuelColor');
+  assert.equal(norm('#FF00aa'), '#ff00aa');
+  assert.equal(norm(' #00ff00 '), '#00ff00');
+  assert.equal(norm(null), null);
+  assert.equal(norm('red'), null);
+  assert.equal(norm('#fff'), null, 'the colour input always gives six digits');
+});
+
+test('duel colours: only your own duel, only where mope would draw cyan or yellow', () => {
+  const pieces = [constant('duelColor'), fn('duelColorNumber'), fn('duelColorFor'),
+    fn('duelShowsArenaColor'), fn('duelPaint')];
+  const out = run(pieces, {}, `(() => {
+    // mope's own getter order: afflictions first, then the arena's colours.
+    const proto = {
+      get outlineColor() {
+        if (this.effects.poisoned) return '#55CF37';
+        if (this.arena) return this.arena.player1 === this ? 'cyan' : this.arena.player2 === this ? 'yellow' : 'grey';
+        return 'grey';
+      },
+    };
+    const mk = (tier) => Object.assign(Object.create(proto),
+      {tier, effects: {}, outline: {tint: 'x'}, tail: {tint: 'x'}});
+    const me = mk(16), foe = mk(15), stranger = mk(15), strangerFoe = mk(15);
+    me.canTailBite = (a) => a !== me && a.tier === me.tier;
+    me.arena = foe.arena = {player1: foe, player2: me};
+    stranger.arena = strangerFoe.arena = {player1: stranger, player2: strangerFoe};
+    globalThis.settings = {masterEnabled: true, duelColorSelf: '#ff0000', duelColorEnemy: null};
+    globalThis.bridge = {game: {player: me, colors: {arena: {player1: 'cyan', player2: 'yellow'}}}};
+    duelPaint(me);
+    duelPaint(foe);
+    duelPaint(stranger);
+    return {me: [me.outline.tint, me.tail.tint], foe: [foe.outline.tint, foe.tail.tint],
+      stranger: duelColorFor(stranger), notInDuel: duelColorFor(mk(15))};
+  })()`);
+  assert.deepEqual(out.me, [0xff0000, 0xff0000], 'you, picked red');
+  assert.deepEqual(out.foe, ['x', 'x'], 'opponent on Default: left to mope');
+  assert.equal(out.stranger, null, 'somebody else\'s duel keeps mope\'s colours');
+  assert.equal(out.notInDuel, null);
+});
+
+test('duel colours step aside for afflictions, a biteable tail, and the master switch', () => {
+  const pieces = [constant('duelColor'), fn('duelColorNumber'), fn('duelColorFor'),
+    fn('duelShowsArenaColor'), fn('duelPaint')];
+  const out = run(pieces, {}, `(() => {
+    const proto = {
+      get outlineColor() {
+        if (this.effects.poisoned) return '#55CF37';
+        return this.arena.player1 === this ? 'cyan' : 'yellow';
+      },
+    };
+    const mk = (tier) => Object.assign(Object.create(proto),
+      {tier, effects: {}, outline: {tint: 'mope'}, tail: {tint: 'mope'}});
+    const me = mk(16), foe = mk(16);
+    me.canTailBite = (a) => a !== me && a.tier === me.tier;
+    me.arena = foe.arena = {player1: me, player2: foe};
+    globalThis.settings = {masterEnabled: true, duelColorSelf: null, duelColorEnemy: '#00ff00'};
+    globalThis.bridge = {game: {player: me, colors: {arena: {player1: 'cyan', player2: 'yellow'}}}};
+    const rows = [];
+    duelPaint(foe);
+    rows.push([foe.outline.tint, foe.tail.tint, duelColor.painted.has(foe)]);
+    foe.outline.tint = 'mope';
+    foe.effects.poisoned = true;
+    duelPaint(foe);
+    rows.push([foe.outline.tint, duelColor.painted.has(foe)]);
+    foe.effects.poisoned = false;
+    settings.masterEnabled = false;
+    duelPaint(foe);
+    rows.push([foe.outline.tint]);
+    return rows;
+  })()`);
+  assert.deepEqual(out[0], [0x00ff00, 'mope', true], 'outline picked; a tail you can bite stays mope\'s green');
+  assert.deepEqual(out[1], ['mope', false], 'poisoned: mope\'s colour wins');
+  assert.deepEqual(out[2], ['mope'], 'Extras switched off: nothing painted');
+});

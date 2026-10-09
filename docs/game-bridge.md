@@ -56,6 +56,10 @@ build that is actually running.
   draw run once per frame, right after mope draws. A watchdog re-wraps it if
   mope rebuilds the renderer.
 - `Animal.prototype.update` is wrapped for turn speed.
+- `Animal.prototype.setOutlineColor` is wrapped for duel colors (1.1.2): after
+  mope recolours an animal, a fighter in your own 1v1 whose outline mope just
+  set to the arena's cyan or yellow gets the colour picked in the panel instead.
+  Afflictions (healing, poison, bleeding, frozen) still win, as in mope.
 - `camera.target.zoom` gets an accessor for the shared zoom hub (revision 4;
   Moderator Extras joins it unchanged).
 - The 2D canvas negative-radius guard (`arc`, `roundRect`, …) is unchanged from
