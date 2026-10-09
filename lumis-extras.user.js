@@ -4,8 +4,8 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.1.1
-// @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
+// @version      1.1.2
+// @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, your own duel outline colours, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
 // @match        *://*.mope.io/*
@@ -67,6 +67,13 @@
  * the zoom hub (rev 5) zooms in to 400% instead of 150%, and its readout no
  * longer says "zoom off" while Moderator Extras is the one zooming; and a
  * staff-outline test (Settings → Troubleshooting) that paints staff pink.
+ *
+ * 1.1.2 — the staff-outline test is gone: nobody's outline is recoloured for
+ * their role any more. In its place, Arena → Duel colors: pick the outline
+ * colour for yourself and for your opponent in your own 1v1s (mope's are cyan
+ * and yellow), with the names on the arena floor matching. Default puts
+ * mope's back. And Arena → Boost timer: a red ring round your cursor that
+ * closes in while your boost recharges and turns green when it is ready.
  */
 
 (function () {
@@ -105,7 +112,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.1.1';
+    return '1.1.2';
   })();
 
   /* ---------------------------------------------- one instance, one layer */
@@ -186,9 +193,10 @@
 
   // Settings that no longer exist. Cleared on every load so a leftover can
   // never be mistaken for a live one. `hookLog` was 1.0.25's record of how
-  // the old traps fared; there are no traps left to record.
+  // the old traps fared; there are no traps left to record. `staffOutline`
+  // was 1.1.1's staff-pink test, removed in 1.1.2.
   for (const key of ['layoutPos', 'layoutSeen', 'layoutHidden', 'layoutMapFixed',
-    'gameStats', 'statsHidden', 'statsColor', 'hookLog']) {
+    'gameStats', 'statsHidden', 'statsColor', 'hookLog', 'staffOutline']) {
     store.remove(key);
   }
 
@@ -216,6 +224,14 @@
     const name = String(value);
     for (const [id] of TURN_STYLES) if (id === name) return id;
     return 'linear';
+  }
+
+  // A duel colour as stored: '#rrggbb' in lower case, or null for mope's own.
+  // Anything else — an old value, a hand-edited one — reads as the default.
+  function normalizeDuelColor(value) {
+    if (typeof value !== 'string') return null;
+    const hex = value.trim().toLowerCase();
+    return /^#[0-9a-f]{6}$/.test(hex) ? hex : null;
   }
 
   const HP_UNIT_MODES = [
@@ -246,6 +262,8 @@
     hpUnits: store.get('hpUnits', 'percent') === 'hp' ? 'hp' : 'percent',
     quickChat: !!store.get('quickChat', false),
     boostCounter: !!store.get('boostCounter', false),
+    boostTimer: !!store.get('boostTimer', false),
+    boostTimerScope: store.get('boostTimerScope', 'duel') === 'always' ? 'always' : 'duel',
     chatSlots: chatCleanSlots(store.get('chatSlots', null)),
     cameraZoom: !!store.get('cameraZoom', false),
     turnSpeed: !!store.get('turnSpeed', false),
@@ -255,7 +273,8 @@
     zorderMode: (() => { const v = Number(store.get('zorderMode', 0)); return v === 1 || v === -1 ? v : 0; })(),
     arenaFocus: !!store.get('arenaFocus', false),
     biteIndicator: !!store.get('biteIndicator', false),
-    staffOutline: store.get('staffOutline', true) !== false,
+    duelColorSelf: normalizeDuelColor(store.get('duelColorSelf', null)),
+    duelColorEnemy: normalizeDuelColor(store.get('duelColorEnemy', null)),
     turnSpeedValue: normalizeTurnSpeed(store.get('turnSpeedValue', TURN_NEUTRAL)),
     turnStyle: normalizeTurnStyle(store.get('turnStyle', 'linear')),
     debug: !!store.get('debug', false),
@@ -304,6 +323,8 @@
   let syncPartyListSubRows = () => {};
   let syncArenaSkyRow = () => {};
   let syncArenaThemeRow = () => {};
+  let syncDuelColorRows = () => {};
+  let syncBoostTimerRows = () => {};
   let syncZorderRows = () => {};
   let syncKeybinds = () => {};
   let syncChatRows = () => {};
@@ -7219,144 +7240,179 @@
     }
   }
 
-  /* =========================== staff outline (test) ===========================
+  /* ============================== duel colours ==============================
    *
-   * 1.1.1. A test of what the client can see about staff. Every account has a
-   * role — 0 player, 1 moderator, 2 trusted moderator, 3 event team, 4 admin,
-   * 5 developer — but the role NUMBER is not in the spawn packet. What every
-   * client gets per animal is one flags byte (bit 1 staff badge, bit 2 name
-   * tint, bit 4 has an account); mope keeps bit 1 as `animal.staffBadge` and
-   * draws the mope_staff badge beside the name from it. So:
+   * 1.1.2. Your outline and your opponent's in your own 1v1, in colours you
+   * pick, with the two names on the arena floor to match. It replaces 1.1.1's
+   * staff-outline test, which used the same mechanism to paint staff pink.
    *
-   *   - `staffBadge` is the only staff signal an ordinary client gets — for
-   *     everyone in view, with nothing sent to ask;
-   *   - the number itself only reaches a client through mope's moderator
-   *     tools: `targetInfo` while a moderator watches one player, and
-   *     `adminUserList` for admins. Both land in the moderation store.
+   * mope decides an animal's outline in one getter, `outlineColor`, and puts
+   * it on with `setOutlineColor()` — called again whenever anything it depends
+   * on changes: an affliction, a biome, what you can eat, joining or leaving
+   * an arena. The getter's ORDER is the thing to keep. Healing, poison,
+   * bleeding and frozen all outrank the arena's cyan and yellow, and those
+   * colours tell you what is happening to a fighter. So a pick goes on only
+   * where mope itself would have used an arena colour, at the end of every
+   * recolour, and an affliction still shows as mope draws it.
    *
-   * Either one turns that animal's outline pink. It only READS: no lookup is
-   * ever fired at a player to learn their role.
+   * The floor labels (name, wins, bites) are tinted cyan and yellow when the
+   * arena is built and never touched again, so they are kept in step once a
+   * frame.
+   *
+   * "You" and "opponent" rather than player 1 and player 2: which side you
+   * get is the server's choice, so a per-side colour would swap from one duel
+   * to the next. Only your own duel is recoloured — someone else's keeps
+   * mope's, as do the outlines everyone else sees, since this is all drawn on
+   * your screen.
    */
-  const STAFF_PINK = 0xff4fc8;
-  const STAFF_ROLE_NAMES = ['player', 'moderator', 'trusted moderator', 'event team',
-    'admin', 'developer'];
+  const DUEL_DEFAULT_SELF = '#00ffff';    // what the pickers show while on Default
+  const DUEL_DEFAULT_ENEMY = '#ffff00';
 
-  const staff = {
+  const duelColor = {
     wrapped: null,
-    roles: new WeakMap(),     // animal -> role number from the moderator tools
-    painted: new WeakSet(),   // animals whose outline this has turned pink
-    seen: new Map(),          // entity id -> what was learned, for __lumi.staff()
+    painted: new Set(),   // animals whose outline carries a pick
+    labels: new Map(),    // arena label -> mope's own tint, to hand back
   };
 
-  function staffOn() {
-    return !!settings.masterEnabled && !!settings.staffOutline;
+  function duelColorNumber(hex) {
+    return hex ? parseInt(hex.slice(1), 16) : null;
   }
 
-  // The role if the moderator tools have told us, -1 for "staff badge, number
-  // unknown", 0 for nothing to go on.
-  function staffRoleOf(animal) {
-    const learned = staff.roles.get(animal);
-    if (learned > 0) return learned;
-    return animal && animal.staffBadge === true ? -1 : 0;
+  // The pick for this animal as a tint number, or null for "mope's own": not
+  // in your duel, nothing picked for it, or the script switched off.
+  function duelColorFor(animal) {
+    if (!settings.masterEnabled || !animal) return null;
+    const arena = animal.arena;
+    const me = bridge.game && bridge.game.player;
+    if (!arena || !me || me.arena !== arena) return null;
+    if (animal === me) return duelColorNumber(settings.duelColorSelf);
+    if (arena.player1 === animal || arena.player2 === animal) {
+      return duelColorNumber(settings.duelColorEnemy);
+    }
+    return null;
   }
 
-  function staffPaint(animal) {
-    if (!staffOn() || !animal || !animal.outline || staffRoleOf(animal) === 0) return;
-    animal.outline.tint = STAFF_PINK;
-    staff.painted.add(animal);
+  // Whether mope's own choice for this animal right now is an arena colour,
+  // rather than an affliction that outranks it.
+  function duelShowsArenaColor(animal) {
+    const colors = bridge.game && bridge.game.colors && bridge.game.colors.arena;
+    if (!colors || !animal) return false;
+    let chosen;
+    try { chosen = animal.outlineColor; } catch (e) { return false; }
+    return chosen === colors.player1 || chosen === colors.player2;
   }
 
-  // mope recolours the outline whenever an affliction, a biome or what you
-  // can eat changes, so the pink goes on at the end of every recolour rather
-  // than being set once and painted over.
-  function staffInstall() {
+  function duelPaint(animal) {
+    const want = duelColorFor(animal);
+    if (want == null || !animal.outline || !duelShowsArenaColor(animal)) {
+      duelColor.painted.delete(animal);
+      return;
+    }
+    animal.outline.tint = want;
+    // mope paints a tail you can bite green instead of the outline colour.
+    // That is worth knowing in a duel, so it stays — the same test mope uses.
+    const me = bridge.game && bridge.game.player;
+    let biteable = false;
+    try { biteable = !!(me && typeof me.canTailBite === 'function' && me.canTailBite(animal)); }
+    catch (e) { /* mope's method */ }
+    if (animal.tail && !biteable) animal.tail.tint = want;
+    duelColor.painted.add(animal);
+  }
+
+  function duelInstall() {
     const Animal = bridge.Animal;
     const prototype = Animal && Animal.prototype;
-    if (!prototype || staff.wrapped === prototype) return;
+    if (!prototype || duelColor.wrapped === prototype) return;
     const original = prototype.setOutlineColor;
     if (typeof original !== 'function') return;
-    if (original.__lumiStaffWrapper) { staff.wrapped = prototype; return; }
-    const wrapper = function () {
+    // Another copy of this script got here first; its wrapper does the work.
+    if (original.__lumiDuelWrapper) { duelColor.wrapped = prototype; return; }
+    const wrapper = function (color) {
       const result = original.apply(this, arguments);
-      try { staffPaint(this); } catch (e) { /* never break a recolour */ }
+      // Only mope's own recolour. A colour passed in is mope asking for that
+      // one specifically, and it gets it.
+      if (color === undefined) {
+        try { duelPaint(this); } catch (e) { /* never break a recolour */ }
+      }
       return result;
     };
-    try { Object.defineProperty(wrapper, '__lumiStaffWrapper', {value: true}); } catch (e) { /* cosmetic */ }
+    try { Object.defineProperty(wrapper, '__lumiDuelWrapper', {value: true}); } catch (e) { /* cosmetic */ }
     prototype.setOutlineColor = wrapper;
-    staff.wrapped = prototype;
-    dbg('staff outline: Animal.prototype.setOutlineColor wrapped');
+    duelColor.wrapped = prototype;
+    dbg('duel colours: Animal.prototype.setOutlineColor wrapped');
   }
 
-  function staffLearn(id, role, name, via) {
-    const Entity = bridge.Entity;
-    if (!Entity || !id || typeof role !== 'number') return;
-    let entity = null;
-    try { entity = Entity.list.get(id) || null; } catch (e) { return; }
-    if (!entity || entity.type !== 'animal') return;
-    staff.roles.set(entity, role);
-    if (role > 0) {
-      staff.seen.set(id, {name: name || entity.originalName || '', role,
-        roleName: STAFF_ROLE_NAMES[role] || 'role ' + role, via});
-    }
-  }
-
-  function staffTick() {
-    staffInstall();
-    const mod = bridge.store('moderation');
-    if (mod) {
-      try {
-        const target = mod.target;
-        // Before the reply arrives mope fills the target in with role 0.
-        if (target && target.online && target.accountId) {
-          staffLearn(target.entityId, target.role, target.name, 'moderator target');
-        }
-        const list = mod.adminUsers;
-        if (list && typeof list.length === 'number') {
-          for (let i = 0; i < list.length; i++) {
-            const user = list[i];
-            if (user) staffLearn(user.id, user.role, user.name, 'admin list');
+  // The two floor labels of your duel. Each belongs to a side; the side tells
+  // whose it is, and so which pick it wears.
+  function duelLabels(arena, me) {
+    const mine = new Set();
+    if (arena) {
+      for (const side of [1, 2]) {
+        const label = arena['textPlayer' + side];
+        if (!label || label.destroyed) continue;
+        mine.add(label);
+        const owner = arena['player' + side];
+        const want = !settings.masterEnabled || !owner ? null
+          : duelColorNumber(owner === me ? settings.duelColorSelf : settings.duelColorEnemy);
+        if (want != null) {
+          if (!duelColor.labels.has(label)) {
+            const colors = bridge.game && bridge.game.colors && bridge.game.colors.arena;
+            duelColor.labels.set(label, colors ? colors['player' + side] : label.tint);
           }
+          if (label.tint !== want) label.tint = want;
+        } else if (duelColor.labels.has(label)) {
+          label.tint = duelColor.labels.get(label);
+          duelColor.labels.delete(label);
         }
-      } catch (e) { /* the store is mope's; a bad read just waits for the next */ }
+      }
     }
-    const on = staffOn();
-    for (const animal of liveAnimals()) {
-      const role = staffRoleOf(animal);
-      const want = on && role !== 0;
-      if (want) {
-        if (role < 0 && !staff.seen.has(animal.id)) {
-          staff.seen.set(animal.id, {name: animal.originalName || '', role: null,
-            roleName: 'staff (badge; number not sent)', via: 'staff badge'});
-        }
-        if (!animal.outline || animal.outline.tint === STAFF_PINK) continue;
-      } else if (!staff.painted.has(animal)) continue;
-      // mope's own recolour puts its colour back, then the wrapper adds ours.
-      try { animal.setOutlineColor(); } catch (e) { /* mope's method */ }
-      if (want) staffPaint(animal);
-      else staff.painted.delete(animal);
+    // Labels from a duel that is over: mope destroys them with the arena, so
+    // this is only ever a forget — unless one outlived it, which gets its
+    // colour back.
+    for (const [label, own] of duelColor.labels) {
+      if (mine.has(label)) continue;
+      duelColor.labels.delete(label);
+      if (!label.destroyed) {
+        try { label.tint = own; } catch (e) { /* mope's node */ }
+      }
     }
   }
 
-  function staffDebug() {
-    const rows = [];
-    for (const animal of liveAnimals()) {
-      if (animal.staffBadge !== true && !(staff.roles.get(animal) > 0)) continue;
-      const role = staffRoleOf(animal);
-      rows.push({id: animal.id, name: animal.originalName || '', staffBadge: animal.staffBadge === true,
-        role: role > 0 ? role + ' (' + (STAFF_ROLE_NAMES[role] || '?') + ')' : 'not sent',
-        pink: !!animal.outline && animal.outline.tint === STAFF_PINK});
+  function duelFrame() {
+    duelInstall();
+    const me = myAnimal();
+    const arena = me && me.arena;
+    const fighters = arena ? [arena.player1, arena.player2] : [];
+    // Anything that should no longer wear a pick — Default chosen, the duel
+    // over, the script switched off — gets mope's own recolour, which the
+    // wrapper then leaves alone.
+    for (const animal of duelColor.painted) {
+      if (fighters.indexOf(animal) !== -1 && duelColorFor(animal) != null) continue;
+      duelColor.painted.delete(animal);
+      if (animal.destroyed || !animal.outline || animal.outline.destroyed) continue;
+      try { animal.setOutlineColor(); } catch (e) { /* mope's method */ }
     }
-    const report = {
-      version: VERSION,
-      enabled: staffOn(),
-      wrapped: !!staff.wrapped,
-      moderationStore: bridge.store('moderation') ? 'found' : 'missing',
-      inView: rows,
-      seenThisSession: [...staff.seen.entries()].map(([id, row]) => Object.assign({id}, row)),
-    };
-    console.log(TAG, 'staff', report);
-    if (console.table && rows.length) console.table(rows);
-    return report;
+    // A fighter can be put in the arena before you are (so its recolour ran
+    // while you had no duel), and a pick can change mid-duel. Either way the
+    // outline is out of date until mope's next recolour, so ask for one.
+    for (const animal of fighters) {
+      if (!animal || animal.destroyed || !animal.outline || animal.outline.destroyed) continue;
+      const want = duelColorFor(animal);
+      if (want == null || animal.outline.tint === want || !duelShowsArenaColor(animal)) continue;
+      try { animal.setOutlineColor(); } catch (e) { /* mope's method */ }
+    }
+    duelLabels(arena, me);
+  }
+
+  function setDuelColor(which, value) {
+    const key = which === 'self' ? 'duelColorSelf' : 'duelColorEnemy';
+    const next = normalizeDuelColor(value);
+    if (next === settings[key]) return;
+    settings[key] = next;
+    store.set(key, next);
+    try { if (bridge.game) duelFrame(); } catch (e) { frameFailed('duel colours', e); }
+    syncDuelColorRows();
+    dbg('duel colour', which, next || 'default');
   }
 
   const ARENA_SKY_FADE_MS = 260;
@@ -8361,6 +8417,185 @@
     if (node.style.transform !== t) node.style.transform = t;
   }
 
+  /* The boost timer (1.1.2): a red ring round your cursor that closes in
+   * while your boost recharges and turns green when you can boost again.
+   *
+   * mope never tells the client when a boost happens — the cooldown packet
+   * covers abilities, diving and the arena, not boosting — so it is worked
+   * out from what was measured in game on 2026-10-09:
+   *
+   *   - a press while ready boosts at once, and the server takes 2 or 1
+   *     points of water for it within a tick (the costs alternate);
+   *   - a press during the cooldown is IGNORED, not queued;
+   *   - holding the key boosts again the instant the cooldown ends, so a
+   *     held boost repeats exactly every cooldown;
+   *   - the cooldown is the animal's own `boostCooldown` (1500ms unless the
+   *     animal or its rare says otherwise), on `$.player.animalConfig`,
+   *     which mope has already merged with the rare's overrides;
+   *   - water also drains by 1 point about once a second on its own, and
+   *     speed is no use as a signal: against a wall a boost moves you nowhere.
+   *
+   * So the timer predicts each boost from mope's own "boost is held" flag
+   * (`pressingDash` in the HUD store, set by every boost input) and keeps the
+   * prediction only if the water drops within BOOST_CONFIRM_MS. No drop means
+   * the server did not boost — frozen, stunned, out of water — and the ring
+   * goes back to how it was. Timing is all local, which is right: a press
+   * made the moment the ring turns green reaches the server as late after
+   * the last boost as the last boost's press did. */
+  const BOOST_CONFIRM_MS = 450;
+  const BOOST_COOLDOWN_DEFAULT = 1500;
+  const BOOST_RING_MAX = 27;    // px at a 900px-tall window: radius when a wait begins
+  const BOOST_RING_MIN = 10;    // and when it ends
+  const BOOST_RING_STROKE = 3;
+  const BOOST_RING_RED = '#ff3b30';
+  const BOOST_RING_GREEN = '#34e06a';
+  const BOOST_RING_GREY = '#9aa3ab';
+
+  const boostTimer = {
+    readyAt: 0,          // performance.now() when the next boost can fire
+    cooldown: 0,         // length of the wait now running, in ms
+    held: false,         // pressingDash on the last frame
+    pending: null,       // a predicted boost waiting for its water drop
+    stalled: false,      // a held boost the server refused; wait for a release
+    water: null,         // the resource meter's raw value on the last frame
+    boosts: 0,           // confirmed this session, for __lumi.arena()
+    refused: 0,
+    pointer: {x: NaN, y: NaN},
+    node: null, circle: null, shown: false, state: '',
+  };
+
+  PAGE.addEventListener('pointermove', (event) => {
+    boostTimer.pointer.x = event.clientX;
+    boostTimer.pointer.y = event.clientY;
+  }, {capture: true, passive: true});
+
+  function boostTimerOn() {
+    if (!settings.masterEnabled || !settings.boostTimer) return false;
+    return settings.boostTimerScope === 'always' ? inGame() : arenaDuel.active;
+  }
+
+  function boostCooldownOf(animal) {
+    const cd = Number(animal && animal.animalConfig && animal.animalConfig.boostCooldown);
+    return cd > 0 ? cd : BOOST_COOLDOWN_DEFAULT;
+  }
+
+  function boostTimerReset() {
+    Object.assign(boostTimer, {readyAt: 0, cooldown: 0, held: false, pending: null,
+      stalled: false, water: null});
+  }
+
+  // One frame of the model. `held` is mope's pressingDash, `water` the raw
+  // meter value, `canPay` whether there is water above the 15% floor.
+  function boostTimerStep(now, held, water, canPay, cooldown) {
+    const bt = boostTimer;
+    const dropped = bt.water != null && water != null && water < bt.water;
+    bt.water = water;
+    if (bt.pending) {
+      if (dropped) {
+        bt.pending = null;
+        bt.boosts++;
+      } else if (now - bt.pending.at > BOOST_CONFIRM_MS) {
+        bt.readyAt = bt.pending.readyAt;
+        bt.cooldown = bt.pending.cooldown;
+        bt.pending = null;
+        bt.refused++;
+        if (held) bt.stalled = true;
+      }
+    }
+    if (!held) bt.stalled = false;
+    const pressed = held && !bt.held;
+    bt.held = held;
+    if (!held || bt.stalled || bt.pending || now < bt.readyAt || !canPay) return;
+    // Held straight through the end of a wait: the server fired the moment it
+    // ended, not on whichever frame noticed.
+    const at = !pressed && bt.readyAt > 0 && now - bt.readyAt < 250 ? bt.readyAt : now;
+    bt.pending = {at: now, readyAt: bt.readyAt, cooldown: bt.cooldown};
+    bt.cooldown = cooldown;
+    bt.readyAt = at + cooldown;
+  }
+
+  function boostTimerHide() {
+    if (boostTimer.node && boostTimer.shown) {
+      boostTimer.node.style.display = 'none';
+      boostTimer.shown = false;
+    }
+  }
+
+  function boostTimerNode() {
+    const bt = boostTimer;
+    if (bt.node && bt.node.isConnected) return bt.node;
+    const node = qolcOwnLayer('qolc-boost-timer');
+    if (!node) return null;
+    if (!node.firstChild) {
+      const NS = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(NS, 'svg');
+      const circle = document.createElementNS(NS, 'circle');
+      svg.appendChild(circle);
+      node.appendChild(svg);
+    }
+    bt.node = node;
+    bt.circle = node.querySelector('circle');
+    bt.state = '';
+    return node;
+  }
+
+  function boostTimerTick(now) {
+    const me = myAnimal();
+    if (!boostTimerOn() || !me) {
+      if (!me) boostTimerReset();
+      boostTimerHide();
+      return;
+    }
+    const hud = bridge.store('hud');
+    const resource = bridge.game && bridge.game.animalStats && bridge.game.animalStats.resource;
+    const raw = resource ? Number(resource.value) : NaN;
+    const pct = resourcePercent();
+    boostTimerStep(now, !!(hud && hud.pressingDash), Number.isFinite(raw) ? raw : null,
+      pct != null && pct > BOOST_MIN_PCT, boostCooldownOf(me));
+
+    const bt = boostTimer;
+    let x = bt.pointer.x, y = bt.pointer.y;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      // No mouse yet (or a touch screen): round your animal instead.
+      const at = screenPosOf(me.container, now);
+      if (!at) { boostTimerHide(); return; }
+      x = at.x; y = at.y;
+    }
+    const node = boostTimerNode();
+    if (!node || !bt.circle) return;
+    const scale = Math.min(1.4, Math.max(0.8, Math.min(innerWidth, innerHeight) / 900));
+    const max = BOOST_RING_MAX * scale, min = BOOST_RING_MIN * scale;
+    const left = bt.readyAt - now;
+    let state, r;
+    if (left > 0 && bt.cooldown > 0) {
+      state = 'wait';
+      r = min + (max - min) * Math.min(1, left / bt.cooldown);
+    } else {
+      state = pct != null && pct <= BOOST_MIN_PCT ? 'dry' : 'ready';
+      r = min;
+    }
+    if (bt.state !== state) {
+      bt.state = state;
+      const color = state === 'wait' ? BOOST_RING_RED : state === 'ready' ? BOOST_RING_GREEN : BOOST_RING_GREY;
+      bt.circle.setAttribute('stroke', color);
+      bt.circle.setAttribute('stroke-dasharray', state === 'dry' ? '3 3' : 'none');
+      bt.circle.setAttribute('fill', state === 'ready' ? 'rgba(52,224,106,0.4)' : 'none');
+      node.className = 'qolc-bt-' + state;
+    }
+    const box = Math.ceil(max + BOOST_RING_STROKE * scale + 2) * 2;
+    const svg = bt.circle.ownerSVGElement;
+    if (svg.getAttribute('width') !== String(box)) {
+      svg.setAttribute('width', box);
+      svg.setAttribute('height', box);
+      svg.setAttribute('viewBox', (-box / 2) + ' ' + (-box / 2) + ' ' + box + ' ' + box);
+      bt.circle.setAttribute('stroke-width', (BOOST_RING_STROKE * scale).toFixed(2));
+    }
+    bt.circle.setAttribute('r', r.toFixed(2));
+    if (!bt.shown) { node.style.display = 'block'; bt.shown = true; }
+    const t = 'translate3d(' + x.toFixed(1) + 'px,' + y.toFixed(1) + 'px,0) translate(-50%,-50%)';
+    if (node.style.transform !== t) node.style.transform = t;
+  }
+
   /* ----- one tick for everything that happens in a duel ----- */
 
   let cullingCheckAt = -Infinity;
@@ -8390,6 +8625,7 @@
     else if (bite.marked.size) biteClearAll();
     waterTick();
     boostTick(now);
+    boostTimerTick(now);
     zorderApply();
   }
 
@@ -8435,6 +8671,12 @@
       boostsLeft: water.pct == null ? null : boostCountFrom(water.pct, water.phase),
       drawOrder: (zorder.mode > 0 ? 'above' : zorder.mode < 0 ? 'below' : 'off') +
         (zorder.api ? ' — ' + zorder.api : ''),
+      boostTimer: {on: boostTimerOn(), state: boostTimer.state || 'hidden',
+        readyInMs: Math.max(0, Math.round(boostTimer.readyAt - performance.now())),
+        cooldownMs: myAnimal() ? boostCooldownOf(myAnimal()) : null,
+        boostsSeen: boostTimer.boosts, predictionsRefused: boostTimer.refused},
+      duelColors: {you: settings.duelColorSelf || 'default', opponent: settings.duelColorEnemy || 'default',
+        hooked: !!duelColor.wrapped, outlinesPainted: duelColor.painted.size, labelsTinted: duelColor.labels.size},
     };
     console.log(TAG, 'arena', report);
     return report;
@@ -8952,6 +9194,19 @@
       /* Water's own colour is mope's #4E66E4, which is too dark to read over a
          night sky; these are the same hue opened up. The two warning bands are
          the point of the feature, so they are loud. */
+      /* 1.1.2's boost timer: an SVG ring centred on the cursor, moved by a
+         transform like the counter above. */
+      #qolc-boost-timer {
+        position: fixed; left: 0; top: 0; display: none; z-index: 2147483645;
+        pointer-events: none; will-change: transform; line-height: 0;
+        filter: drop-shadow(0 0 2px rgba(0,0,0,0.85));
+      }
+      #qolc-boost-timer svg { display: block; overflow: visible; }
+      #qolc-boost-timer.qolc-bt-ready svg { animation: qolc-bt-pop 0.22s ease-out; }
+      @keyframes qolc-bt-pop {
+        0% { transform: scale(1.6); opacity: 0.4; }
+        100% { transform: scale(1); opacity: 1; }
+      }
       #qolc-boost.qolc-boost-low  { color: #ffd60a; }
       #qolc-boost.qolc-boost-none { color: #ff4a3d; }
       .qolc-hp-num {
@@ -9925,6 +10180,16 @@
         width: 40px; height: 28px; padding: 0; border: 0;
         border-radius: 7px; background: transparent; cursor: pointer;
       }
+      /* Duel colors: Default and a colour swatch, side by side. The swatch
+         shows mope's own colour faded while Default is chosen. */
+      .qolc-subrow > .qolc-duel-picks { align-items: center; flex-wrap: nowrap; }
+      .qolc-duel-input {
+        width: 40px; height: 26px; padding: 0; border: 0;
+        border-radius: 7px; background: transparent; cursor: pointer;
+        transition: opacity 0.15s ease;
+      }
+      .qolc-duel-input.is-default { opacity: 0.45; }
+      .qolc-duel-input.is-default:hover { opacity: 0.8; }
       #qolc-name-input {
         width: 100%; box-sizing: border-box; color: #fff;
         background: rgba(0,55,45,0.52); border: 1px solid rgba(255,255,255,0.3);
@@ -10044,7 +10309,11 @@
     arenaSky: 'Arena theme — a backdrop behind your own 1v1 duels. Z toggles it in game.',
     arenaTheme: 'Which backdrop. Starfield is deep space and the original; Antimatter is the same sky as a negative, pale with dark stars; Deep Water is pale motes on blue-green with no star band.',
     panelTheme: 'Panel theme — recolours the Extras panel itself. It changes nothing about the game.',
-    staffOutline: "Staff outline (test) — turns a player's outline pink when the game marks them as staff. mope never sends other players' role numbers; it sends one staff-badge flag, and moderator tools reveal the number only for a player being looked up. __lumi.staff() in the console lists what was seen.",
+    boostTimer: 'Boost timer — a red ring round your cursor that closes in while your boost recharges, and turns green when you can boost again. Grey means your water is too low to boost. mope does not say when a boost happens, so it is worked out from your boost key and the water each boost costs.',
+    boostTimerScope: 'Where the ring shows: only in your own 1v1s, or whenever you are playing.',
+    duelColors: "Duel colors — your outline and your opponent's in your own 1v1s, in colours you pick instead of mope's cyan and yellow. The names on the arena floor change to match. Healing, poison, bleeding and frozen still show in mope's colours. Only your screen changes.",
+    duelColorSelf: "You — your own outline and name in your 1v1s. Default is mope's: cyan or yellow, whichever side the server puts you on.",
+    duelColorEnemy: "Opponent — the outline and name of whoever you are fighting. Default is mope's: cyan or yellow, whichever side the server puts them on.",
     debugLogging: 'Debug logging — writes what the script is doing to the browser console (F12). Only useful when reporting a problem; leave it off otherwise.',
     gameLink: "Game connection — whether the script has reached mope's game, its animals and its HUD. It reads them straight from mope's own code, so this should say Connected within a second of the page loading. Copy report puts the details on the clipboard to send to Lumi.",
     updateCheck: 'Check for updates — once an hour, reads the version number from this mod\'s GitHub page and tells you on the menu when a newer one is out. Nothing about you is sent.',
@@ -11198,6 +11467,108 @@
     );
     arenaPane.insertBefore(boostRow.row, focusRow.row.nextSibling);
 
+    // 1.1.2. The boost timer, under the boost counter: the two boost features
+    // side by side. A switch, and where it shows.
+    const boostTimerRow = makeRow(
+      'Boost timer',
+      'boostTimer',
+      settings.boostTimer,
+      (on) => {
+        settings.boostTimer = on;
+        store.set('boostTimer', on);
+        if (!on) boostTimerHide();
+        syncBoostTimerRows();
+        dbg('boost timer', on ? 'enabled' : 'disabled');
+      }
+    );
+    const boostScopeRow = document.createElement('div');
+    boostScopeRow.className = 'qolc-subrow';
+    hinted(boostScopeRow, 'boostTimerScope');
+    const boostScopeName = document.createElement('div');
+    boostScopeName.className = 'qolc-row-name';
+    boostScopeName.textContent = 'Show';
+    const boostScopePicks = document.createElement('div');
+    boostScopePicks.className = 'qolc-theme-picks';
+    const boostScopeButtons = [['duel', 'In 1v1s'], ['always', 'Always']].map(([id, label]) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'qolc-theme-pick';
+      btn.textContent = label;
+      btn.dataset.scope = id;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        settings.boostTimerScope = id;
+        store.set('boostTimerScope', id);
+        syncBoostTimerRows();
+        dbg('boost timer shows', id);
+      });
+      boostScopePicks.appendChild(btn);
+      return btn;
+    });
+    boostScopeRow.appendChild(boostScopeName);
+    boostScopeRow.appendChild(boostScopePicks);
+    syncBoostTimerRows = () => {
+      boostScopeRow.classList.toggle('qolc-row-off', !settings.boostTimer);
+      for (const b of boostScopeButtons) b.classList.toggle('is-on', b.dataset.scope === settings.boostTimerScope);
+    };
+    syncBoostTimerRows();
+    const boostTimerCard = makeCard(boostTimerRow.row, [boostScopeRow]);
+    arenaPane.insertBefore(boostTimerCard, boostRow.row.nextSibling);
+
+    // 1.1.2. Duel colors. No switch: each colour is either a pick or Default,
+    // and Default on both is off. It stands alone — nothing else in the pane
+    // has to be on for it to work. Inserted straight under the arena theme.
+    const duelHead = document.createElement('div');
+    duelHead.className = 'qolc-row';
+    hinted(duelHead, 'duelColors');
+    const duelHeadName = document.createElement('div');
+    duelHeadName.className = 'qolc-row-name';
+    duelHeadName.textContent = 'Duel colors';
+    duelHead.appendChild(duelHeadName);
+    const duelRows = [
+      ['self', 'You', 'duelColorSelf', DUEL_DEFAULT_SELF],
+      ['enemy', 'Opponent', 'duelColorEnemy', DUEL_DEFAULT_ENEMY],
+    ].map(([which, label, key, shown]) => {
+      const row = document.createElement('div');
+      row.className = 'qolc-subrow';
+      hinted(row, key);
+      const name = document.createElement('div');
+      name.className = 'qolc-row-name';
+      name.textContent = label;
+      const picks = document.createElement('div');
+      picks.className = 'qolc-theme-picks qolc-duel-picks';
+      const reset = document.createElement('button');
+      reset.type = 'button';
+      reset.className = 'qolc-theme-pick';
+      reset.textContent = 'Default';
+      reset.title = 'mope\'s own cyan or yellow';
+      reset.addEventListener('click', (e) => {
+        e.stopPropagation();
+        setDuelColor(which, null);
+      });
+      const input = document.createElement('input');
+      input.type = 'color';
+      input.className = 'qolc-duel-input';
+      input.addEventListener('input', (e) => { setDuelColor(which, e.target.value); });
+      picks.appendChild(reset);
+      picks.appendChild(input);
+      row.appendChild(name);
+      row.appendChild(picks);
+      return {key, shown, reset, input, row};
+    });
+    syncDuelColorRows = () => {
+      for (const r of duelRows) {
+        const value = settings[r.key];
+        r.reset.classList.toggle('is-on', !value);
+        r.input.classList.toggle('is-default', !value);
+        // Not while the picker is open on it: that would fight the drag.
+        if (document.activeElement !== r.input) r.input.value = value || r.shown;
+      }
+    };
+    syncDuelColorRows();
+    const duelCard = makeCard(duelHead, duelRows.map((r) => r.row));
+    arenaPane.insertBefore(duelCard, arenaSkyCard.nextSibling);
+
     const nameEnabledRow = makeRow(
       'Player name color',
       'nameColor',
@@ -12144,15 +12515,6 @@
     });
     settingsPane.appendChild(debugRow.row);
 
-    // 1.1.1. A test: can the client tell who is staff? See staffTick().
-    const staffRow = makeRow('Staff outline (test)', 'staffOutline', settings.staffOutline, (on) => {
-      settings.staffOutline = on;
-      store.set('staffOutline', on);
-      try { staffTick(); } catch (e) { frameFailed('staff outline', e); }
-      dbg('staff outline', on ? 'enabled' : 'disabled');
-    });
-    settingsPane.appendChild(staffRow.row);
-
     // 1.1.0. What the game bridge found — the one line to read when something
     // in game is not appearing, and a report to paste to Lumi.
     const hookRecRow = document.createElement('div');
@@ -12467,6 +12829,7 @@
   onFrame('name colours', nameFrame);
   onFrame('damage numbers and HP bar', hpFrame);
   onFrame('arena', arenaFrame);
+  onFrame('duel colours', duelFrame);
   onFrame('party', partyTick);
 
   /* ----- the console ----- */
@@ -12495,7 +12858,6 @@
     arena: arenaDebug,
     party: partyDebug,
     zoom: zoomDebug,
-    staff: staffDebug,
     keybinds: kbDebug,
     registry: nrDebug,
     errors() { return [...featureErrors].map(([name, row]) => Object.assign({name}, row)); },
@@ -12527,9 +12889,7 @@
   bridge.ready().then(() => {
     startFrameHook();
     turnInstall();
-    setInterval(() => {
-      try { staffTick(); } catch (e) { frameFailed('staff outline', e); }
-    }, 500);
+    duelInstall();
     dbg('ready —', bridgeSummary());
   });
 

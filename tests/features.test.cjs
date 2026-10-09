@@ -178,3 +178,130 @@ test('the arena theme gives mope\'s Arena Culling back as it found it', () => {
   env.set(false);
   assert.equal(arena.outsideWorld, 1, 'off: a player who culls keeps culling');
 });
+
+/* ----- duel colours ----- */
+
+test('a duel colour is stored as lower-case #rrggbb, anything else is Default', () => {
+  const norm = run([fn('normalizeDuelColor')], {}, 'normalizeDuelColor');
+  assert.equal(norm('#FF00aa'), '#ff00aa');
+  assert.equal(norm(' #00ff00 '), '#00ff00');
+  assert.equal(norm(null), null);
+  assert.equal(norm('red'), null);
+  assert.equal(norm('#fff'), null, 'the colour input always gives six digits');
+});
+
+test('duel colours: only your own duel, only where mope would draw cyan or yellow', () => {
+  const pieces = [constant('duelColor'), fn('duelColorNumber'), fn('duelColorFor'),
+    fn('duelShowsArenaColor'), fn('duelPaint')];
+  const out = run(pieces, {}, `(() => {
+    // mope's own getter order: afflictions first, then the arena's colours.
+    const proto = {
+      get outlineColor() {
+        if (this.effects.poisoned) return '#55CF37';
+        if (this.arena) return this.arena.player1 === this ? 'cyan' : this.arena.player2 === this ? 'yellow' : 'grey';
+        return 'grey';
+      },
+    };
+    const mk = (tier) => Object.assign(Object.create(proto),
+      {tier, effects: {}, outline: {tint: 'x'}, tail: {tint: 'x'}});
+    const me = mk(16), foe = mk(15), stranger = mk(15), strangerFoe = mk(15);
+    me.canTailBite = (a) => a !== me && a.tier === me.tier;
+    me.arena = foe.arena = {player1: foe, player2: me};
+    stranger.arena = strangerFoe.arena = {player1: stranger, player2: strangerFoe};
+    globalThis.settings = {masterEnabled: true, duelColorSelf: '#ff0000', duelColorEnemy: null};
+    globalThis.bridge = {game: {player: me, colors: {arena: {player1: 'cyan', player2: 'yellow'}}}};
+    duelPaint(me);
+    duelPaint(foe);
+    duelPaint(stranger);
+    return {me: [me.outline.tint, me.tail.tint], foe: [foe.outline.tint, foe.tail.tint],
+      stranger: duelColorFor(stranger), notInDuel: duelColorFor(mk(15))};
+  })()`);
+  assert.deepEqual(out.me, [0xff0000, 0xff0000], 'you, picked red');
+  assert.deepEqual(out.foe, ['x', 'x'], 'opponent on Default: left to mope');
+  assert.equal(out.stranger, null, 'somebody else\'s duel keeps mope\'s colours');
+  assert.equal(out.notInDuel, null);
+});
+
+test('duel colours step aside for afflictions, a biteable tail, and the master switch', () => {
+  const pieces = [constant('duelColor'), fn('duelColorNumber'), fn('duelColorFor'),
+    fn('duelShowsArenaColor'), fn('duelPaint')];
+  const out = run(pieces, {}, `(() => {
+    const proto = {
+      get outlineColor() {
+        if (this.effects.poisoned) return '#55CF37';
+        return this.arena.player1 === this ? 'cyan' : 'yellow';
+      },
+    };
+    const mk = (tier) => Object.assign(Object.create(proto),
+      {tier, effects: {}, outline: {tint: 'mope'}, tail: {tint: 'mope'}});
+    const me = mk(16), foe = mk(16);
+    me.canTailBite = (a) => a !== me && a.tier === me.tier;
+    me.arena = foe.arena = {player1: me, player2: foe};
+    globalThis.settings = {masterEnabled: true, duelColorSelf: null, duelColorEnemy: '#00ff00'};
+    globalThis.bridge = {game: {player: me, colors: {arena: {player1: 'cyan', player2: 'yellow'}}}};
+    const rows = [];
+    duelPaint(foe);
+    rows.push([foe.outline.tint, foe.tail.tint, duelColor.painted.has(foe)]);
+    foe.outline.tint = 'mope';
+    foe.effects.poisoned = true;
+    duelPaint(foe);
+    rows.push([foe.outline.tint, duelColor.painted.has(foe)]);
+    foe.effects.poisoned = false;
+    settings.masterEnabled = false;
+    duelPaint(foe);
+    rows.push([foe.outline.tint]);
+    return rows;
+  })()`);
+  assert.deepEqual(out[0], [0x00ff00, 'mope', true], 'outline picked; a tail you can bite stays mope\'s green');
+  assert.deepEqual(out[1], ['mope', false], 'poisoned: mope\'s colour wins');
+  assert.deepEqual(out[2], ['mope'], 'Extras switched off: nothing painted');
+});
+
+/* ----- boost timer ----- */
+
+// Drives boostTimerStep() frame by frame. Each frame is [ms, held, water].
+function boostRun(frames, canPay) {
+  return run([constant('BOOST_CONFIRM_MS'), fn('boostTimerStep')], {}, `(() => {
+    globalThis.boostTimer = {readyAt: 0, cooldown: 0, held: false, pending: null, stalled: false,
+      water: null, boosts: 0, refused: 0};
+    const log = [];
+    for (const [t, held, water] of ${JSON.stringify(frames)}) {
+      boostTimerStep(t, held, water, ${canPay !== false}, 1500);
+      log.push(boostTimer.readyAt);
+    }
+    return {log, boosts: boostTimer.boosts, refused: boostTimer.refused};
+  })()`);
+}
+
+test('boost timer: a press while ready starts the wait, and the water drop confirms it', () => {
+  const out = boostRun([[0, false, 90], [100, true, 90], [160, false, 90], [220, false, 88], [1000, false, 87]]);
+  assert.equal(out.log[1], 1600, 'ready again one cooldown after the press');
+  assert.equal(out.boosts, 1);
+  assert.equal(out.log[4], 1600, 'a later drain does not move it');
+});
+
+test('boost timer: a press during the cooldown is ignored, as mope ignores it', () => {
+  const out = boostRun([[0, true, 90], [50, false, 88], [700, true, 88], [760, false, 87], [1000, false, 87]]);
+  assert.equal(out.log[4], 1500, 'still the first boost\'s wait');
+  assert.equal(out.boosts, 1);
+});
+
+test('boost timer: holding the key boosts again the moment each wait ends', () => {
+  const out = boostRun([[0, true, 90], [60, true, 88], [1510, true, 88], [1580, true, 87], [3020, true, 87], [3080, true, 85]]);
+  assert.equal(out.log[2], 3000, 'second boost dated from when the first wait ended, not the frame');
+  assert.equal(out.log[4], 4500);
+  assert.equal(out.boosts, 3);
+});
+
+test('boost timer: no water drop means no boost happened, and the ring is ready again', () => {
+  const out = boostRun([[0, true, 90], [100, true, 90], [500, true, 90], [600, true, 90], [700, false, 90], [800, true, 90]]);
+  assert.equal(out.refused, 1);
+  assert.equal(out.log[3], 0, 'undone, and a held key does not keep re-predicting');
+  assert.equal(out.log[5], 2300, 'a fresh press predicts again');
+});
+
+test('boost timer: nothing is predicted with no water to pay for a boost', () => {
+  const out = boostRun([[0, true, 15], [100, true, 14]], false);
+  assert.equal(out.log[1], 0);
+  assert.equal(out.boosts, 0);
+});
