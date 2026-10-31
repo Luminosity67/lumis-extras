@@ -57,9 +57,15 @@ test('none of the 1.0.x traps survive the rebuild', () => {
   // come back with them.
   assert.doesNotMatch(source, /defineProperty\(\s*(?:prototype|Object\.prototype|PAGE\.Object\.prototype)\s*,\s*(?:key|PROBE_KEY|'syncZoom'|'syncPosition'|'entity'|'closestObjects')/);
   assert.doesNotMatch(source, /Map\.prototype\.set\s*=|prototype\.set\s*=\s*wrapper/);
-  assert.doesNotMatch(source, /PAGE\.Proxy\s*=/);
   assert.doesNotMatch(source, /__PIXI_(?:RENDERER|APP)_INIT__/);
   assert.doesNotMatch(source, /fillText.*noteXpText|function hookCanvasXp/);
+  // 1.1.3's capture hub observes `new Proxy` (mope's stores are made that
+  // way), and nothing outside the hub may.
+  const hubStart = source.indexOf('  const capture = (function () {');
+  const hubEnd = source.indexOf('\n  })();\n', hubStart);
+  const proxies = [...source.matchAll(/PAGE\.Proxy\s*=/g)].map((m) => m.index);
+  assert.equal(proxies.length, 1);
+  assert.ok(proxies[0] > hubStart && proxies[0] < hubEnd, 'only inside the capture hub');
 });
 
 // The stand-down block, run on its own: from the IIFE's first line to the
@@ -70,7 +76,8 @@ function runPreamble(globals) {
   const end = source.indexOf('  try { PAGE.__LUMI_EXTRAS_V1_RUNNING__ = true; }');
   assert.ok(start > 0 && end > start, 'preamble found before the page announcement');
   const warnings = [];
-  const ctx = vm.createContext({console: {warn: (...a) => warnings.push(a.join(' '))}, ...globals});
+  const ctx = vm.createContext({console: {warn: (...a) => warnings.push(a.join(' '))},
+    performance, document: {readyState: 'loading'}, ...globals});
   ctx.window = ctx;
   const result = vm.runInContext('(function () {\n' + source.slice(start, end) + "\nreturn 'continued'; })()", ctx);
   return {result, warnings};
