@@ -206,6 +206,7 @@ test('duel colours: only your own duel, only where mope would draw cyan or yello
       {tier, effects: {}, outline: {tint: 'x'}, tail: {tint: 'x'}});
     const me = mk(16), foe = mk(15), stranger = mk(15), strangerFoe = mk(15);
     me.canTailBite = (a) => a !== me && a.tier === me.tier;
+    globalThis.capture = {outline: {canTailBite: 'canTailBite'}};
     me.arena = foe.arena = {player1: foe, player2: me};
     stranger.arena = strangerFoe.arena = {player1: stranger, player2: strangerFoe};
     globalThis.settings = {masterEnabled: true, duelColorSelf: '#ff0000', duelColorEnemy: null};
@@ -236,6 +237,7 @@ test('duel colours step aside for afflictions, a biteable tail, and the master s
       {tier, effects: {}, outline: {tint: 'mope'}, tail: {tint: 'mope'}});
     const me = mk(16), foe = mk(16);
     me.canTailBite = (a) => a !== me && a.tier === me.tier;
+    globalThis.capture = {outline: {canTailBite: 'canTailBite'}};
     me.arena = foe.arena = {player1: me, player2: foe};
     globalThis.settings = {masterEnabled: true, duelColorSelf: null, duelColorEnemy: '#00ff00'};
     globalThis.bridge = {game: {player: me, colors: {arena: {player1: 'cyan', player2: 'yellow'}}}};

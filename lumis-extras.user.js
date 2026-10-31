@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.1.2
+// @version      1.1.3
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, your own duel outline colours, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -74,6 +74,14 @@
  * and yellow), with the names on the arena floor matching. Default puts
  * mope's back. And Arena → Boost timer: a red ring round your cursor that
  * closes in while your boost recharges and turns green when it is ready.
+ *
+ * 1.1.3 — back in the game after mope's 2026-10-31 update, which stopped
+ * exporting the game, minified its property and packet names, and froze every
+ * game class against patching. The game is now caught while the page starts,
+ * by the capture hub (shared with Moderator Extras); the arena's floor labels
+ * (now two a side) and walls are found by shape, and turn speed and duel
+ * colours hook mope's frozen Animal methods through the hub. Nothing a
+ * player sees has changed.
  */
 
 (function () {
@@ -81,6 +89,275 @@
 
   const PAGE = window;
   const TAG = '[LumisExtras]';
+
+  /* ============================ the capture hub ============================
+   *
+   * HOW BOTH LUMI SCRIPTS REACH THE GAME, since mope's 2026-10-31 build.
+   * (BYTE-IDENTICAL in Lumi's Extras and Lumi's Moderator Extras.)
+   *
+   * That build closed the door the 1.1.0 bridge walked through. The game
+   * module no longer exports mope's `$`, the entity registry or the HUD
+   * stores; most of mope's own property names are minified afresh every
+   * build; and every game class prototype is cut off from Object.prototype
+   * (`Object.setPrototypeOf(proto, null)`) and frozen, which is aimed
+   * squarely at prototype setters.
+   *
+   * What is left is the page's own start-up, and both scripts run before any
+   * of mope's code (the extension at document_start, in the page's world). So
+   * the hub puts a few observers in place first, and mope hands each piece
+   * over itself as it builds it:
+   *
+   *   the game ($)       mope detaches each class prototype from
+   *                      Object.prototype before freezing it. Each one handed
+   *                      over gets a `camera` setter first, and the object
+   *                      that gives itself a camera in its constructor is the
+   *                      game.
+   *   classes            every prototype mope freezes passes Object.freeze.
+   *                      The Entity base class is the one with static create,
+   *                      get and has; the Animal class is the one whose
+   *                      method paints `outline.tint` and `tail.tint`.
+   *   animal methods     that method and the class's `update()` cannot be
+   *                      wrapped later — the prototype is frozen — so a
+   *                      forwarder goes into each just before the freeze, and
+   *                      `capture.afterOutline(fn)` / `capture.aroundUpdate()`
+   *                      hook them.
+   *   HUD stores         every Svelte state object is made with `new Proxy`.
+   *                      The first proxy of each set of keys is kept.
+   *   entity registry    mope's per-type entity maps come out of
+   *                      Object.fromEntries: the result whose values are all
+   *                      Maps, with an `animal` among them.
+   *
+   * Every observer passes the call straight through and changes nothing mope
+   * sees; everything is recognised by SHAPE, never by a minified name.
+   * Whichever script loads first builds the hub on the page and the other
+   * uses that one, so the observers go in once. A copy that loads after mope
+   * has started (a late userscript) finds the hub `late` and empty: the only
+   * cure is a reload.
+   */
+  const capture = (function () {
+    const REVISION = 1;
+    try {
+      const existing = PAGE.__lumiCapture;
+      if (existing && typeof existing.revision === 'number') return existing;
+    } catch (e) { /* sealed page: build one for this copy */ }
+
+    const native = {
+      Proxy: PAGE.Proxy,
+      setPrototypeOf: Object.setPrototypeOf,
+      freeze: Object.freeze,
+      fromEntries: Object.fromEntries,
+      defineProperty: Object.defineProperty,
+      getOwnPropertyNames: Object.getOwnPropertyNames,
+      getOwnPropertyDescriptor: Object.getOwnPropertyDescriptor,
+      getPrototypeOf: Object.getPrototypeOf,
+      keys: Object.keys,
+    };
+    const own = Object.prototype.hasOwnProperty;
+
+    const hub = {
+      revision: REVISION,
+      startedAt: performance.now(),
+      // Module scripts run once the document is parsed, so a hub built while
+      // it is still loading is in place before mope's first line.
+      late: document.readyState !== 'loading',
+      candidates: [],        // objects that gave themselves a camera
+      prototypes: 0,         // class prototypes seen frozen
+      states: new Map(),     // 'key,key,...' -> first state proxy with those keys
+      registry: null,        // {animal: Map, food: Map, ...}
+      Entity: null,          // base entity class: static create / get / has
+      Animal: null,          // animal class
+      outline: {method: '', canTailBite: '', after: []},
+      update: [],            // {before(), after(token)} round Animal.update()
+      errors: [],
+    };
+
+    function fail(where, error) {
+      if (hub.errors.length < 20) hub.errors.push(where + ': ' + String(error && error.message || error));
+    }
+
+    // A function wrapper that is itself a Proxy of mope's native function, so
+    // it still reads as native code to anything that looks.
+    function observe(holder, name, before) {
+      const original = holder[name];
+      holder[name] = new native.Proxy(original, {
+        apply(target, self, args) {
+          try { before(args); } catch (e) { fail(name, e); }
+          return Reflect.apply(target, self, args);
+        },
+      });
+    }
+
+    function isGame(value) {
+      return !!value && typeof value === 'object' &&
+        ['camera', 'network', 'settings', 'loop'].every((key) => key in value) &&
+        !!value.loop && typeof value.loop === 'object';
+    }
+
+    function trapCamera(proto) {
+      if (own.call(proto, 'camera')) return;
+      native.defineProperty(proto, 'camera', {
+        configurable: true,
+        get() { return undefined; },
+        set(value) {
+          native.defineProperty(this, 'camera', {value, writable: true, enumerable: true, configurable: true});
+          if (hub.candidates.length < 16) hub.candidates.push(this);
+        },
+      });
+    }
+
+    const OUTLINE_RE = /\.outline\.tint\s*=[\s\S]*\.tail\.tint\s*=/;
+    const seen = new WeakSet();
+
+    function noteAnimal(proto, names) {
+      if (hub.outline.method || names.indexOf('outlineColor') === -1) return;
+      for (const name of names) {
+        const d = native.getOwnPropertyDescriptor(proto, name);
+        if (!d || typeof d.value !== 'function' || name === 'constructor') continue;
+        const source = Function.prototype.toString.call(d.value);
+        if (!OUTLINE_RE.test(source)) continue;
+        const original = d.value;
+        const after = hub.outline.after;
+        proto[name] = function () {
+          const result = original.apply(this, arguments);
+          for (const fn of after) {
+            try { fn.call(this, arguments); } catch (e) { fail('outline hook', e); }
+          }
+          return result;
+        };
+        const bite = /\?\.([\w$]+)\(this\)/.exec(source);
+        hub.outline.method = name;
+        hub.outline.canTailBite = bite ? bite[1] : '';
+        hub.Animal = proto.constructor;
+        const update = native.getOwnPropertyDescriptor(proto, 'update');
+        if (update && typeof update.value === 'function') {
+          const step = update.value;
+          const around = hub.update;
+          proto.update = function () {
+            if (!around.length) return step.apply(this, arguments);
+            const tokens = around.map((h) => {
+              try { return h.before ? h.before.call(this) : undefined; } catch (e) { fail('update hook', e); }
+              return undefined;
+            });
+            const result = step.apply(this, arguments);
+            around.forEach((h, i) => {
+              try { if (h.after) h.after.call(this, tokens[i]); } catch (e) { fail('update hook', e); }
+            });
+            return result;
+          };
+        }
+        return;
+      }
+    }
+
+    function noteFrozen(value) {
+      if (!value || typeof value !== 'object' || seen.has(value)) return;
+      const d = native.getOwnPropertyDescriptor(value, 'constructor');
+      const ctor = d && d.value;
+      if (typeof ctor !== 'function' || ctor.prototype !== value) return;
+      seen.add(value);
+      hub.prototypes++;
+      if (!hub.Entity && ['create', 'get', 'has'].every((k) => own.call(ctor, k) && typeof ctor[k] === 'function')) {
+        hub.Entity = ctor;
+      }
+      noteAnimal(value, native.getOwnPropertyNames(value));
+    }
+
+    function noteState(value, made) {
+      if (hub.states.size >= 4000 || !value || typeof value !== 'object') return;
+      if (native.getPrototypeOf(value) !== Object.prototype) return;
+      const keys = native.keys(value);
+      if (keys.length < 2) return;
+      const id = keys.join(',');
+      if (!hub.states.has(id)) hub.states.set(id, made);
+    }
+
+    if (!hub.late) {
+      try {
+        observe(Object, 'setPrototypeOf', (args) => {
+          const target = args[0];
+          if (args[1] === null && target && typeof target === 'object' && !hub.game) trapCamera(target);
+        });
+        observe(Object, 'freeze', (args) => noteFrozen(args[0]));
+        const fromEntries = native.fromEntries;
+        Object.fromEntries = new native.Proxy(fromEntries, {
+          apply(target, self, args) {
+            const result = Reflect.apply(target, self, args);
+            try {
+              if (!hub.registry && result && result.animal instanceof Map) {
+                const values = Object.values(result);
+                if (values.length > 3 && values.every((v) => v instanceof Map)) hub.registry = result;
+              }
+            } catch (e) { fail('fromEntries', e); }
+            return result;
+          },
+        });
+        PAGE.Proxy = new native.Proxy(native.Proxy, {
+          construct(target, args, newTarget) {
+            const made = Reflect.construct(target, args, newTarget);
+            try { noteState(args[0], made); } catch (e) { fail('Proxy', e); }
+            return made;
+          },
+        });
+      } catch (e) { fail('install', e); }
+    }
+
+    let game = null;
+    native.defineProperty(hub, 'game', {
+      enumerable: true,
+      get() {
+        if (!game) game = hub.candidates.find(isGame) || null;
+        return game;
+      },
+    });
+
+    // The first state proxy holding every one of `keys`, or null.
+    hub.state = function (keys) {
+      for (const [id, proxy] of hub.states) {
+        const have = id.split(',');
+        if (keys.every((key) => have.indexOf(key) !== -1)) return proxy;
+      }
+      return null;
+    };
+
+    // Every entity the client knows, of every type.
+    hub.entities = function* () {
+      const registry = hub.registry;
+      if (!registry) return;
+      for (const key of native.keys(registry)) {
+        const map = registry[key];
+        if (map instanceof Map) yield* map.values();
+      }
+    };
+
+    hub.entity = function (id) {
+      try { if (hub.Entity) return hub.Entity.get(id) || null; } catch (e) { /* fall through */ }
+      const registry = hub.registry;
+      if (!registry) return null;
+      for (const key of native.keys(registry)) {
+        const map = registry[key];
+        const found = map instanceof Map && map.get(id);
+        if (found) return found;
+      }
+      return null;
+    };
+
+    // fn.call(animal, args) after each of mope's own outline recolours.
+    hub.afterOutline = function (fn) {
+      if (typeof fn === 'function' && hub.outline.after.indexOf(fn) === -1) hub.outline.after.push(fn);
+    };
+
+    // {before() -> token, after(token)}, both called on the animal, round each
+    // of mope's Animal.update() calls.
+    hub.aroundUpdate = function (hook) {
+      if (hook && hub.update.indexOf(hook) === -1) hub.update.push(hook);
+    };
+
+    try {
+      native.defineProperty(PAGE, '__lumiCapture', {value: hub, configurable: true});
+    } catch (e) { /* sealed page: this copy keeps its own */ }
+    return hub;
+  })();
+
 
   // How this copy was loaded. The extension and the userscript are the SAME
   // FILE: the extension's manifest runs it straight in the page. Every
@@ -112,7 +389,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.1.2';
+    return '1.1.3';
   })();
 
   /* ---------------------------------------------- one instance, one layer */
@@ -378,41 +655,26 @@
 
   /* ============================ the game bridge ============================
    *
-   * HOW THIS SCRIPT REACHES THE GAME.
+   * WHAT THE FEATURES READ THE GAME THROUGH.
    *
-   * mope's client is a Vite build: an entry module plus a handful of chunks
-   * that import from each other. The game chunk (the camera, the network and
-   * every entity class) is imported by the UI chunk, so it EXPORTS what the
-   * UI needs — and that includes the game singleton `$` itself, the base
-   * Entity class with its live registry (`Entity.list`, a Map of every entity
-   * the client knows), the Animal class, and the Svelte stores behind the HUD
-   * (ability cooldowns, XP and resources, the arena, the leaderboard).
+   * 1.1.0 to 1.1.2 imported mope's game module and read its exports. mope's
+   * 2026-10-31 build stopped exporting anything useful, so since 1.1.3 every
+   * piece comes from the capture hub above, which mope hands it to while the
+   * page starts. This is the thin layer over the hub that the features use:
+   * the same names as before (`bridge.game`, `bridge.Entity.list`,
+   * `bridge.Animal`, `bridge.store(name)`), so no feature had to learn a new
+   * way in.
    *
-   * A module is evaluated once per page, and `import(url)` with a URL that is
-   * already in the page's module map hands back THAT instance. So this script,
-   * running in the page (the extension's MAIN world, or a userscript under
-   * @grant none), imports the game chunk after mope has loaded it and gets the
-   * very `$` the game is running on. Nothing is patched or trapped, nothing has
-   * to be in place before mope starts, and the import can happen a millisecond
-   * or an hour after the page loads with the same answer.
-   *
-   * The modpacks (Nova, angelwings) instead swap mope's game chunk for a copy
-   * edited to put `$` on window. That copy is pinned to one build, so every
-   * mope deploy leaves them running stale game code until their author ships
-   * a new copy. This reads the build that is actually running, whatever its
-   * file names are this week.
-   *
-   * WHAT COULD STILL BREAK IT, said plainly. The exports are recognised by
-   * SHAPE — the game is the object with camera + network + settings + loop;
-   * Entity is the class with `list` and `dynamicList` Maps and static
-   * `create`/`get` — never by their minified names, which change every build.
-   * If mope renames one of those properties the fingerprint misses, and
-   * bridge.status() (Settings → Troubleshooting, or __lumi.status()) names
-   * exactly which piece is missing. Nothing guesses around a miss.
+   * WHAT COULD STILL BREAK IT, said plainly. Each piece is recognised by
+   * SHAPE: the game is the object with camera + network + settings + loop,
+   * the stores by their keys, the Animal class by the method that paints the
+   * outline and tail. If mope changes one of those, bridge.status() (Settings
+   * → Troubleshooting, or __lumi.status()) names exactly which piece is
+   * missing. Nothing guesses around a miss.
    */
 
   // How the bridge recognises each piece of mope, by SHAPE. Top-level so the
-  // tests can run them against fixtures and against mope's real classes.
+  // tests can run them against fixtures.
   function mopeHasKeys(value, keys) {
     for (const key of keys) {
       if (!(key in value)) return false;
@@ -426,44 +688,23 @@
       !!value.loop && typeof value.loop === 'object';
   }
 
-  // The BASE entity class. Every entity subclass inherits these statics
-  // (and declares a `list` of its own), so the test is that `dynamicList`
-  // is the class's OWN property — only the base declares it.
-  function mopeIsEntityClass(value) {
-    const own = Object.prototype.hasOwnProperty;
-    return typeof value === 'function' &&
-      own.call(value, 'dynamicList') && value.dynamicList instanceof Map &&
-      value.list instanceof Map &&
-      typeof value.create === 'function' && typeof value.get === 'function';
-  }
-
-  // The base Animal class, not a species subclass: it is the one that
-  // declares these methods itself.
-  function mopeIsAnimalClass(value) {
-    const own = Object.prototype.hasOwnProperty;
-    const proto = typeof value === 'function' && value.prototype;
-    return !!proto && own.call(proto, 'isUsingAbility1') &&
-      own.call(proto, 'setOutlineColor') && typeof proto.update === 'function';
-  }
-
-  // The animal config table: one entry per species, keyed by name, each with
-  // comfortZones, biome and subspeciesEnum.
-  function mopeIsConfigTable(value) {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-    const mouse = value.mouse;
-    return !!mouse && typeof mouse === 'object' && 'comfortZones' in mouse &&
-      'subspeciesEnum' in mouse && 'king_dragon' in value;
+  // mope's per-animal counters on the game object — {xp, oxygen, rank,
+  // resource: {value, max, type}}. Its name is minified per build, so it is
+  // the own property of that shape.
+  function mopeIsAnimalStats(value) {
+    return !!value && typeof value === 'object' &&
+      mopeHasKeys(value, ['xp', 'oxygen', 'resource']) &&
+      !!value.resource && typeof value.resource === 'object' &&
+      'value' in value.resource && 'max' in value.resource;
   }
 
   const bridge = (function () {
     const state = {
       phase: 'waiting for the page',
-      modules: [],          // same-origin module URLs that were examined
-      failures: [],         // {url, error}
       game: null,           // mope's `$`
-      Entity: null,         // base entity class; .list is the live registry
-      Animal: null,         // animal class (prototype has isUsingAbility1)
-      configs: null,        // species name -> animal config
+      Entity: null,         // {list}: a view over every entity the client knows
+      Animal: null,         // animal class
+      animalStats: null,    // see mopeIsAnimalStats
       stores: {},           // named Svelte stores, see STORE_SHAPES
       foundAt: 0,           // performance.now() when the game was found
       attempts: 0,
@@ -493,80 +734,37 @@
       moderation: ['targeting', 'observing', 'target', 'adminUsers'],
     };
 
-
-    // Every same-origin module the page has asked for: the entry script and
-    // the modulepreload links Vite writes for its static imports. Their URLs
-    // change on every deploy, which is why they are read off the page rather
-    // than written down here.
-    function moduleUrls() {
-      const urls = [];
-      const nodes = document.querySelectorAll(
-        'script[type="module"][src], link[rel="modulepreload"][href]');
-      for (const node of nodes) {
-        try {
-          const url = new URL(node.getAttribute('src') || node.getAttribute('href'),
-            location.href);
-          if (url.origin !== location.origin) continue;
-          if (urls.indexOf(url.href) === -1) urls.push(url.href);
-        } catch (e) { /* a malformed attribute is not ours to fix */ }
-      }
-      return urls;
-    }
-
-    function examine(namespace) {
-      for (const key of Object.keys(namespace)) {
-        let value;
-        // An export still in its temporal dead zone throws on read.
-        try { value = namespace[key]; } catch (e) { continue; }
-        if (!value || (typeof value !== 'object' && typeof value !== 'function')) continue;
-        try {
-          if (!state.game && mopeIsGame(value)) state.game = value;
-          else if (!state.Animal && mopeIsAnimalClass(value)) state.Animal = value;
-          else if (!state.Entity && mopeIsEntityClass(value)) state.Entity = value;
-          else if (!state.configs && mopeIsConfigTable(value)) state.configs = value;
-          else if (typeof value === 'object') {
-            for (const name of Object.keys(STORE_SHAPES)) {
-              if (!state.stores[name] && mopeHasKeys(value, STORE_SHAPES[name])) {
-                state.stores[name] = value;
-                break;
-              }
-            }
-          }
-        } catch (e) { /* a getter that throws is simply not a match */ }
-      }
-    }
+    // The registry the features iterate, the same shape 1.1.0's `Entity.list`
+    // had for them: `.values()` and `.get(id)`.
+    const entityView = {
+      list: {
+        values() { return capture.entities(); },
+        get(id) { return capture.entity(id); },
+      },
+    };
 
     function complete() {
-      return !!(state.game && state.Entity && state.Animal && state.configs &&
+      return !!(state.game && state.Entity && state.Animal && state.animalStats &&
         Object.keys(STORE_SHAPES).every((name) => state.stores[name]));
     }
 
-    // Every module namespace imported so far. Exports are LIVE bindings, so a
-    // piece assigned after the first look shows up when the same namespace is
-    // examined again — which is why each attempt re-examines all of them
-    // rather than only the URLs it has not seen.
-    const namespaces = [];
-
-    async function discover() {
+    function discover() {
       state.attempts++;
-      if (!state.game) state.phase = 'importing mope\'s modules';
-      const urls = moduleUrls();
-      for (const url of urls) {
-        if (state.modules.indexOf(url) !== -1) continue;
-        state.modules.push(url);
-        try {
-          // The SAME instance the page is running, because the URL is the
-          // module map's key. See the block comment above.
-          namespaces.push(await import(url));
-        } catch (error) {
-          state.failures.push({url, error: String(error && error.message || error)});
+      if (!state.game) state.game = capture.game;
+      if (!state.Entity && capture.registry) state.Entity = entityView;
+      if (!state.Animal) state.Animal = capture.Animal;
+      for (const name of Object.keys(STORE_SHAPES)) {
+        if (!state.stores[name]) state.stores[name] = capture.state(STORE_SHAPES[name]);
+      }
+      const game = state.game;
+      if (game && !state.animalStats) {
+        for (const key of Object.keys(game)) {
+          let value;
+          try { value = game[key]; } catch (e) { continue; }
+          if (mopeIsAnimalStats(value)) { state.animalStats = value; break; }
         }
       }
-      for (const namespace of namespaces) {
-        examine(namespace);
-        if (complete()) break;
-      }
-      if (state.game) {
+      if (game) {
         if (!state.foundAt) {
           state.foundAt = performance.now();
           dbg('bridge: game found after', Math.round(state.foundAt), 'ms;', status());
@@ -574,40 +772,32 @@
         state.phase = complete() ? 'ready' : 'ready (some optional pieces missing)';
         while (waiters.length) {
           const resolve = waiters.shift();
-          try { resolve(state.game); } catch (e) { /* one listener cannot stop the rest */ }
+          try { resolve(game); } catch (e) { /* one listener cannot stop the rest */ }
         }
         return complete();
       }
-      state.phase = urls.length ? 'the game was not among ' + urls.length + ' modules'
-        : 'no modules on the page yet';
+      state.phase = capture.late
+        ? 'this copy started after mope did, so it could not see the game start — reload the page'
+        : 'waiting for mope to build the game';
       return false;
     }
 
-    // DOMContentLoaded comes after every non-async module script has run, so
-    // by then the entry (and through it the game chunk) has been evaluated.
-    // Until EVERYTHING is found — the game and every optional piece — it keeps
-    // looking, backing off to once every five seconds: a redeploy that moved
-    // something behind a dynamic import shows up as modules appearing later.
+    // Until EVERYTHING is found — the game and every optional piece — it
+    // keeps looking, backing off to once every five seconds: some stores are
+    // only made when the screen that uses them first appears.
     let started = false;
     function start() {
       if (started) return;
       started = true;
-      let delay = 250;
+      let delay = 100;
       const attempt = () => {
-        discover().then((done) => {
-          if (done) return;
-          delay = Math.min(delay * 2, 5000);
-          setTimeout(attempt, delay);
-        }, (error) => {
-          state.failures.push({url: '(discover)', error: String(error)});
-          setTimeout(attempt, 5000);
-        });
+        let done = false;
+        try { done = discover(); } catch (e) { capture.errors.push('discover: ' + e); }
+        if (done) return;
+        delay = Math.min(delay * 2, 5000);
+        setTimeout(attempt, delay);
       };
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', attempt, {once: true});
-      } else {
-        attempt();
-      }
+      attempt();
     }
 
     function status() {
@@ -616,11 +806,12 @@
         game: !!state.game,
         entityRegistry: !!state.Entity,
         animalClass: !!state.Animal,
-        animalConfigs: !!state.configs,
+        outlineHook: capture.outline.method ? 'ok' : 'MISSING',
+        animalStats: !!state.animalStats,
         stores: Object.keys(STORE_SHAPES).map((name) =>
           name + (state.stores[name] ? ' ok' : ' MISSING')).join(', '),
-        modulesExamined: state.modules.length,
-        failures: state.failures.slice(-5),
+        captureLate: !!capture.late,
+        failures: capture.errors.slice(-5),
         foundAfterMs: state.foundAt ? Math.round(state.foundAt) : null,
         attempts: state.attempts,
       };
@@ -638,7 +829,7 @@
       get game() { return state.game; },
       get Entity() { return state.Entity; },
       get Animal() { return state.Animal; },
-      get configs() { return state.configs; },
+      get animalStats() { return state.animalStats; },
       store(name) { return state.stores[name] || null; },
     };
   })();
@@ -2869,7 +3060,7 @@
   function partySelfXp() {
     const me = myAnimal();
     const game = bridge.game;
-    const xp = game && game.animalStats && game.animalStats.xp;
+    const xp = game && bridge.animalStats && bridge.animalStats.xp;
     const tier = me && me.tier;
     if (typeof xp !== 'number' || !(tier >= 1)) return '';
     const next = TIER_NEXT_XP[Math.min(tier, TIER_NEXT_XP.length) - 1];
@@ -6371,8 +6562,8 @@
   /* ----- dive air -----
    *
    * While you are under, the Dive card shows the air you have left, in green.
-   * mope keeps oxygen as a 0-100 number on $.animalStats and drains it a step
-   * at a time, so the time left is predicted from how fast it has been
+   * mope keeps oxygen as a 0-100 number in its per-animal stats and drains
+   * it a step at a time, so the time left is predicted from how fast it has been
    * falling. Each new reading may only nudge the prediction a little, and the
    * readout never counts back up — a timer that jumps is worse than one that
    * is a few hundred milliseconds off. The rate is remembered per animal, so
@@ -6457,7 +6648,7 @@
   function diveAirLeft(now) {
     const me = myAnimal();
     const game = bridge.game;
-    const oxygen = game && game.animalStats && Number(game.animalStats.oxygen);
+    const oxygen = game && bridge.animalStats && Number(bridge.animalStats.oxygen);
     if (!me || !me.diving || !Number.isFinite(oxygen)) { diveReset(); return null; }
     diveNote(oxygen, now);
     if (!diveUI.endAt) return null;
@@ -6596,10 +6787,10 @@
   }
 
   // Your resource meter (water, lava or energy) as a percentage. mope keeps
-  // the raw value and its maximum on $.animalStats.
+  // the raw value and its maximum on mope's per-animal stats (bridge.animalStats).
   function resourcePercent() {
     const game = bridge.game;
-    const resource = game && game.animalStats && game.animalStats.resource;
+    const resource = game && bridge.animalStats && bridge.animalStats.resource;
     if (!resource) return null;
     const value = Number(resource.value), max = Number(resource.max);
     if (!Number.isFinite(value) || !(max > 0)) return null;
@@ -7134,16 +7325,16 @@
   /* ============================== turn speed ==============================
    *
    * How quickly animals rotate toward the angle the server sent. mope turns
-   * every animal inside Animal.update(); this wraps that one method on the
-   * class the bridge hands over, scales the step it took, and clamps it so
-   * it can never pass the server's angle — a rate setting, never a heading
-   * the server did not send. Client-side only: nobody else sees a thing.
+   * every animal inside Animal.update(); this hooks that one method, scales
+   * the step it took, and clamps it so it can never pass the server's angle —
+   * a rate setting, never a heading the server did not send. Client-side
+   * only: nobody else sees a thing.
    *
-   * 1.0.x had to wait for an animal to go through a Map.prototype.set trap to
-   * learn which prototype to wrap. The class is simply known now.
+   * Since mope 2026-10-31 the class is frozen, so the hook is the capture
+   * hub's forwarder, put in before the freeze (capture.aroundUpdate).
    */
 
-  const turnState = {wrapped: null, applied: 0};
+  const turnState = {wrapped: false, applied: 0};
 
   function turnMultiplier() {
     if (!settings.masterEnabled || !settings.turnSpeed) return 1;
@@ -7189,26 +7380,14 @@
   }
 
   function turnInstall() {
-    const Animal = bridge.Animal;
-    const prototype = Animal && Animal.prototype;
-    if (!prototype || turnState.wrapped === prototype) return;
-    const original = prototype.update;
-    if (typeof original !== 'function') return;
-    // Another copy of this script got here first: its wrapper already turns
-    // every animal, and a second would apply the multiplier twice.
-    if (original.__lumiTurnWrapper) { turnState.wrapped = prototype; return; }
-    const wrapper = function () {
-      const before = this.angle;
-      const result = original.apply(this, arguments);
-      try { turnApply(this, before); } catch (e) { /* never break a frame */ }
-      return result;
-    };
-    try { Object.defineProperty(wrapper, '__lumiTurnWrapper', {value: true}); } catch (e) { /* cosmetic */ }
-    prototype.update = wrapper;
-    turnState.wrapped = prototype;
-    dbg('turn speed: Animal.prototype.update wrapped');
+    if (turnState.wrapped || !bridge.Animal) return;
+    capture.aroundUpdate({
+      before() { return this.angle; },
+      after(before) { turnApply(this, before); },
+    });
+    turnState.wrapped = true;
+    dbg('turn speed: hooked Animal.update()');
   }
-
   function setTurnSpeed(value) {
     const next = normalizeTurnSpeed(value);
     if (next === settings.turnSpeedValue) return;
@@ -7247,17 +7426,17 @@
    * staff-outline test, which used the same mechanism to paint staff pink.
    *
    * mope decides an animal's outline in one getter, `outlineColor`, and puts
-   * it on with `setOutlineColor()` — called again whenever anything it depends
-   * on changes: an affliction, a biome, what you can eat, joining or leaving
+   * it on with one recolour method (`setOutlineColor` until mope minified its
+   * name) — called again whenever anything it depends on changes: an affliction, a biome, what you can eat, joining or leaving
    * an arena. The getter's ORDER is the thing to keep. Healing, poison,
    * bleeding and frozen all outrank the arena's cyan and yellow, and those
    * colours tell you what is happening to a fighter. So a pick goes on only
    * where mope itself would have used an arena colour, at the end of every
    * recolour, and an affliction still shows as mope draws it.
    *
-   * The floor labels (name, wins, bites) are tinted cyan and yellow when the
-   * arena is built and never touched again, so they are kept in step once a
-   * frame.
+   * The floor labels (name, wins, bites, and the tally under them) are tinted
+   * cyan and yellow when the arena is built and never touched again, so they
+   * are kept in step once a frame.
    *
    * "You" and "opponent" rather than player 1 and player 2: which side you
    * get is the server's choice, so a per-side colour would swap from one duel
@@ -7269,7 +7448,7 @@
   const DUEL_DEFAULT_ENEMY = '#ffff00';
 
   const duelColor = {
-    wrapped: null,
+    wrapped: false,
     painted: new Set(),   // animals whose outline carries a pick
     labels: new Map(),    // arena label -> mope's own tint, to hand back
   };
@@ -7312,61 +7491,54 @@
     // mope paints a tail you can bite green instead of the outline colour.
     // That is worth knowing in a duel, so it stays — the same test mope uses.
     const me = bridge.game && bridge.game.player;
+    const canTailBite = capture.outline.canTailBite;
     let biteable = false;
-    try { biteable = !!(me && typeof me.canTailBite === 'function' && me.canTailBite(animal)); }
+    try { biteable = !!(me && canTailBite && typeof me[canTailBite] === 'function' && me[canTailBite](animal)); }
     catch (e) { /* mope's method */ }
     if (animal.tail && !biteable) animal.tail.tint = want;
     duelColor.painted.add(animal);
   }
 
+  // mope's recolour method is minified and its prototype frozen, so the hook
+  // is the capture hub's: it runs after every recolour mope makes.
   function duelInstall() {
-    const Animal = bridge.Animal;
-    const prototype = Animal && Animal.prototype;
-    if (!prototype || duelColor.wrapped === prototype) return;
-    const original = prototype.setOutlineColor;
-    if (typeof original !== 'function') return;
-    // Another copy of this script got here first; its wrapper does the work.
-    if (original.__lumiDuelWrapper) { duelColor.wrapped = prototype; return; }
-    const wrapper = function (color) {
-      const result = original.apply(this, arguments);
+    if (duelColor.wrapped || !capture.outline.method) return;
+    capture.afterOutline(function (args) {
       // Only mope's own recolour. A colour passed in is mope asking for that
       // one specifically, and it gets it.
-      if (color === undefined) {
-        try { duelPaint(this); } catch (e) { /* never break a recolour */ }
-      }
-      return result;
-    };
-    try { Object.defineProperty(wrapper, '__lumiDuelWrapper', {value: true}); } catch (e) { /* cosmetic */ }
-    prototype.setOutlineColor = wrapper;
-    duelColor.wrapped = prototype;
-    dbg('duel colours: Animal.prototype.setOutlineColor wrapped');
+      if (args[0] === undefined) duelPaint(this);
+    });
+    duelColor.wrapped = true;
+    dbg('duel colours: hooked mope\'s outline recolour (' + capture.outline.method + ')');
   }
 
-  // The two floor labels of your duel. Each belongs to a side; the side tells
+  // mope's own recolour, by whatever name this build gave it.
+  function mopeRecolour(animal) {
+    const method = capture.outline.method;
+    if (method && typeof animal[method] === 'function') animal[method]();
+  }
+
+  // The floor labels of your duel. Each belongs to a side; the side tells
   // whose it is, and so which pick it wears.
   function duelLabels(arena, me) {
     const mine = new Set();
-    if (arena) {
-      for (const side of [1, 2]) {
-        const label = arena['textPlayer' + side];
+    const parts = arena ? arenaParts(arena) : null;
+    if (parts) {
+      for (const {label, side} of parts.labels) {
         if (!label || label.destroyed) continue;
         mine.add(label);
         const owner = arena['player' + side];
         const want = !settings.masterEnabled || !owner ? null
           : duelColorNumber(owner === me ? settings.duelColorSelf : settings.duelColorEnemy);
         if (want != null) {
-          if (!duelColor.labels.has(label)) {
-            const colors = bridge.game && bridge.game.colors && bridge.game.colors.arena;
-            duelColor.labels.set(label, colors ? colors['player' + side] : label.tint);
-          }
+          if (!duelColor.labels.has(label)) duelColor.labels.set(label, parts.tints.get(label));
           if (label.tint !== want) label.tint = want;
         } else if (duelColor.labels.has(label)) {
           label.tint = duelColor.labels.get(label);
           duelColor.labels.delete(label);
         }
       }
-    }
-    // Labels from a duel that is over: mope destroys them with the arena, so
+    }    // Labels from a duel that is over: mope destroys them with the arena, so
     // this is only ever a forget — unless one outlived it, which gets its
     // colour back.
     for (const [label, own] of duelColor.labels) {
@@ -7390,7 +7562,7 @@
       if (fighters.indexOf(animal) !== -1 && duelColorFor(animal) != null) continue;
       duelColor.painted.delete(animal);
       if (animal.destroyed || !animal.outline || animal.outline.destroyed) continue;
-      try { animal.setOutlineColor(); } catch (e) { /* mope's method */ }
+      try { mopeRecolour(animal); } catch (e) { /* mope's method */ }
     }
     // A fighter can be put in the arena before you are (so its recolour ran
     // while you had no duel), and a pick can change mid-duel. Either way the
@@ -7399,7 +7571,7 @@
       if (!animal || animal.destroyed || !animal.outline || animal.outline.destroyed) continue;
       const want = duelColorFor(animal);
       if (want == null || animal.outline.tint === want || !duelShowsArenaColor(animal)) continue;
-      try { animal.setOutlineColor(); } catch (e) { /* mope's method */ }
+      try { mopeRecolour(animal); } catch (e) { /* mope's method */ }
     }
     duelLabels(arena, me);
   }
@@ -7773,12 +7945,75 @@
    * `$.player.arena` is your duel, set by mope the moment you are one of the
    * two fighters and cleared when it ends. It owns its geometry —
    * container, base (the floor sprite, on the `arenaBase` render layer),
-   * walls, the two labels that carry "Bites: N", timer and message — and its
-   * two fighters, player1 and player2. 1.0.x found all of this by shape and
+   * walls, the labels that carry "Bites: N" (see arenaParts), timer and
+   * message — and its two fighters, player1 and player2. 1.0.x found all of this by shape and
    * decided whether you were in it from your nameplate's visibility; none of
    * that is needed now, and a stranger's arena can never be mistaken for
    * yours because the game says which one is yours.
    */
+
+  // A colour as the number a Pixi tint reads back as: mope writes its arena
+  // colours as CSS names ('cyan'), Pixi stores 0x00ffff.
+  const tintCanvas = {ctx: null};
+  function tintNumber(color) {
+    if (typeof color === 'number') return color;
+    if (typeof color !== 'string') return null;
+    try {
+      if (!tintCanvas.ctx) tintCanvas.ctx = document.createElement('canvas').getContext('2d');
+      const ctx = tintCanvas.ctx;
+      ctx.fillStyle = '#000000';
+      ctx.fillStyle = color;
+      const hex = /^#([0-9a-f]{6})$/i.exec(ctx.fillStyle);
+      return hex ? parseInt(hex[1], 16) : null;
+    } catch (e) { return null; }
+  }
+
+  // The parts of an arena the features touch, which mope names afresh every
+  // build: the floor labels, each with its side, and a Graphics of the
+  // arena's own (its walls) for the sky to be built from. Read once per
+  // arena, while every label still wears the tint mope gave it — that tint
+  // is how a label's side is told. mope 2026-10-31 has two labels a side:
+  // name / wins / "Bites: N", and a tally under it.
+  const arenaPartsCache = new WeakMap();
+
+  function arenaParts(arena) {
+    let parts = arenaPartsCache.get(arena);
+    if (parts) return parts;
+    const node = arena && arena.container;
+    const colors = bridge.game && bridge.game.colors && bridge.game.colors.arena;
+    if (!node || !colors || !Array.isArray(node.children)) return null;
+    const side1 = tintNumber(colors.player1);
+    const side2 = tintNumber(colors.player2);
+    parts = {labels: [], tints: new Map(), graphics: null};
+    for (const child of node.children) {
+      if (!child || child.destroyed) continue;
+      if (!parts.graphics && typeof child.circle === 'function' &&
+          typeof child.clear === 'function' && typeof child.stroke === 'function') {
+        parts.graphics = child;
+      } else if (typeof child.text === 'string' && child !== arena.timer && child !== arena.message) {
+        const side = child.tint === side1 ? 1 : child.tint === side2 ? 2 : 0;
+        if (!side) continue;
+        parts.labels.push({label: child, side});
+        parts.tints.set(child, child.tint);
+      }
+    }
+    // Labels not built yet: looked for again next frame.
+    if (!parts.labels.length) return null;
+    arenaPartsCache.set(arena, parts);
+    return parts;
+  }
+
+  // A side's "Bites: N", or -1.
+  function arenaBites(arena, side) {
+    const parts = arena ? arenaParts(arena) : null;
+    if (!parts) return -1;
+    for (const entry of parts.labels) {
+      if (entry.side !== side) continue;
+      const score = biteScoreOf(entry.label);
+      if (score >= 0) return score;
+    }
+    return -1;
+  }
 
   // The world is drawn in the arena container's frame; its scale on screen
   // and its radius in world units are what the sky is sized from.
@@ -7794,9 +8029,9 @@
     const scale = Math.hypot(Number(wt.a) || 0, Number(wt.b) || 0);
     const worldRadius = Number(base.width) / 2;
     if (!(scale > 0) || !(worldRadius > 0)) return null;
+    const parts = arenaParts(arena);
     return {
-      arena, node, base, walls: arena.walls,
-      labels: [arena.textPlayer1, arena.textPlayer2, arena.timer, arena.message],
+      arena, node, base, walls: parts && parts.graphics,
       fighters: [arena.player1, arena.player2].filter(Boolean),
       scale, worldRadius,
     };
@@ -8311,8 +8546,8 @@
       bite.score1 = bite.score2 = -1;
       bite.health.clear();
     }
-    const s1 = biteScoreOf(mine.arena.textPlayer1);
-    const s2 = biteScoreOf(mine.arena.textPlayer2);
+    const s1 = arenaBites(mine.arena, 1);
+    const s2 = arenaBites(mine.arena, 2);
     const dropped = [];
     for (const fighter of mine.fighters) {
       const health = healthOf(fighter);
@@ -8547,7 +8782,7 @@
       return;
     }
     const hud = bridge.store('hud');
-    const resource = bridge.game && bridge.game.animalStats && bridge.game.animalStats.resource;
+    const resource = bridge.game && bridge.animalStats && bridge.animalStats.resource;
     const raw = resource ? Number(resource.value) : NaN;
     const pct = resourcePercent();
     boostTimerStep(now, !!(hud && hud.pressingDash), Number.isFinite(raw) ? raw : null,
@@ -8666,7 +8901,7 @@
       fighters: mine ? mine.fighters.map((f) => (f === myAnimal() ? 'you' : 'opponent') +
         ' ' + healthOf(f) + '%') : [],
       bites: {seen: bite.bites, unmatched: bite.unmatched, marked: bite.marked.size,
-        labels: mine ? [biteScoreOf(mine.arena.textPlayer1), biteScoreOf(mine.arena.textPlayer2)] : null},
+        labels: mine ? [arenaBites(mine.arena, 1), arenaBites(mine.arena, 2)] : null},
       water: water.pct, nextBoostCosts: water.phase,
       boostsLeft: water.pct == null ? null : boostCountFrom(water.pct, water.phase),
       drawOrder: (zorder.mode > 0 ? 'above' : zorder.mode < 0 ? 'below' : 'off') +
@@ -9014,7 +9249,8 @@
     const missing = [];
     if (!s.entityRegistry) missing.push('the animal list');
     if (!s.animalClass) missing.push('the animal class');
-    if (!s.animalConfigs) missing.push('the animal table');
+    if (s.outlineHook !== 'ok') missing.push('the outline recolour');
+    if (!s.animalStats) missing.push('the water / oxygen / XP counters');
     const stores = s.stores.split(', ').filter((x) => /MISSING$/.test(x))
       .map((x) => x.replace(/ MISSING$/, ''));
     if (stores.length) missing.push('HUD data (' + stores.join(', ') + ')');
@@ -12863,12 +13099,12 @@
     errors() { return [...featureErrors].map(([name, row]) => Object.assign({name}, row)); },
     // mope's own game object, for anyone poking around in the console.
     get game() { return bridge.game; },
-    // Everything the bridge found: the game, the Entity and Animal classes,
-    // the animal configs and the HUD stores.
+    // Everything the bridge found: the game, the entity registry, the Animal
+    // class, the per-animal stats, the capture hub and the HUD stores.
     get mope() {
       const stores = {};
       for (const name of ['hud', 'stats', 'arena', 'leaderboard', 'ui', 'death', 'moderation']) stores[name] = bridge.store(name);
-      return {game: bridge.game, Entity: bridge.Entity, Animal: bridge.Animal, configs: bridge.configs, stores};
+      return {game: bridge.game, Entity: bridge.Entity, Animal: bridge.Animal, animalStats: bridge.animalStats, capture, stores};
     },
   };
   expose('__lumi', lumiConsole);
