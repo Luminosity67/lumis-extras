@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.1.3
+// @version      1.1.4
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, your own duel outline colours, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -82,6 +82,15 @@
  * (now two a side) and walls are found by shape, and turn speed and duel
  * colours hook mope's frozen Animal methods through the hub. Nothing a
  * player sees has changed.
+ *
+ * 1.1.4 — back in the game after mope's 2026-11-02 update, which shut every
+ * door the 1.1.3 capture hub watched (Svelte's Proxy now comes from a hidden
+ * iframe, nothing is frozen, the entity registry is hand-written, and even
+ * camera, network, settings and player are minified). Capture hub
+ * revision 2 loads mope's game module through a copy with one line added
+ * that hands the hub the game, and answers to the old names, so no feature
+ * had to change. Your animal's species now comes from mope's own species
+ * table. Nothing a player sees has changed.
  */
 
 (function () {
@@ -92,67 +101,61 @@
 
   /* ============================ the capture hub ============================
    *
-   * HOW BOTH LUMI SCRIPTS REACH THE GAME, since mope's 2026-10-31 build.
+   * HOW BOTH LUMI SCRIPTS REACH THE GAME, since mope's 2026-11-02 build.
    * (BYTE-IDENTICAL in Lumi's Extras and Lumi's Moderator Extras.)
    *
-   * That build closed the door the 1.1.0 bridge walked through. The game
-   * module no longer exports mope's `$`, the entity registry or the HUD
-   * stores; most of mope's own property names are minified afresh every
-   * build; and every game class prototype is cut off from Object.prototype
-   * (`Object.setPrototypeOf(proto, null)`) and frozen, which is aimed
-   * squarely at prototype setters.
+   * Revision 1 (for mope's 2026-10-31 build) watched mope build its game:
+   * the prototypes it froze, the Svelte proxies it made, the maps it filled.
+   * The 11-02 build closed each of those. Proxy, Reflect.apply, WebSocket and
+   * fetch now come from a hidden iframe of mope's own; nothing is frozen;
+   * the game class and its parts sit on null prototypes and use class
+   * fields; the entity registry is a hand-written hash table; and even
+   * camera, network, settings, loop and player are minified.
    *
-   * What is left is the page's own start-up, and both scripts run before any
-   * of mope's code (the extension at document_start, in the page's world). So
-   * the hub puts a few observers in place first, and mope hands each piece
-   * over itself as it builds it:
+   * So revision 2 stops watching mope build the game and is handed it
+   * instead. Both scripts run before any of mope's code (the extension at
+   * document_start, in the page's world):
    *
-   *   the game ($)       mope detaches each class prototype from
-   *                      Object.prototype before freezing it. Each one handed
-   *                      over gets a `camera` setter first, and the object
-   *                      that gives itself a camera in its constructor is the
-   *                      game.
-   *   classes            every prototype mope freezes passes Object.freeze.
-   *                      The Entity base class is the one with static create,
-   *                      get and has; the Animal class is the one whose
-   *                      method paints `outline.tint` and `tail.tint`.
-   *   animal methods     that method and the class's `update()` cannot be
-   *                      wrapped later — the prototype is frozen — so a
-   *                      forwarder goes into each just before the freeze, and
-   *                      `capture.afterOutline(fn)` / `capture.aroundUpdate()`
-   *                      hook them.
-   *   HUD stores         every Svelte state object is made with `new Proxy`.
-   *                      The first proxy of each set of keys is kept.
-   *   entity registry    mope's per-type entity maps come out of
-   *                      Object.fromEntries: the result whose values are all
-   *                      Maps, with an `animal` among them.
+   *   1. mope's entry <script type=module> is held back the moment the
+   *      parser inserts it.
+   *   2. The game module it imports is fetched (the browser already has it
+   *      from mope's own preload), and a copy is made with ONE line added at
+   *      the end, which hands the hub a reader for the module's own
+   *      variables. Relative imports and import.meta.url are pointed back at
+   *      mope's real address, and a sourceURL comment keeps stack traces
+   *      naming the real file. None of mope's code is changed.
+   *   3. An import map sends mope's import of that module to the copy, and
+   *      the entry script goes back in. Every module that imports the game
+   *      gets the same copy, so there is still exactly one game.
+   *   If any step fails, the entry goes back untouched and mope runs as if
+   *   the hub were not there; `phase` says which step it was.
    *
-   * Every observer passes the call straight through and changes nothing mope
-   * sees; everything is recognised by SHAPE, never by a minified name.
-   * Whichever script loads first builds the hub on the page and the other
-   * uses that one, so the observers go in once. A copy that loads after mope
-   * has started (a late userscript) finds the hub `late` and empty: the only
-   * cure is a reload.
+   * Through the reader the hub takes mope's `$` (whichever variable holds
+   * the object of the game's shape), the entity tables and the Animal
+   * class. The HUD's Svelte stores still come from `new Proxy` — now the one
+   * in mope's hidden iframe, observed when mope first reaches into it.
+   *
+   * `hub.game` is `$` behind a thin view that answers to the old names
+   * (camera, network, network.send, settings, loop, player, ...) whatever
+   * mope minifies them to. Each is found by its shape, or at the one place
+   * in mope's code that uses it, so no feature had to learn new names.
    */
   const capture = (function () {
-    const REVISION = 1;
+    const REVISION = 2;
     try {
       const existing = PAGE.__lumiCapture;
-      if (existing && typeof existing.revision === 'number') return existing;
+      if (existing && typeof existing.revision === 'number' && existing.revision >= REVISION) return existing;
     } catch (e) { /* sealed page: build one for this copy */ }
 
     const native = {
       Proxy: PAGE.Proxy,
-      setPrototypeOf: Object.setPrototypeOf,
-      freeze: Object.freeze,
-      fromEntries: Object.fromEntries,
       defineProperty: Object.defineProperty,
       getOwnPropertyNames: Object.getOwnPropertyNames,
       getOwnPropertyDescriptor: Object.getOwnPropertyDescriptor,
       getPrototypeOf: Object.getPrototypeOf,
       keys: Object.keys,
+      fetch: PAGE.fetch,
     };
-    const own = Object.prototype.hasOwnProperty;
 
     const hub = {
       revision: REVISION,
@@ -160,12 +163,14 @@
       // Module scripts run once the document is parsed, so a hub built while
       // it is still loading is in place before mope's first line.
       late: document.readyState !== 'loading',
-      candidates: [],        // objects that gave themselves a camera
-      prototypes: 0,         // class prototypes seen frozen
+      phase: 'waiting for mope\'s entry script',
+      source: null,          // {url, text}: mope's game module as mope serves it
       states: new Map(),     // 'key,key,...' -> first state proxy with those keys
-      registry: null,        // {animal: Map, food: Map, ...}
-      Entity: null,          // base entity class: static create / get / has
+      registry: null,        // {animal: table, food: table, ...}
+      Entity: null,          // revision 1's base class; mope has no such class now
       Animal: null,          // animal class
+      species: null,         // mope's species enum: number -> name
+      names: {},             // old name -> mope's name for it, see VIEW_SHAPES
       outline: {method: '', canTailBite: '', after: []},
       update: [],            // {before(), after(token)} round Animal.update()
       errors: [],
@@ -175,95 +180,117 @@
       if (hub.errors.length < 20) hub.errors.push(where + ': ' + String(error && error.message || error));
     }
 
-    // A function wrapper that is itself a Proxy of mope's native function, so
-    // it still reads as native code to anything that looks.
-    function observe(holder, name, before) {
-      const original = holder[name];
-      holder[name] = new native.Proxy(original, {
-        apply(target, self, args) {
-          try { before(args); } catch (e) { fail(name, e); }
-          return Reflect.apply(target, self, args);
-        },
-      });
+    function isObject(value) {
+      return !!value && typeof value === 'object';
     }
 
-    function isGame(value) {
-      return !!value && typeof value === 'object' &&
-        ['camera', 'network', 'settings', 'loop'].every((key) => key in value) &&
-        !!value.loop && typeof value.loop === 'object';
+    /* ---- 1-3: the game module, redirected to a copy that hands itself over */
+
+    let read = null;         // the copy's reader: name -> that module variable
+    let byId = null;         // mope's table of every entity by id
+
+    async function fetchText(url) {
+      const response = await native.fetch.call(PAGE, url, {credentials: 'same-origin'});
+      if (!response.ok) throw new Error('HTTP ' + response.status + ' for ' + url);
+      return response.text();
     }
 
-    function trapCamera(proto) {
-      if (own.call(proto, 'camera')) return;
-      native.defineProperty(proto, 'camera', {
-        configurable: true,
-        get() { return undefined; },
-        set(value) {
-          native.defineProperty(this, 'camera', {value, writable: true, enumerable: true, configurable: true});
-          if (hub.candidates.length < 16) hub.candidates.push(this);
-        },
-      });
+    const IMPORT_RE = /(?:\bimport|\bfrom)\s*(["'])([^"'\n]+)\1/g;
+    const isGameSource = (text) => /\.outline\.tint\s*=/.test(text) && text.indexOf('king_dragon') !== -1;
+
+    // The entry itself, or the module among its static imports that is the
+    // game (the one that paints animal outlines and knows the king dragon).
+    async function findGameModule(entryUrl, entryText) {
+      if (isGameSource(entryText)) return {url: entryUrl, text: entryText};
+      IMPORT_RE.lastIndex = 0;
+      let m;
+      while ((m = IMPORT_RE.exec(entryText))) {
+        const url = new URL(m[2], entryUrl).href;
+        if (url.indexOf(location.origin + '/') !== 0) continue;
+        const text = await fetchText(url);
+        if (isGameSource(text)) return {url, text};
+      }
+      return null;
     }
 
-    const OUTLINE_RE = /\.outline\.tint\s*=[\s\S]*\.tail\.tint\s*=/;
-    const seen = new WeakSet();
+    function makeCopy(url, text) {
+      const absolute = (spec) => new URL(spec, url).href;
+      let out = text
+        .replace(/(\bimport\s*|\bfrom\s*)(["'])(\.{1,2}\/[^"'\n]+)\2/g,
+          (all, head, quote, spec) => head + quote + absolute(spec) + quote)
+        .replace(/(\bimport\s*\(\s*)([`"'])(\.{1,2}\/[^`"'\n$]+)\2/g,
+          (all, head, quote, spec) => head + quote + absolute(spec) + quote)
+        .replace(/\bimport\.meta\.url\b/g, JSON.stringify(url));
+      if (/\bimport\.meta\b/.test(out)) throw new Error('the game module uses import.meta in a way a copy cannot repeat');
+      // A direct eval, so it reads the module's own variables. Strict code
+      // cannot bind the name `eval`, so nothing of mope's can shadow it.
+      const line = ';globalThis.__lumiCapture&&globalThis.__lumiCapture.receive(function(__lumiName){return eval(__lumiName)});\n';
+      const at = out.lastIndexOf('export{');
+      out = at === -1 ? out + '\n' + line : out.slice(0, at) + line + out.slice(at);
+      return out + '\n//# sourceURL=' + url + '\n';
+    }
+    hub.copy = makeCopy;     // (url, text) -> what is loaded in place of the game module
 
-    function noteAnimal(proto, names) {
-      if (hub.outline.method || names.indexOf('outlineColor') === -1) return;
-      for (const name of names) {
-        const d = native.getOwnPropertyDescriptor(proto, name);
-        if (!d || typeof d.value !== 'function' || name === 'constructor') continue;
-        const source = Function.prototype.toString.call(d.value);
-        if (!OUTLINE_RE.test(source)) continue;
-        const original = d.value;
-        const after = hub.outline.after;
-        proto[name] = function () {
-          const result = original.apply(this, arguments);
-          for (const fn of after) {
-            try { fn.call(this, arguments); } catch (e) { fail('outline hook', e); }
-          }
-          return result;
-        };
-        const bite = /\?\.([\w$]+)\(this\)/.exec(source);
-        hub.outline.method = name;
-        hub.outline.canTailBite = bite ? bite[1] : '';
-        hub.Animal = proto.constructor;
-        const update = native.getOwnPropertyDescriptor(proto, 'update');
-        if (update && typeof update.value === 'function') {
-          const step = update.value;
-          const around = hub.update;
-          proto.update = function () {
-            if (!around.length) return step.apply(this, arguments);
-            const tokens = around.map((h) => {
-              try { return h.before ? h.before.call(this) : undefined; } catch (e) { fail('update hook', e); }
-              return undefined;
-            });
-            const result = step.apply(this, arguments);
-            around.forEach((h, i) => {
-              try { if (h.after) h.after.call(this, tokens[i]); } catch (e) { fail('update hook', e); }
-            });
-            return result;
-          };
+    async function redirect(entry) {
+      const entryUrl = entry.src;
+      let entryCopy = '';
+      try {
+        hub.phase = 'reading mope\'s entry script';
+        const game = await findGameModule(entryUrl, await fetchText(entryUrl));
+        if (!game) throw new Error('none of the entry\'s imports is the game module');
+        hub.source = game;
+        const copy = URL.createObjectURL(new Blob([makeCopy(game.url, game.text)], {type: 'text/javascript'}));
+        if (game.url === entryUrl) {
+          entryCopy = copy;
+        } else {
+          const map = document.createElement('script');
+          map.type = 'importmap';
+          map.textContent = JSON.stringify({imports: {[game.url]: copy}});
+          (document.head || document.documentElement).appendChild(map);
+          map.remove();      // registered on insertion; the element is not needed
         }
-        return;
+        hub.phase = 'game module redirected, waiting for mope to start it';
+      } catch (e) {
+        fail('redirect', e);
+        hub.phase = 'could not redirect mope\'s game module, so mope runs untouched (' +
+          String(e && e.message || e) + ')';
+      } finally {
+        const again = document.createElement('script');
+        for (const attr of Array.from(entry.attributes)) {
+          if (attr.name !== 'type' && attr.name !== 'src') again.setAttribute(attr.name, attr.value);
+        }
+        again.type = 'module';
+        again.src = entryCopy || entryUrl;
+        if (entry.isConnected) entry.replaceWith(again);
+        else (document.head || document.documentElement).appendChild(again);
       }
     }
 
-    function noteFrozen(value) {
-      if (!value || typeof value !== 'object' || seen.has(value)) return;
-      const d = native.getOwnPropertyDescriptor(value, 'constructor');
-      const ctor = d && d.value;
-      if (typeof ctor !== 'function' || ctor.prototype !== value) return;
-      seen.add(value);
-      hub.prototypes++;
-      if (!hub.Entity && ['create', 'get', 'has'].every((k) => own.call(ctor, k) && typeof ctor[k] === 'function')) {
-        hub.Entity = ctor;
-      }
-      noteAnimal(value, native.getOwnPropertyNames(value));
+    function holdEntry() {
+      const observer = new MutationObserver((records) => {
+        for (const record of records) {
+          for (const node of record.addedNodes) {
+            if (node.tagName !== 'SCRIPT' || node.type !== 'module' || !node.src) continue;
+            if (node.src.indexOf(location.origin + '/') !== 0) continue;
+            observer.disconnect();
+            // Before the parser reaches </script>, so it is never run as is.
+            node.type = 'text/plain';
+            redirect(node).catch((e) => fail('redirect', e));
+            return;
+          }
+        }
+      });
+      observer.observe(document, {childList: true, subtree: true});
+      document.addEventListener('DOMContentLoaded', () => {
+        observer.disconnect();
+        if (hub.phase === 'waiting for mope\'s entry script') hub.phase = 'this page has no mope entry script';
+      }, {once: true});
     }
+
+    /* ---- the HUD stores: Svelte's `new Proxy`, from mope's hidden iframe */
 
     function noteState(value, made) {
-      if (hub.states.size >= 4000 || !value || typeof value !== 'object') return;
+      if (hub.states.size >= 4000 || !isObject(value)) return;
       if (native.getPrototypeOf(value) !== Object.prototype) return;
       const keys = native.keys(value);
       if (keys.length < 2) return;
@@ -271,42 +298,278 @@
       if (!hub.states.has(id)) hub.states.set(id, made);
     }
 
-    if (!hub.late) {
-      try {
-        observe(Object, 'setPrototypeOf', (args) => {
-          const target = args[0];
-          if (args[1] === null && target && typeof target === 'object' && !hub.game) trapCamera(target);
-        });
-        observe(Object, 'freeze', (args) => noteFrozen(args[0]));
-        const fromEntries = native.fromEntries;
-        Object.fromEntries = new native.Proxy(fromEntries, {
-          apply(target, self, args) {
-            const result = Reflect.apply(target, self, args);
-            try {
-              if (!hub.registry && result && result.animal instanceof Map) {
-                const values = Object.values(result);
-                if (values.length > 3 && values.every((v) => v instanceof Map)) hub.registry = result;
-              }
-            } catch (e) { fail('fromEntries', e); }
-            return result;
-          },
-        });
-        PAGE.Proxy = new native.Proxy(native.Proxy, {
-          construct(target, args, newTarget) {
-            const made = Reflect.construct(target, args, newTarget);
-            try { noteState(args[0], made); } catch (e) { fail('Proxy', e); }
-            return made;
-          },
-        });
-      } catch (e) { fail('install', e); }
+    let frameHook = null;    // contentWindow's own descriptor while it is watched
+    function unwatchFrames() {
+      if (!frameHook) return;
+      try { native.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', frameHook); } catch (e) { fail('frame', e); }
+      frameHook = null;
     }
 
-    let game = null;
+    // mope makes its iframe hidden, straight under <html>, and reads
+    // contentWindow once to take what it needs from it — Proxy among them.
+    function watchFrames() {
+      const proto = HTMLIFrameElement.prototype;
+      const d = native.getOwnPropertyDescriptor(proto, 'contentWindow');
+      if (!d || typeof d.get !== 'function') return;
+      frameHook = d;
+      native.defineProperty(proto, 'contentWindow', {
+        configurable: true,
+        enumerable: d.enumerable,
+        get: new native.Proxy(d.get, {
+          apply(target, self, args) {
+            const win = Reflect.apply(target, self, args);
+            try {
+              if (win && self.hidden && self.parentNode === document.documentElement) {
+                const P = win.Proxy;
+                const R = win.Reflect;
+                win.Proxy = new P(P, {
+                  construct(t, a, n) {
+                    const made = R.construct(t, a, n);
+                    try { noteState(a[0], made); } catch (e) { fail('Proxy', e); }
+                    return made;
+                  },
+                });
+                hub.frameProxy = true;
+                unwatchFrames();
+              }
+            } catch (e) { fail('frame', e); }
+            return win;
+          },
+        }),
+      });
+    }
+
+    if (!hub.late) {
+      try { holdEntry(); } catch (e) { fail('hold', e); }
+      try { watchFrames(); } catch (e) { fail('frames', e); }
+    } else {
+      hub.phase = 'started after mope did';
+    }
+
+    /* ---- what the reader hands over */
+
+    function peek(name) {
+      if (!read || !/^[\w$]+$/.test(name)) return undefined;
+      try { return read(name); } catch (e) { return undefined; }
+    }
+
+    function looksLikeGame(value) {
+      if (!isObject(value)) return false;
+      return ['minimap', 'textureBuilder', 'colors', 'audio'].every((key) => key in value);
+    }
+
+    const OUTLINE_RE = /\.outline\.tint\s*=[\s\S]*\.tail\.tint\s*=/;
+
+    // The animal's outline method and its update(), wrapped in place.
+    function hookAnimal(Animal) {
+      if (hub.outline.method || typeof Animal !== 'function') return;
+      for (let proto = Animal.prototype; proto && proto !== Object.prototype; proto = native.getPrototypeOf(proto)) {
+        for (const name of native.getOwnPropertyNames(proto)) {
+          if (name === 'constructor') continue;
+          const d = native.getOwnPropertyDescriptor(proto, name);
+          if (!d || typeof d.value !== 'function') continue;
+          const source = Function.prototype.toString.call(d.value);
+          if (!OUTLINE_RE.test(source)) continue;
+          const original = d.value;
+          const after = hub.outline.after;
+          native.defineProperty(proto, name, {
+            configurable: true, writable: true, enumerable: d.enumerable,
+            value: function () {
+              const result = original.apply(this, arguments);
+              for (const fn of after) {
+                try { fn.call(this, arguments); } catch (e) { fail('outline hook', e); }
+              }
+              return result;
+            },
+          });
+          const bite = /\?\.([\w$]+)\(this\)/.exec(source);
+          hub.outline.method = name;
+          hub.outline.canTailBite = bite ? bite[1] : '';
+          const step = proto.update;
+          if (typeof step === 'function') {
+            const around = hub.update;
+            native.defineProperty(proto, 'update', {
+              configurable: true, writable: true, enumerable: false,
+              value: function () {
+                if (!around.length) return step.apply(this, arguments);
+                const tokens = around.map((h) => {
+                  try { return h.before ? h.before.call(this) : undefined; } catch (e) { fail('update hook', e); }
+                  return undefined;
+                });
+                const result = step.apply(this, arguments);
+                around.forEach((h, i) => {
+                  try { if (h.after) h.after.call(this, tokens[i]); } catch (e) { fail('update hook', e); }
+                });
+                return result;
+              },
+            });
+          }
+          hub.Animal = Animal;
+          return;
+        }
+      }
+      fail('animal', 'no outline method on the animal class');
+    }
+
+    let raw = null;          // mope's `$`
+
+    function adopt() {
+      const text = hub.source ? hub.source.text : '';
+      // `$`: whichever module variable made with `new` has the game's shape.
+      const names = ['$'];
+      const NEW_RE = /\bvar ([\w$]+)=new [\w$]+(?=[,;])/g;
+      let m;
+      while ((m = NEW_RE.exec(text)) && names.length < 2000) names.push(m[1]);
+      for (const name of names) {
+        const value = peek(name);
+        if (looksLikeGame(value)) { raw = value; hub.names.$ = name; break; }
+      }
+      if (!raw) fail('adopt', 'no module variable has the game\'s shape');
+
+      // Entity.create: `Ts.get(i.id)?.destroy(!0),Ts.set(i.id,i),Es[i.type].set(i.id,i)`
+      const tables = /([\w$]+)\.set\(([\w$]+)\.id,\2\),([\w$]+)\[\2\.type\]\.set\(\2\.id,\2\)/.exec(text);
+      if (tables) {
+        const all = peek(tables[1]);
+        const perType = peek(tables[3]);
+        if (all && typeof all.get === 'function') byId = all;
+        if (isObject(perType) && perType.animal && typeof perType.animal.values === 'function') hub.registry = perType;
+      }
+      if (!hub.registry) fail('adopt', 'entity tables not found');
+
+      // var X=function(e){return e[e.mouse=0]=`mouse`,e[e.shrimp=1]=`shrimp`,...
+      const species = /\bvar ([\w$]+)=function\(([\w$]+)\)\{return \2\[\2\.mouse=0\]=/.exec(text);
+      const table = species && peek(species[1]);
+      if (isObject(table) && table[0] === 'mouse') hub.species = table;
+      else fail('adopt', 'species enum not found');
+
+      const classes = raw && resolve('classes');
+      const Animal = classes && classes.global && classes.global.animal;
+      if (typeof Animal === 'function') {
+        try { hookAnimal(Animal); } catch (e) { fail('animal', e); }
+      } else {
+        fail('adopt', 'animal class not found');
+      }
+      unwatchFrames();
+      hub.phase = raw ? 'ready' : 'mope started, but its game object was not recognised';
+    }
+
+    hub.receive = function (reader) {
+      if (read || typeof reader !== 'function') return;
+      read = reader;
+      try { adopt(); } catch (e) { fail('adopt', e); }
+    };
+
+    /* ---- `$` under the old names */
+
+    // Old name -> what mope's value for it looks like.
+    const VIEW_SHAPES = {
+      __proto__: null,
+      camera: (v) => isObject(v.target) && 'zoom' in v.target && 'position' in v.target && 'interpolation' in v,
+      network: (v) => 'readyState' in v && 'protocol' in v && 'latency' in v,
+      settings: (v) => isObject(v.rendering) && isObject(v.gameplay) && 'binds' in v,
+      loop: (v) => 'stage' in v && 'world' in v && 'HUD' in v && 'renderer' in v,
+      inputs: (v) => 'pointerPosition' in v && ('keyboard' in v || 'mobile' in v),
+      map: (v) => 'biomes' in v && 'bounds' in v && 'shape' in v,
+      config: (v) => 'gameVersion' in v && 'maxEventRate' in v,
+      classes: (v) => isObject(v.global) && 'animals' in v && 'foods' in v,
+    };
+
+    // Names only mope's code can tell: the one place each is used.
+    const SOURCE_NAMES = {
+      __proto__: null,
+      // this.Zc(`upgrade`,e)&&$.Ti.jb(201)
+      network: [/`upgrade`,[\w$]+\)&&[\w$]+\.([\w$]+)\.[\w$]+\(\d+\)/],
+      send: [/`upgrade`,[\w$]+\)&&[\w$]+\.[\w$]+\.([\w$]+)\(\d+\)/],
+      // Tj(e){if(e.type!==`animal`||!e.animalConfig?.animalResource)return this;this.Ml=e,bu(`first_spawn`
+      player: [/this\.([\w$]+)=[\w$]+,[\w$]+\(`first_spawn`/,
+        /\.type!==`animal`\|\|![\w$]+\.animalConfig\?\.animalResource\)return this;this\.([\w$]+)=/],
+    };
+
+    function fromSource(name) {
+      const text = hub.source ? hub.source.text : '';
+      for (const re of SOURCE_NAMES[name] || []) {
+        const m = re.exec(text);
+        if (m) return m[1];
+      }
+      return '';
+    }
+
+    // mope's own name on `$` for one of the old names, or '' while unknown.
+    function nameFor(old) {
+      if (!raw) return '';
+      if (hub.names[old] && hub.names[old] in raw) return hub.names[old];
+      if (own(raw, old)) return old;
+      let found = fromSource(old);
+      if (!found && VIEW_SHAPES[old]) {
+        for (const key of native.getOwnPropertyNames(raw)) {
+          let value;
+          try { value = raw[key]; } catch (e) { continue; }
+          if (isObject(value) && VIEW_SHAPES[old](value)) { found = key; break; }
+        }
+      }
+      if (found) hub.names[old] = found;
+      return found;
+    }
+
+    function own(object, key) {
+      return !!native.getOwnPropertyDescriptor(object, key);
+    }
+
+    function resolve(old) {
+      const key = nameFor(old);
+      return key ? raw[key] : undefined;
+    }
+
+    const views = new WeakMap();
+    // `real` behind its old names: `alias(name)` gives mope's name. Methods
+    // called through the view run on the real object, so mope's private
+    // fields keep working.
+    function view(real, alias, wrapField) {
+      if (views.has(real)) return views.get(real);
+      const methods = new WeakMap();
+      let proxy = null;
+      const method = (fn) => {
+        let wrapped = methods.get(fn);
+        if (!wrapped) {
+          wrapped = new native.Proxy(fn, {
+            apply(target, self, args) { return Reflect.apply(target, self === proxy ? real : self, args); },
+          });
+          methods.set(fn, wrapped);
+        }
+        return wrapped;
+      };
+      proxy = new native.Proxy(real, {
+        get(target, key) {
+          const name = alias(key);
+          const value = Reflect.get(target, name);
+          if (typeof value === 'function') return method(value);
+          return wrapField ? wrapField(key, value) : value;
+        },
+        set(target, key, value) { return Reflect.set(target, alias(key), value); },
+        has(target, key) { return alias(key) in target; },
+        defineProperty(target, key, d) { return Reflect.defineProperty(target, alias(key), d); },
+      });
+      views.set(real, proxy);
+      return proxy;
+    }
+
+    const gameAlias = (key) => {
+      if (typeof key !== 'string' || !raw || own(raw, key)) return key;
+      return VIEW_SHAPES[key] || SOURCE_NAMES[key] ? (nameFor(key) || key) : key;
+    };
+    const networkAlias = (key) => {
+      if (key !== 'send') return key;
+      const network = resolve('network');
+      if (network && own(network, 'send')) return key;
+      return fromSource('send') || key;
+    };
+
     native.defineProperty(hub, 'game', {
       enumerable: true,
       get() {
-        if (!game) game = hub.candidates.find(isGame) || null;
-        return game;
+        if (!raw) return null;
+        return view(raw, gameAlias, (key, value) =>
+          key === 'network' && isObject(value) ? view(value, networkAlias) : value);
       },
     });
 
@@ -324,20 +587,13 @@
       const registry = hub.registry;
       if (!registry) return;
       for (const key of native.keys(registry)) {
-        const map = registry[key];
-        if (map instanceof Map) yield* map.values();
+        const table = registry[key];
+        if (table && typeof table.values === 'function') yield* table.values();
       }
     };
 
     hub.entity = function (id) {
-      try { if (hub.Entity) return hub.Entity.get(id) || null; } catch (e) { /* fall through */ }
-      const registry = hub.registry;
-      if (!registry) return null;
-      for (const key of native.keys(registry)) {
-        const map = registry[key];
-        const found = map instanceof Map && map.get(id);
-        if (found) return found;
-      }
+      try { if (byId) return byId.get(id) || null; } catch (e) { /* fall through */ }
       return null;
     };
 
@@ -389,7 +645,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.1.3';
+    return '1.1.4';
   })();
 
   /* ---------------------------------------------- one instance, one layer */
@@ -778,7 +1034,7 @@
       }
       state.phase = capture.late
         ? 'this copy started after mope did, so it could not see the game start — reload the page'
-        : 'waiting for mope to build the game';
+        : 'waiting for the game: ' + capture.phase;
       return false;
     }
 
@@ -966,6 +1222,12 @@
     if (!entity || typeof entity.species !== 'number') return '';
     const known = speciesNames.get(entity.species);
     if (known) return known;
+    // mope's own table, through the capture hub (since mope 2026-11-02).
+    const table = capture.species;
+    if (table && typeof table[entity.species] === 'string') {
+      speciesNames.set(entity.species, table[entity.species]);
+      return table[entity.species];
+    }
     let name = '';
     try {
       if (!entity.equippedItemId) {

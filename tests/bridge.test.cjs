@@ -1,60 +1,37 @@
-// The capture hub and the bridge over it. Since mope's 2026-10-31 build the
-// game is reachable only while the page starts: mope detaches each class
-// prototype from Object.prototype and freezes it, builds its entity registry
-// with Object.fromEntries and its HUD stores with `new Proxy`. The fixtures
-// below do exactly that, in that order (see aA() and the `$ = new OA` line of
-// mope's game chunk), with the hub installed first as the extension is.
+// The capture hub and the bridge over it. Since mope's 2026-11-02 build the
+// hub loads a copy of mope's game module that hands it a reader for the
+// module's own variables; the fixture below is a game module in miniature,
+// written the way mope's minifier writes it, because the hub finds several
+// names at the one place in mope's code that uses them. Its text doubles as
+// the module source the hub reads.
 const {test} = require('node:test');
 const {assert, fn, constant, run} = require('./helpers.cjs');
 
 const pieces = ['mopeHasKeys', 'mopeIsGame', 'mopeIsAnimalStats'].map(fn);
 
-// mope's start-up, in miniature. Names are minified in the real thing; the
-// hub must not care what they are.
-const mope = `
-  class Game {
-    constructor() {
-      this.Br = {xp: 4, oxygen: 100, rank: 1, resource: {value: 90, max: 100, type: 0}};
-      this.settings = {};
-      this.network = {send() {}};
-      this.loop = {canvas: null};
-      this.camera = {zoom: 1, target: {zoom: 1}};
-    }
-  }
-  class Entity {
-    static create() {}
-    static get(id) { return registry.animal.get(id) || null; }
-    static has() {}
-    get outlineColor() { return 'grey'; }
-  }
-  class Animal extends Entity {
-    get outlineColor() { return this.arena ? 'cyan' : 'grey'; }
-    nv(e = this.outlineColor) {
-      return this.outline.tint = e, me?.Zb(this) ? this.tail.tint = 'green' : this.tail.tint = e, this;
-    }
-    Zb(other) { return this !== other && this.tier === other.tier; }
-    update() { this.angle += 1; return this; }
-  }
-  class Mouse extends Animal {}
-  function aA(e) {
-    let t = e.prototype;
-    for (; t && t !== Object.prototype;) {
-      let e = Object.getPrototypeOf(t);
-      e === Object.prototype && Object.setPrototypeOf(t, null), Object.freeze(t), t = e;
-    }
-  }
-  for (const e of [Game, Mouse, Animal]) aA(e);
-  const game = new Game();
-  const registry = Object.fromEntries([['animal', new Map()], ['food', new Map()],
-    ['tree', new Map()], ['hole', new Map()]]);
-  const hud = new PAGE.Proxy({cooldowns: {}, hasAbility1: true, animalBiome: 'land', equippedItemId: ''}, {});
-  const nested = new PAGE.Proxy({cooldowns: 1, hasAbility1: 2}, {});
-  let me = null;
-`;
+const mope = [
+  'var X=function(e){return e[e.mouse=0]=`mouse`,e[e.shrimp=1]=`shrimp`,e}({});',
+  'class Table{items=new Map;get(e){return this.items.get(e)}set(e,t){return this.items.set(e,t),this}values(){return this.items.values()}}',
+  'var Ts=new Table,Es={__proto__:null,animal:new Table,food:new Table};',
+  'class Network{#e=[];readyState=`open`;protocol=1;latency=0;jb(e,t){return this.#e.push([e,t]),this.#e.length}sent(){return this.#e}}',
+  'class Camera{zoom=1;interpolation={};target={position:{},angle:0,zoom:1}}',
+  'class Animal{get outlineColor(){return this.arena?`cyan`:`grey`}Hj(e=this.outlineColor){return this.outline.tint=e,$.Ml?.Vj(this)?this.tail.tint=`green`:this.tail.tint=e,this}Vj(e){return this!==e&&this.tier===e.tier}update(){return this.angle+=1,this}}',
+  'class Mouse extends Animal{type=`animal`}',
+  'function bu(){}',
+  'class Game{Ml;Ti;_l;Vy;colors;minimap;textureBuilder;audio;Ge;constructor(){this.Ti=new Network,this._l=new Camera,this.Vy={global:{animal:Animal},animals:{},foods:{}},this.colors={},this.minimap={},this.textureBuilder={},this.audio={},this.Ge={xp:4,oxygen:100,rank:1,resource:{value:90,max:100,type:0}}}Zc(e){return!0}key(e){this.Zc(`upgrade`,e)&&$.Ti.jb(201)}Tj(e){this.Ml=e,bu(`first_spawn`)}}',
+  'function spawn(i){return Ts.get(i.id)?.destroy(!0),Ts.set(i.id,i),Es[i.type].set(i.id,i),i}',
+  'var $=new Game;',
+].join('\n');
 
-function hub(readyState, expr) {
+// The hub, then mope's module with the line the copy adds at its end.
+function hub(expr, globals) {
   const page = {Proxy};
-  return run([constant('capture'), mope], {PAGE: page, document: {readyState}}, expr);
+  return run([
+    constant('capture'),
+    'capture.source = {url: "https://mope.io/c/game.js", text: ' + JSON.stringify(mope) + '};',
+    mope,
+    'capture.receive(function(__lumiName){return eval(__lumiName)});',
+  ], Object.assign({PAGE: page, URL, document: {readyState: 'loading'}}, globals), expr);
 }
 
 test('the game singleton is recognised, and plain objects are not', () => {
@@ -72,50 +49,107 @@ test('the per-animal counters are found by shape, whatever mope calls them', () 
   assert.equal(check('mopeIsAnimalStats(null)'), false);
 });
 
-test('the hub catches the game, the classes, the registry and the stores as mope builds them', () => {
-  const out = hub('loading', `({
-    game: capture.game === game,
-    entity: capture.Entity === Entity,
+test('the copy hands over the game, its tables, the animal class and the species names', () => {
+  const out = hub(`({
+    phase: capture.phase,
+    adoptErrors: capture.errors.filter((e) => /^(adopt|animal)/.test(e)),
+    camera: capture.game.camera === $._l,
+    hasOld: ['camera', 'network', 'player'].every((k) => k in capture.game),
+    stats: capture.game.Ge === $.Ge,
+    names: Object.assign({}, capture.names),
     animal: capture.Animal === Animal,
     method: capture.outline.method,
     bite: capture.outline.canTailBite,
-    registry: capture.registry === registry,
-    hud: capture.state(['cooldowns', 'hasAbility1', 'animalBiome']) === hud,
-    nobody: capture.state(['nothing', 'here']),
-    stillFrozen: Object.isFrozen(Animal.prototype) && Object.getPrototypeOf(Entity.prototype) === null,
-    cameraIsOwn: Object.prototype.hasOwnProperty.call(game, 'camera'),
+    registry: capture.registry === Es,
+    species: capture.species[1],
   })`);
-  assert.deepEqual(out, {game: true, entity: true, animal: true, method: 'nv', bite: 'Zb',
-    registry: true, hud: true, nobody: null, stillFrozen: true, cameraIsOwn: true});
+  assert.deepEqual(out, {
+    phase: 'ready', adoptErrors: [], camera: true, hasOld: true, stats: true,
+    names: {$: '$', classes: 'Vy', camera: '_l', network: 'Ti', player: 'Ml'},
+    animal: true, method: 'Hj', bite: 'Vj', registry: true, species: 'shrimp',
+  });
 });
 
-test('the frozen Animal methods can still be hooked, through the hub', () => {
-  const out = hub('loading', `(() => {
-    const a = new Mouse(), b = new Mouse();
-    Object.assign(a, {tier: 15, angle: 0, outline: {}, tail: {}});
-    Object.assign(b, {tier: 15, angle: 0, outline: {}, tail: {}});
-    me = a;
+test('the old names reach mope\'s minified ones, private fields and all', () => {
+  const out = hub(`(() => {
+    const game = capture.game;
+    const before = game.player;
+    const mouse = spawn(Object.assign(new Mouse(), {id: 7}));
+    $.Tj(mouse);
+    const sent = game.network.send(5, {a: 1});
+    // Moderator Extras wraps send this way to see mope's own packets.
+    const seen = [];
+    const original = game.network.send;
+    Object.defineProperty(game.network, 'send', {configurable: true, writable: true,
+      value: function (op) { seen.push(op); return original.apply(this, arguments); }});
+    $.key();
+    return {before: before === undefined, player: game.player === mouse, sent,
+      ops: $.Ti.sent().map((p) => p[0]), seen, own: Object.prototype.hasOwnProperty.call($.Ti, 'jb'),
+      ready: game.network.readyState};
+  })()`);
+  assert.deepEqual(out, {before: true, player: true, sent: 1, ops: [5, 201], seen: [201], own: true, ready: 'open'});
+});
+
+test('the Animal methods are hooked, and the entity tables read', () => {
+  const out = hub(`(() => {
+    const a = spawn(Object.assign(new Mouse(), {id: 1, tier: 15, angle: 0, outline: {}, tail: {}}));
+    const b = spawn(Object.assign(new Mouse(), {id: 2, tier: 15, angle: 0, outline: {}, tail: {}}));
+    $.Ml = a;
     const seen = [];
     capture.afterOutline(function (args) { seen.push([this === b, args[0]]); });
     capture.aroundUpdate({before() { return this.angle; }, after(before) { seen.push(['turned', this.angle - before]); }});
-    b.nv();
-    b.nv('red');
+    b.Hj();
+    b.Hj('red');
     b.update();
-    registry.animal.set(7, b);
-    return {seen, tint: [b.outline.tint, b.tail.tint], byId: capture.entity(7) === b,
-      all: [...capture.entities()].length};
+    return {seen, tint: [b.outline.tint, b.tail.tint], byId: capture.entity(2) === b,
+      none: capture.entity(9), all: [...capture.entities()].length};
   })()`);
   assert.deepEqual(out.seen, [[true, undefined], [true, 'red'], ['turned', 1]]);
   assert.deepEqual(out.tint, ['red', 'green'], 'mope\'s own method still ran, biteable tail and all');
   assert.equal(out.byId, true);
-  assert.equal(out.all, 1);
+  assert.equal(out.none, null);
+  assert.equal(out.all, 2);
+});
+
+test('the HUD stores come from the Proxy of mope\'s hidden iframe', () => {
+  class HTMLIFrameElement { get contentWindow() { return this.win; } }
+  const original = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow').get;
+  const html = {};
+  // mope reads its iframe at the top of the module, before the copy's
+  // last line ends the watch, so the hub runs here without the module.
+  const out = run([constant('capture')], {PAGE: {Proxy}, HTMLIFrameElement, ORIGINAL: original,
+    document: {readyState: 'loading', documentElement: html}}, `(() => {
+    const frame = new HTMLIFrameElement();
+    Object.assign(frame, {hidden: true, parentNode: document.documentElement, win: {Proxy, Reflect}});
+    const je = frame.contentWindow.Proxy;
+    const hud = new je({cooldowns: {}, hasAbility1: true, animalBiome: 'land', equippedItemId: ''}, {});
+    return {hud: capture.state(['cooldowns', 'hasAbility1', 'animalBiome']) === hud,
+      nobody: capture.state(['nothing', 'here']), frame: capture.frameProxy,
+      restored: Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow').get === ORIGINAL};
+  })()`);
+  assert.equal(out.hud, true);
+  assert.equal(out.nobody, null);
+  assert.equal(out.frame, true);
+  assert.equal(out.restored, true, 'contentWindow is mope\'s own again once the iframe is seen');
+});
+
+test('the copy points mope\'s relative imports home and adds one line', () => {
+  const text = 'import{a as e}from"../packages/P.js";import"./Q.js";' +
+    'const z=()=>import(`./Z.js`),u=new URL(`x.webp`,import.meta.url);export{e as A};';
+  const out = hub(`capture.copy('https://mope.io/c/G.js', ${JSON.stringify(text)})`);
+  assert.equal(out,
+    'import{a as e}from"https://mope.io/packages/P.js";import"https://mope.io/c/Q.js";' +
+    'const z=()=>import(`https://mope.io/c/Z.js`),u=new URL(`x.webp`,"https://mope.io/c/G.js");' +
+    ';globalThis.__lumiCapture&&globalThis.__lumiCapture.receive(function(__lumiName){return eval(__lumiName)});\n' +
+    'export{e as A};\n//# sourceURL=https://mope.io/c/G.js\n');
+  assert.throws(() => hub('capture.copy("https://mope.io/c/G.js", "import.meta.resolve(`x`)")'),
+    /import\.meta/, 'a module it cannot copy faithfully is left alone');
 });
 
 test('a copy that starts after mope did installs nothing and says so', () => {
-  const out = hub('interactive', '({late: capture.late, game: capture.game, registry: capture.registry})');
-  assert.equal(out.late, true);
-  assert.equal(out.game, null);
-  assert.equal(out.registry, null);
+  const out = run([constant('capture')], {PAGE: {Proxy}, document: {readyState: 'interactive'}},
+    '({late: capture.late, phase: capture.phase, game: capture.game, registry: capture.registry})');
+  assert.deepEqual(out, {late: true, phase: 'started after mope did', game: null, registry: null});
 });
 
 test('the bridge never pins one of mope\'s file names', () => {

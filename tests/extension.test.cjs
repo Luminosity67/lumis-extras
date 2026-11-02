@@ -59,11 +59,12 @@ test('none of the 1.0.x traps survive the rebuild', () => {
   assert.doesNotMatch(source, /Map\.prototype\.set\s*=|prototype\.set\s*=\s*wrapper/);
   assert.doesNotMatch(source, /__PIXI_(?:RENDERER|APP)_INIT__/);
   assert.doesNotMatch(source, /fillText.*noteXpText|function hookCanvasXp/);
-  // 1.1.3's capture hub observes `new Proxy` (mope's stores are made that
-  // way), and nothing outside the hub may.
+  // The capture hub observes `new Proxy` (mope's stores are made that way —
+  // since 1.1.4 with the Proxy of mope's hidden iframe), and nothing outside
+  // the hub may.
   const hubStart = source.indexOf('  const capture = (function () {');
   const hubEnd = source.indexOf('\n  })();\n', hubStart);
-  const proxies = [...source.matchAll(/PAGE\.Proxy\s*=/g)].map((m) => m.index);
+  const proxies = [...source.matchAll(/\.Proxy\s*=/g)].map((m) => m.index);
   assert.equal(proxies.length, 1);
   assert.ok(proxies[0] > hubStart && proxies[0] < hubEnd, 'only inside the capture hub');
 });
