@@ -31,7 +31,7 @@ function hub(expr, globals) {
     'capture.source = {url: "https://mope.io/c/game.js", text: ' + JSON.stringify(mope) + '};',
     mope,
     'capture.receive(function(__lumiName){return eval(__lumiName)});',
-  ], Object.assign({PAGE: page, document: {readyState: 'loading'}}, globals), expr);
+  ], Object.assign({PAGE: page, URL, document: {readyState: 'loading'}}, globals), expr);
 }
 
 test('the game singleton is recognised, and plain objects are not', () => {
@@ -115,7 +115,10 @@ test('the HUD stores come from the Proxy of mope\'s hidden iframe', () => {
   class HTMLIFrameElement { get contentWindow() { return this.win; } }
   const original = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow').get;
   const html = {};
-  const out = hub(`(() => {
+  // mope reads its iframe at the top of the module, before the copy's
+  // last line ends the watch, so the hub runs here without the module.
+  const out = run([constant('capture')], {PAGE: {Proxy}, HTMLIFrameElement, ORIGINAL: original,
+    document: {readyState: 'loading', documentElement: html}}, `(() => {
     const frame = new HTMLIFrameElement();
     Object.assign(frame, {hidden: true, parentNode: document.documentElement, win: {Proxy, Reflect}});
     const je = frame.contentWindow.Proxy;
@@ -123,7 +126,7 @@ test('the HUD stores come from the Proxy of mope\'s hidden iframe', () => {
     return {hud: capture.state(['cooldowns', 'hasAbility1', 'animalBiome']) === hud,
       nobody: capture.state(['nothing', 'here']), frame: capture.frameProxy,
       restored: Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow').get === ORIGINAL};
-  })()`, {HTMLIFrameElement, ORIGINAL: original, document: {readyState: 'loading', documentElement: html}});
+  })()`);
   assert.equal(out.hud, true);
   assert.equal(out.nobody, null);
   assert.equal(out.frame, true);
