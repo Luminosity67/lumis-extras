@@ -21,8 +21,9 @@ function makeHub(opts) {
     dbg: () => {},
     kbCapturing: () => false,
     Element: class {},
+    capture: {late: !!options.late},
     bridge: {
-      game: {camera},
+      game: options.noGame ? {} : {camera},
       ready: () => ({then: (f) => f()}),
       status: () => ({phase: 'ready'}),
     },
@@ -34,7 +35,7 @@ function makeHub(opts) {
 
 test('the hub keeps revision 3\'s public API, so Moderator Extras joins unchanged', () => {
   const {hub} = makeHub();
-  assert.equal(hub.rev, 5);
+  assert.equal(hub.rev, 6);
   for (const name of ['normalize', 'getLevel', 'setLevel', 'hooked', 'hookedVia', 'preemptedBy',
     'ownerId', 'rehook', 'status', 'note', 'retire', 'join']) {
     assert.equal(typeof hub[name], 'function', name);
@@ -115,4 +116,12 @@ test('zoom-in goes past vanilla: 10% steps to 200%, 25% past it, capped at 400%'
   assert.equal(level, 1.9, 'fine again below 200%');
   for (let i = 0; i < 40; i++) level = hub.normalize(hub.stepped(level, 1));
   assert.equal(level, 4);
+});
+
+test('an unhooked hub that started after mope says how to fix it instead of waiting', () => {
+  assert.match(makeHub({noGame: true}).hub.note(), /Waiting for the game/);
+  const {hub} = makeHub({noGame: true, late: true});
+  assert.equal(hub.hooked(), false);
+  assert.match(hub.note(), /UserScripts API Dynamic/);
+  assert.match(makeHub({late: true}).hub.note(), /Scroll/, 'a hooked camera wins over the late flag');
 });
