@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.1.5
+// @version      1.1.6
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, your own duel outline colours, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -96,6 +96,11 @@
  * entry script is already on the page, and says how to fix it — Tampermonkey
  * only runs scripts early enough with Settings → Config mode: Advanced →
  * Content Script API: "UserScripts API Dynamic".
+ *
+ * 1.1.6 — zoom fix: with an older Lumi's Moderator Extras (1.14.1 or
+ * earlier) on the page, the shared zoom could be left with no way to reach
+ * the camera. Zoom hub revision 6 takes over from those. An unhooked zoom
+ * that started after mope now says how to fix it.
  */
 
 (function () {
@@ -657,7 +662,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.1.5';
+    return '1.1.6';
   })();
 
   /* ---------------------------------------------- one instance, one layer */
@@ -1468,10 +1473,20 @@
    * the hub zoom in LESS than vanilla — felt most in a 1v1, where people zoom
    * in on the fight. Steps are 10% up to 200% and 25% past it. Zoom-out keeps
    * its 50% floor. Same API, so Moderator Extras still joins unchanged.
+   *
+   * REVISION 6 (Extras 1.1.6, Moderator Extras 1.16.5) zooms exactly as 5
+   * did; note() also says when the script started after mope. The bump exists
+   * because the hub finds the camera through the script that built
+   * it, and revision 5 spans two ways of finding it: the import() bridge
+   * (Extras ≤ 1.1.2, Moderator ≤ 1.14.1), dead since mope's 2026-10-31 build,
+   * and the capture hub that replaced it. Same number, so a current script
+   * joined an old one's hub and its zoom never reached the camera. Bumping
+   * the number makes a current script replace any hub from before the
+   * capture hub.
    */
 
   const ZOOM_HUB_KEY = '__lumiZoomHub';
-  const ZOOM_HUB_REV = 5;
+  const ZOOM_HUB_REV = 6;
 
   function buildZoomHub(previous) {
     // Shared, so both panels always read the same number.
@@ -1780,6 +1795,11 @@
 
     function note() {
       if (state.target) return 'Scroll, or − and =, while in game';
+      // Started after mope's game module ran: no amount of waiting fixes it.
+      if (capture.late) {
+        return 'Started after mope, so the camera is out of reach. In Tampermonkey: ' +
+          'Config mode Advanced → Content Script API "UserScripts API Dynamic", then reload';
+      }
       return 'Waiting for the game — it is picked up as soon as mope has loaded';
     }
 
@@ -1859,9 +1879,9 @@
         try { existing.retire(); } catch (e) { /* an old hub that will not let go */ }
         try {
           console.warn(TAG, 'Another Lumi script on this page brought zoom hub ' +
-            'revision ' + existing.rev + ' and this one is ' + ZOOM_HUB_REV + '. Its zoom ' +
-            'controls will do nothing until it is updated (Moderator Extras: join ' +
-            'the hub rather than building one). Extras\' zoom works either way.');
+            'revision ' + existing.rev + ' and this one is ' + ZOOM_HUB_REV + ', so this ' +
+            'one has taken the zoom over. The other script\'s zoom controls will do ' +
+            'nothing until it is updated; this one\'s work either way.');
         } catch (e) { /* console is not essential */ }
       } else {
         try {
