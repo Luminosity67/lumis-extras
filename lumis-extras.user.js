@@ -4,7 +4,7 @@
 // @updateURL    https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @downloadURL  https://raw.githubusercontent.com/luminosity67/lumis-extras/main/lumis-extras.user.js
 // @supportURL   https://github.com/luminosity67/lumis-extras/issues
-// @version      1.1.4
+// @version      1.1.5
 // @description  Unified mope.io quality-of-life and cosmetic suite: ability cooldown timers, HP damage numbers, a shared camera zoom, turn-speed feel, a night sky behind your 1v1 duels, your own duel outline colours, an encrypted party map with a party list, party chat, clutter controls, and solid or gradient player-name colors shared through an encrypted online registry.
 // @author       luminosity67
 // @match        *://mope.io/*
@@ -91,6 +91,11 @@
  * that hands the hub the game, and answers to the old names, so no feature
  * had to change. Your animal's species now comes from mope's own species
  * table. Nothing a player sees has changed.
+ *
+ * 1.1.5 — Tampermonkey: the copy now knows it started too late when mope's
+ * entry script is already on the page, and says how to fix it — Tampermonkey
+ * only runs scripts early enough with Settings → Config mode: Advanced →
+ * Content Script API: "UserScripts API Dynamic".
  */
 
 (function () {
@@ -157,12 +162,19 @@
       fetch: PAGE.fetch,
     };
 
+    function entryAlreadyIn() {
+      try {
+        return !!document.querySelector('script[type="module"][src^="' + location.origin + '/"]');
+      } catch (e) { return false; }
+    }
+
     const hub = {
       revision: REVISION,
       startedAt: performance.now(),
       // Module scripts run once the document is parsed, so a hub built while
-      // it is still loading is in place before mope's first line.
-      late: document.readyState !== 'loading',
+      // it is still loading is in place before mope's first line — unless the
+      // parser already put mope's entry script in, which is too late to hold.
+      late: document.readyState !== 'loading' || entryAlreadyIn(),
       phase: 'waiting for mope\'s entry script',
       source: null,          // {url, text}: mope's game module as mope serves it
       states: new Map(),     // 'key,key,...' -> first state proxy with those keys
@@ -645,7 +657,7 @@
       const v = typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version;
       if (v) return String(v);
     } catch (e) { /* not exposed */ }
-    return '1.1.4';
+    return '1.1.5';
   })();
 
   /* ---------------------------------------------- one instance, one layer */
@@ -1033,7 +1045,8 @@
         return complete();
       }
       state.phase = capture.late
-        ? 'this copy started after mope did, so it could not see the game start — reload the page'
+        ? 'this copy started after mope did, so it could not see the game start. In Tampermonkey, set ' +
+          'Settings → Config mode: Advanced → Content Script API to "UserScripts API Dynamic", then reload the page'
         : 'waiting for the game: ' + capture.phase;
       return false;
     }
@@ -13384,6 +13397,14 @@
   hookCanvasRadius();
   installGradientCodes();
   bridge.start();
+  // A Tampermonkey copy that started after mope did cannot reach the game
+  // and would just look broken, so it says why, once, on screen.
+  if (capture.late && QOLC_VIA === 'userscript') {
+    console.warn(TAG, bridge.status().phase);
+    setTimeout(() => qolcToast('Lumi\'s Extras started too late to reach the game. In Tampermonkey: ' +
+      'Settings → Config mode: Advanced → Content Script API: "UserScripts API Dynamic", then reload.',
+    'is-bad', 15000), 3000);
+  }
   bridge.ready().then(() => {
     startFrameHook();
     turnInstall();
